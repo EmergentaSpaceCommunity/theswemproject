@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apps isolated-origin probe</title>
+<style>
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: #111827; color: #e5e7eb; }
+  main { padding: 12px; }
+  button { font: inherit; padding: 6px 12px; }
+  pre { white-space: pre-wrap; word-break: break-all; color: #a7f3d0; }
+</style>
+</head>
+<body>
+<main>
+  <p>Isolated-origin probe: what an App served as a document of its own origin can use.</p>
+  <button id="run" style="position:absolute; left:20px; top:60px; width:200px; height:36px">Run probe</button>
+  <pre id="probe">not run</pre>
+</main>
+<script>
+"use strict";
+// The View asked the host for a real origin (`_meta.ui.origin: "isolated"`)
+// and is served as a document at /apps/{connection}/{app}/view/ on the
+// sandbox origin. It measures what that buys over an opaque srcdoc: a real
+// origin with storage, cross-origin isolation (SharedArrayBuffer), module
+// workers and worklets loaded from files under its own path, wasm served
+// with its media type, and the microphone from the View itself. The facts
+// go out through an App-only tool so the gate reads a file, never prose.
+let nextId = 1;
+const pending = new Map();
+function request(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, {resolve, reject});
+    window.parent.postMessage({jsonrpc: "2.0", id, method, params}, "*");
+  });
+}
+window.addEventListener("message", (event) => {
+  const message = event.data;
+  if (event.source !== window.parent || !message || message.jsonrpc !== "2.0") return;
+  if (message.id !== undefined && pending.has(message.id)) {
+    const {resolve, reject} = pending.get(message.id);
+    pending.delete(message.id);
+    if (message.error) reject(message.error); else resolve(message.result);
+  }
+});
+let initialized = false;
+request("ui/initialize", {
+  appInfo: {name: "isolated-probe", version: "0.1"},
+  appCapabilities: {},
+  protocolVersion: "2026-01-26",
+}).then(() => {
+  initialized = true;
+  window.parent.postMessage({jsonrpc: "2.0", method: "ui/notifications/initialized", params: {}}, "*");
+}).catch(() => {});
+
+const describe = (error) => `error: ${error && error.name || ""}: ${error && error.message || error}`;
+
+async function probe() {
+  const facts = {
+    ui_initialized: initialized,
+    origin: (() => { try { return location.origin; } catch (error) { return describe(error); } })(),
+    base_uri: document.baseURI,
+    cross_origin_isolated: Boolean(globalThis.crossOriginIsolated),
+    shared_array_buffer: typeof SharedArrayBuffer === "function",
+    web_midi: typeof navigator.requestMIDIAccess === "function",
+  };
+  // (1) Storage of a real origin: the private file system and localStorage.
+  try {
+    const root = await navigator.storage.getDirectory();
+    const file = await root.getFileHandle("probe.txt", {create: true});
+    const writable = await file.createWritable();
+    await writable.write("ok");
+    await writable.close();
+    facts.opfs = (await (await file.getFile()).text()) === "ok" ? "ok" : "wrong bytes";
+  } catch (error) { facts.opfs = describe(error); }
+  try {
+    localStorage.setItem("probe", "ok");
+    facts.local_storage = localStorage.getItem("probe") === "ok" ? "ok" : "wrong value";
+  } catch (error) { facts.local_storage = describe(error); }
+  // (2) A module worker from a file under the View's own path.
+  try {
+    const worker = new Worker(new URL("./probe-worker.js", document.baseURI), {type: "module"});
+    facts.worker_served = await new Promise((resolve) => {
+      worker.onmessage = (event) => resolve(event.data);
+      worker.onerror = (event) => resolve(`error: ${event.message || "worker error"}`);
+      setTimeout(() => resolve("error: timeout"), 4000);
+      worker.postMessage("ping");
+    });
+    worker.terminate();
+  } catch (error) { facts.worker_served = describe(error); }
+  // (2b) A worker the page makes itself, from a blob of its own code: what a
+  // library's ring-buffer reader or decoder does.
+  try {
+    const code = "onmessage = (event) => postMessage({echo: event.data, isolated: self.crossOriginIsolated});";
+    const url = URL.createObjectURL(new Blob([code], {type: "application/javascript"}));
+    const worker = new Worker(url);
+    facts.worker_blob = await new Promise((resolve) => {
+      worker.onmessage = (event) => resolve(event.data);
+      worker.onerror = (event) => resolve(`error: ${event.message || "worker error"}`);
+      setTimeout(() => resolve("error: timeout"), 4000);
+      worker.postMessage("ping");
+    });
+    worker.terminate();
+    URL.revokeObjectURL(url);
+  } catch (error) { facts.worker_blob = describe(error); }
+  // (3) A worklet module from a file under the View's own path.
+  let context = null;
+  try {
+    context = new AudioContext();
+    await context.resume();
+    facts.audio_context = context.state;
+    await context.audioWorklet.addModule(new URL("./probe-worklet.js", document.baseURI).href);
+    facts.worklet_served = "registered";
+  } catch (error) { facts.worklet_served = describe(error); }
+  // (4) A wasm module served with its media type, compiled by streaming.
+  try {
+    const response = await fetch(new URL("./probe.wasm", document.baseURI));
+    facts.wasm_content_type = response.headers.get("content-type");
+    await WebAssembly.compileStreaming(response);
+    facts.wasm_served = "compiled";
+  } catch (error) { facts.wasm_served = describe(error); }
+  // (5) The microphone from the View itself: a real origin may hold it.
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false},
+    });
+    const track = stream.getAudioTracks()[0];
+    facts.microphone_stream = track ? track.readyState : "no track";
+    facts.microphone_label = track ? track.label : "";
+    if (track) track.stop();
+  } catch (error) { facts.microphone_stream = describe(error); }
+  if (context) { try { await context.close(); } catch {} }
+  document.getElementById("probe").textContent = JSON.stringify(facts);
+  try {
+    await request("tools/call", {name: "acknowledge_engine_probe", arguments: {facts_json: JSON.stringify(facts)}});
+    document.getElementById("probe").textContent += "\nacknowledged";
+  } catch (error) {
+    document.getElementById("probe").textContent += `\nnot acknowledged: ${JSON.stringify(error)}`;
+  }
+}
+document.getElementById("run").addEventListener("click", () => { probe(); });
+</script>
+</body>
+</html>

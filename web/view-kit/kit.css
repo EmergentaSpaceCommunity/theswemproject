@@ -1,0 +1,208 @@
+/* SWEM view kit.
+ *
+ * One stylesheet, shared by the Workbench shell and by every domain App. It
+ * lives outside `crates/` on purpose: the host and the domain modules are peers
+ * that both consume it, and a kit owned by the host would make every domain
+ * surface depend on the harness in order to look like SWEM.
+ *
+ * The rule that makes this a design system rather than another stylesheet:
+ * EVERY value here is a standard MCP Apps host-style variable. No literal
+ * colour, radius, font, weight, size, stroke or shadow appears below, and
+ * `kit.test.mjs` fails the build if one does. That is what lets the same markup
+ * render correctly inside the shell, inside a sandboxed App, and inside a
+ * foreign Apps host that never heard of SWEM: the host supplies the values, the
+ * kit supplies only the shapes.
+ *
+ * Classes are prefixed `k-` because a foreign host has its own `.card`.
+ *
+ * The primitives are not invented. They are the shapes the shell had already
+ * grown in six different spellings - ten `*-row` classes, four `*-card`
+ * classes, two chip classes - each with its own hand-picked radius and its own
+ * idea of a muted colour. Naming them once is the whole point.
+ */
+
+/* ---- foundation ------------------------------------------------------- */
+
+.k-root {
+  font: var(--font-weight-normal) var(--font-text-md-size) / var(--font-text-md-line-height) var(--font-sans);
+  color: var(--color-text-primary);
+  background: var(--color-background-primary);
+}
+
+/* Stack and row are the two layout primitives every surface reached for by
+   hand. `--k-gap` defaults to the body line rhythm so spacing follows type. */
+.k-stack { display: flex; flex-direction: column; gap: var(--k-gap, var(--font-text-sm-line-height)); }
+.k-inline { display: flex; align-items: center; flex-wrap: wrap; gap: var(--k-gap, var(--font-text-sm-size)); }
+.k-spread { display: flex; align-items: center; justify-content: space-between; gap: var(--font-text-md-size); }
+.k-grow { flex: 1 1 auto; min-width: 0; }
+
+/* The one decision the standard does not carry a name for. An eyebrow is only
+   legible in caps when it is tracked out, and there is no host letter-spacing
+   variable to inherit, so the kit owns this and says so. */
+:where(.k-root, :root) { --k-tracking-eyebrow: .14em; }
+
+/* ---- type ------------------------------------------------------------- */
+
+.k-eyebrow {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  line-height: var(--font-text-xs-line-height);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--k-tracking-eyebrow);
+}
+.k-title { font-size: var(--font-heading-xs-size); line-height: var(--font-heading-xs-line-height); font-weight: var(--font-weight-semibold); }
+.k-heading { font-size: var(--font-heading-md-size); line-height: var(--font-heading-md-line-height); font-weight: var(--font-weight-semibold); }
+.k-small { font-size: var(--font-text-sm-size); line-height: var(--font-text-sm-line-height); }
+.k-muted { color: var(--color-text-secondary); }
+.k-faint { color: var(--color-text-tertiary); }
+.k-mono { font-family: var(--font-mono); font-size: var(--font-text-xs-size); line-height: var(--font-text-xs-line-height); }
+
+/* ---- row -------------------------------------------------------------- */
+
+/* A line in a list of things the project contains: a revision, an execution,
+   an evidence item, an artifact, an activity entry. One rule, not six. */
+.k-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--font-text-sm-size);
+  padding: var(--font-text-xs-size) 0;
+  border-bottom: var(--border-width-regular) solid var(--color-border-secondary);
+  overflow-wrap: anywhere;
+}
+.k-row:last-child { border-bottom: 0; }
+.k-row.k-selectable { cursor: pointer; }
+.k-row.k-active { color: var(--color-text-info); }
+
+/* A row the reader picks from rather than reads: project, line, branch. It
+   stacks a name over a caption and carries its own border. */
+.k-pick {
+  display: grid;
+  gap: var(--border-radius-xs);
+  width: 100%;
+  text-align: left;
+  padding: var(--font-text-sm-size) var(--font-text-md-size);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-background-secondary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.k-pick:hover { border-color: var(--color-border-primary); }
+.k-pick.k-active { border-color: var(--color-ring-info); box-shadow: var(--shadow-hairline); }
+.k-pick small, .k-pick .k-caption { color: var(--color-text-secondary); font-size: var(--font-text-sm-size); line-height: var(--font-text-sm-line-height); }
+
+/* ---- card and dialog -------------------------------------------------- */
+
+.k-card {
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-background-secondary);
+  padding: var(--font-text-md-size);
+}
+.k-card.k-danger { border-color: var(--color-border-danger); color: var(--color-text-secondary); }
+
+/* A dialog is a card that has to read as lifted off the page, so it takes the
+   theme's own large shadow instead of a hand-mixed black. */
+.k-dialog {
+  border: var(--border-width-regular) solid var(--color-border-primary);
+  border-radius: var(--border-radius-xl);
+  background: var(--color-background-secondary);
+  padding: var(--font-heading-sm-size);
+  box-shadow: var(--shadow-lg);
+}
+
+/* ---- chip ------------------------------------------------------------- */
+
+/* An exact record ref, or a resource the connection declared. Both were their
+   own class with their own radius; they are one shape with two paddings. */
+.k-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--border-radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-text-xs-size);
+  line-height: var(--font-text-xs-line-height);
+  color: var(--color-text-info);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  border-radius: var(--border-radius-md);
+  padding: var(--border-radius-xs) var(--border-radius-md);
+  cursor: default;
+}
+.k-chip.k-roomy { padding: var(--border-radius-sm) var(--border-radius-lg); }
+.k-chip.k-active { border-color: var(--color-ring-info); }
+
+/* ---- status ----------------------------------------------------------- */
+
+.k-dot { width: var(--font-text-sm-size); height: var(--font-text-sm-size); border-radius: var(--border-radius-full); background: var(--color-text-tertiary); flex: none; }
+.k-dot.k-live { background: var(--color-background-success); }
+.k-dot.k-danger { background: var(--color-background-danger); }
+.k-dot.k-warning { background: var(--color-background-warning); }
+
+/* Semantic text roles, so a surface says "this failed" with the vocabulary
+   rather than by reaching for a colour. */
+.k-is-danger { color: var(--color-text-danger); }
+.k-is-warning { color: var(--color-text-warning); }
+.k-is-success { color: var(--color-text-success); }
+.k-is-info { color: var(--color-text-info); }
+
+/* ---- controls --------------------------------------------------------- */
+
+.k-btn {
+  font: var(--font-weight-medium) var(--font-text-md-size) / var(--font-text-md-line-height) var(--font-sans);
+  color: var(--color-text-primary);
+  background: var(--color-background-tertiary);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+  padding: var(--border-radius-md) var(--font-text-sm-size);
+  cursor: pointer;
+}
+.k-btn:hover:not(:disabled) { border-color: var(--color-border-primary); }
+.k-btn:focus-visible { outline: var(--border-width-regular) solid var(--color-ring-primary); outline-offset: var(--border-radius-xs); }
+.k-btn:disabled { color: var(--color-text-disabled); background: var(--color-background-disabled); border-color: var(--color-border-disabled); cursor: not-allowed; }
+.k-btn.k-primary { color: var(--color-text-inverse); background: var(--color-background-inverse); border-color: var(--color-border-inverse); font-weight: var(--font-weight-bold); }
+.k-btn.k-quiet { background: var(--color-background-ghost); border-color: var(--color-border-ghost); color: var(--color-text-secondary); }
+.k-btn.k-quiet:hover:not(:disabled) { color: var(--color-text-primary); }
+
+.k-field {
+  font: var(--font-weight-normal) var(--font-text-md-size) / var(--font-text-md-line-height) var(--font-sans);
+  color: var(--color-text-primary);
+  background: var(--color-background-primary);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  border-radius: var(--border-radius-md);
+  padding: var(--border-radius-md) var(--border-radius-lg);
+}
+.k-field:focus-visible { outline: var(--border-width-regular) solid var(--color-ring-info); outline-offset: var(--border-radius-xs); border-color: var(--color-border-info); }
+.k-field:disabled { color: var(--color-text-disabled); background: var(--color-background-disabled); }
+
+/* ---- tabs ------------------------------------------------------------- */
+
+.k-tabs { display: flex; gap: var(--border-radius-md); border-bottom: var(--border-width-regular) solid var(--color-border-secondary); padding: var(--border-radius-md) var(--font-text-sm-size) 0; }
+.k-tab {
+  font: var(--font-weight-medium) var(--font-text-sm-size) / var(--font-text-sm-line-height) var(--font-sans);
+  color: var(--color-text-secondary);
+  background: var(--color-background-ghost);
+  border: var(--border-width-regular) solid var(--color-border-ghost);
+  border-bottom: none;
+  border-radius: var(--border-radius-md) var(--border-radius-md) 0 0;
+  padding: var(--border-radius-md) var(--font-text-md-size);
+  cursor: pointer;
+}
+.k-tab.k-active { color: var(--color-text-primary); background: var(--color-background-secondary); border-color: var(--color-border-secondary); }
+
+/* ---- empty state ------------------------------------------------------ */
+
+/* An empty room must say what to do in it. This is the shape that says so. */
+.k-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--font-text-sm-size);
+  text-align: center;
+  padding: var(--font-heading-2xl-size) var(--font-text-lg-size);
+  color: var(--color-text-secondary);
+  border: var(--border-width-regular) dashed var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+}
+.k-empty .k-title { color: var(--color-text-primary); }

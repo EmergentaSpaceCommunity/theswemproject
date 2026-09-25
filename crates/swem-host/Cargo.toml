@@ -1,0 +1,77 @@
+[package]
+name = "swem-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# The crate ships as a library plus test fixtures; the product binary of the
+# workspace is `swem` (swem-cli). Never publish the fixture bins.
+publish = false
+
+# Test fixture binaries (hermetic doubles and protocol peers). They are not
+# product surface: swem-podman-fixture in particular is a Podman CLI double
+# whose output is never isolation evidence.
+[[bin]]
+name = "swem-echo-agent"
+path = "src/bin/swem-echo-agent.rs"
+
+[[bin]]
+name = "swem-hands-agent"
+path = "src/bin/swem-hands-agent.rs"
+
+[[bin]]
+name = "swem-mcp-echo"
+path = "src/bin/swem-mcp-echo.rs"
+
+[[bin]]
+name = "swem-mcp-apps-fixture"
+path = "src/bin/swem-mcp-apps-fixture.rs"
+
+[[bin]]
+name = "swem-mcp-observer-fixture"
+path = "src/bin/swem-mcp-observer-fixture.rs"
+
+[[bin]]
+name = "swem-mcp-tool-shape-fixture"
+path = "src/bin/swem-mcp-tool-shape-fixture.rs"
+
+[[bin]]
+name = "swem-podman-fixture"
+path = "src/bin/swem-podman-fixture.rs"
+
+[[bin]]
+name = "swem-routing-fixture"
+path = "src/bin/swem-routing-fixture.rs"
+
+[[bin]]
+name = "swem-personal-agent-fixture"
+path = "src/bin/swem-personal-agent-fixture.rs"
+
+[dependencies]
+base64 = { workspace = true }
+agent-client-protocol.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+jsonschema.workspace = true
+process-wrap.workspace = true
+percent-encoding.workspace = true
+rmcp.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+tar.workspace = true
+zip.workspace = true
+portable-pty.workspace = true
+
+[lints]
+workspace = true

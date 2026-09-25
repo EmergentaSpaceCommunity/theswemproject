@@ -1,0 +1,53 @@
+[
+  {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "key_type": "anthropic_api_key",
+    "models": [
+      { "id": "claude-fable-5-1", "name": "Claude Fable 5.1" },
+      { "id": "claude-opus-5-5", "name": "Claude Opus 5.5" },
+      { "id": "claude-sonnet-5", "name": "Claude Sonnet 5" },
+      { "id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5" }
+    ]
+  },
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "key_type": "openai_api_key",
+    "models": [
+      { "id": "gpt-5", "name": "GPT-5" },
+      { "id": "gpt-5-mini", "name": "GPT-5 mini" },
+      { "id": "o3", "name": "o3" }
+    ]
+  },
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "key_type": "openrouter_api_key",
+    "models": []
+  },
+  {
+    "id": "groq",
+    "name": "Groq",
+    "base_url": "https://api.groq.com/openai/v1",
+    "key_type": "groq_api_key",
+    "models": []
+  },
+  {
+    "id": "google",
+    "name": "Google",
+    "key_type": "google_api_key",
+    "models": [
+      { "id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro" },
+      { "id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash" }
+    ]
+  },
+  {
+    "id": "ollama",
+    "name": "Ollama on this computer",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "key_type": "ollama_endpoint",
+    "models": []
+  }
+]

@@ -1,0 +1,13 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+
+/tmp/
+/.tmp-*
+/.env
+/.env.local
+
+# Python leaves these beside any script it imports; none of it is source.
+__pycache__/
+*.pyc

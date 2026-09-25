@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apps engine probe</title>
+<style>
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: #111827; color: #e5e7eb; }
+  main { padding: 12px; }
+  button { font: inherit; padding: 6px 12px; }
+  pre { white-space: pre-wrap; word-break: break-all; color: #a7f3d0; }
+</style>
+</head>
+<body>
+<main>
+  <p>Engine probe: what a sandboxed MCP App can use on this host.</p>
+  <button id="run" style="position:absolute; left:20px; top:60px; width:200px; height:36px">Run probe</button>
+  <pre id="probe">not run</pre>
+</main>
+<script>
+"use strict";
+// Feature probe for the substrate a real-time domain App needs, measured
+// INSIDE the host's real sandbox (CSP header, sandbox flags, proxy origin):
+// WebAssembly instantiation, an AudioWorklet module from a blob: URL, a
+// running AudioContext after a user gesture, SharedArrayBuffer /
+// crossOriginIsolated, WebGPU and Web MIDI availability. The result is
+// persisted through an App-only tool so the gate reads a file, never prose.
+let nextId = 1;
+const pending = new Map();
+function request(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, {resolve, reject});
+    window.parent.postMessage({jsonrpc: "2.0", id, method, params}, "*");
+  });
+}
+window.addEventListener("message", (event) => {
+  const message = event.data;
+  if (event.source !== window.parent || !message || message.jsonrpc !== "2.0") return;
+  if (message.id !== undefined && pending.has(message.id)) {
+    const {resolve, reject} = pending.get(message.id);
+    pending.delete(message.id);
+    if (message.error) reject(message.error); else resolve(message.result);
+  }
+});
+async function probe() {
+  const facts = {
+    cross_origin_isolated: Boolean(globalThis.crossOriginIsolated),
+    shared_array_buffer: typeof SharedArrayBuffer === "function",
+    webgpu: Boolean(navigator.gpu),
+    web_midi: typeof navigator.requestMIDIAccess === "function",
+    origin: (() => { try { return location.origin; } catch (error) { return `error: ${error}`; } })(),
+  };
+  try {
+    // The smallest valid module: magic + version, no sections.
+    const bytes = Uint8Array.from(atob("AGFzbQEAAAA="), (c) => c.charCodeAt(0));
+    await WebAssembly.instantiate(bytes, {});
+    facts.wasm = "instantiated";
+  } catch (error) { facts.wasm = `error: ${error && error.message || error}`; }
+  let context = null;
+  try {
+    context = new AudioContext();
+    await context.resume();
+    facts.audio_context = context.state;
+    facts.sample_rate = context.sampleRate;
+  } catch (error) { facts.audio_context = `error: ${error && error.message || error}`; }
+  // The host grants affordances by declared metadata; measure each grant.
+  // (1) A worklet module from a served `ui://` script resource on the
+  // sandbox origin - the View's base URL is the sandbox page, whose query
+  // names the connection and App handles.
+  const base = new URL(document.baseURI);
+  facts.base_origin = base.origin;
+  const connection = base.searchParams.get("connection");
+  const app = base.searchParams.get("app");
+  if (context && connection && app) {
+    try {
+      const url = new URL(
+        `/apps/${encodeURIComponent(connection)}/${encodeURIComponent(app)}/resources?uri=${encodeURIComponent("ui://apps-fixture/probe-worklet.js")}`,
+        base.origin);
+      await context.audioWorklet.addModule(url.href);
+      facts.audio_worklet_served = "registered";
+    } catch (error) { facts.audio_worklet_served = `error: ${error && error.message || error}`; }
+  } else {
+    facts.audio_worklet_served = "error: no connection/app handle in the View's base URL";
+  }
+  // (2) Host callbacks can be placed in a wasm table: only Exported Functions
+  // are accepted by Table.set, so a JS callback is re-exported through a tiny
+  // trampoline module (type (i32)->i32, import h.f, export f).
+  try {
+    const trampoline = Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+      0x02, 0x07, 0x01, 0x01, 0x68, 0x01, 0x66, 0x00, 0x00,
+      0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00,
+    ]);
+    const {instance} = await WebAssembly.instantiate(trampoline, {h: {f: (value) => value + 1}});
+    const table = new WebAssembly.Table({element: "anyfunc", initial: 0});
+    const index = table.grow(1);
+    table.set(index, instance.exports.f);
+    facts.table_set_reexport = table.get(index)(41) === 42 ? "ok" : "wrong result";
+  } catch (error) { facts.table_set_reexport = `error: ${error && error.message || error}`; }
+  // (3) A declared permission reaches the View's Permissions Policy.
+  try {
+    const policy = document.permissionsPolicy || document.featurePolicy;
+    facts.permissions_policy_microphone = policy ? policy.allowsFeature("microphone") : "unavailable";
+  } catch (error) { facts.permissions_policy_microphone = `error: ${error && error.message || error}`; }
+  // (4) The microphone itself, from inside the opaque-origin View: the
+  // policy grant above is necessary, this is the proof it is sufficient.
+  // Browser DSP is off, as a musician's capture wants it.
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false},
+    });
+    const track = stream.getAudioTracks()[0];
+    facts.microphone_stream = track ? track.readyState : "no track";
+    facts.microphone_label = track ? track.label : "";
+    facts.microphone_settings_rate = track ? (track.getSettings().sampleRate ?? null) : null;
+    if (track) track.stop();
+  } catch (error) { facts.microphone_stream = `error: ${error && error.name || error}: ${error && error.message || ""}`; }
+  // (4b) The same microphone through the sandbox proxy, which has a real
+  // origin: the proxy opens it, runs this App's served worklet on it in a
+  // context of its own, and hands the worklet's port into this View. The
+  // worklet reports the input's peak: signal through the whole road.
+  const lane = (kind, params) => new Promise((resolve, reject) => {
+    const id = `${kind}-${Math.random().toString(36).slice(2)}`;
+    const timer = setTimeout(() => { window.removeEventListener("message", onMessage); reject(new Error("no answer from the sandbox lane")); }, 8000);
+    function onMessage(event) {
+      const data = event.data;
+      if (!data || data.swemSandbox !== kind || data.id !== id) return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      if (data.error) reject(Object.assign(new Error(data.error.message), {name: data.error.name})); else resolve(data.result);
+    }
+    window.addEventListener("message", onMessage);
+    window.parent.postMessage({swemSandbox: kind, id, params}, "*");
+  });
+  try {
+    const listed = await lane("media-devices", {});
+    facts.sandbox_media_devices = listed.devices.filter((d) => d.kind === "audioinput").length;
+  } catch (error) { facts.sandbox_media_devices = `error: ${error && error.name || error}: ${error && error.message || ""}`; }
+  let clocks = 0;
+  window.addEventListener("message", (event) => { if (event.data && event.data.swemSandbox === "clock") clocks += 1; });
+  try {
+    const workletUrl = connection && app
+      ? new URL(`/apps/${encodeURIComponent(connection)}/${encodeURIComponent(app)}/resources?uri=${encodeURIComponent("ui://apps-fixture/probe-worklet.js")}`, base.origin).href
+      : "";
+    const opened = await lane("user-media", {
+      constraints: {audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}},
+      capture: {workletUrl, processor: "swem-probe-capture", sampleRate: 48000, channels: 1, outputs: 1},
+    });
+    facts.sandbox_user_media = opened.port ? "live" : "no port";
+    facts.sandbox_user_media_label = opened.described && opened.described[0] ? opened.described[0].label : "";
+    facts.sandbox_context_rate = opened.context ? opened.context.sampleRate : null;
+    if (opened.port) {
+      let peak = 0;
+      opened.port.onmessage = (event) => { if (event.data && event.data.kind === "peak") peak = Math.max(peak, event.data.peak); };
+      await new Promise((r) => setTimeout(r, 1500));
+      facts.sandbox_capture_peak = peak;
+      facts.sandbox_clock_ticks = clocks;
+      opened.port.close();
+      await lane("stop-media", {});
+    }
+  } catch (error) { facts.sandbox_user_media = `error: ${error && error.name || error}: ${error && error.message || ""}`; }
+  // (5) Bytes back to the host on the sandbox origin: the upload route the
+  // recording path stores a take through, addressed by the same handles.
+  if (connection && app) {
+    try {
+      const url = new URL(`/apps/${encodeURIComponent(connection)}/${encodeURIComponent(app)}/upload`, base.origin);
+      const body = new Uint8Array(70000);
+      for (let index = 0; index < body.length; index += 1) body[index] = index & 0xff;
+      const response = await fetch(url.href, {method: "POST", body, headers: {"content-type": "application/octet-stream"}});
+      facts.self_upload = response.status;
+      const answer = response.ok ? await response.json() : null;
+      facts.self_upload_path = answer ? answer.workspace_path : null;
+      facts.self_upload_bytes = answer ? answer.byte_length : null;
+    } catch (error) { facts.self_upload = `error: ${error && error.message || error}`; }
+  } else {
+    facts.self_upload = "error: no connection/app handle in the View's base URL";
+  }
+  if (context) {
+    try {
+      const source = "registerProcessor('swem-probe', class extends AudioWorkletProcessor { process() { return true; } });";
+      const url = URL.createObjectURL(new Blob([source], {type: "text/javascript"}));
+      await context.audioWorklet.addModule(url);
+      facts.audio_worklet_blob = "registered";
+    } catch (error) { facts.audio_worklet_blob = `error: ${error && error.message || error}`; }
+    try {
+      const worker = new Worker(URL.createObjectURL(new Blob(["postMessage('ok')"], {type: "text/javascript"})));
+      facts.worker_blob = await new Promise((resolve) => {
+        worker.onmessage = (event) => resolve(String(event.data));
+        worker.onerror = (event) => resolve(`error: ${event.message || "worker error"}`);
+        setTimeout(() => resolve("error: timeout"), 3000);
+      });
+      worker.terminate();
+    } catch (error) { facts.worker_blob = `error: ${error && error.message || error}`; }
+  }
+  document.getElementById("probe").textContent = JSON.stringify(facts);
+  try {
+    await request("tools/call", {name: "acknowledge_engine_probe", arguments: {facts_json: JSON.stringify(facts)}});
+    document.getElementById("probe").textContent += "\nacknowledged";
+  } catch (error) {
+    document.getElementById("probe").textContent += `\nacknowledge failed: ${JSON.stringify(error)}`;
+  }
+}
+document.getElementById("run").addEventListener("click", () => { probe(); });
+request("ui/initialize", {
+  appInfo: {name: "apps-fixture-engine-probe", version: "0.1"},
+  appCapabilities: {},
+  protocolVersion: "2026-01-26",
+}).then(() => {
+  window.parent.postMessage({jsonrpc: "2.0", method: "ui/notifications/initialized", params: {}}, "*");
+}).catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "swem-acp-editor-oracle",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "An editor, played by the ACP project's own client SDK, so the gate's claim about the editor door is not proved by a client SWEM wrote.",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0"
+  }
+}

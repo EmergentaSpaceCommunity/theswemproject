@@ -1,0 +1,66 @@
+[workspace]
+members = [
+  "crates/swem-host",
+  "crates/swem-cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/EmergentaSpaceCommunity/theswemproject"
+
+[workspace.dependencies]
+agent-client-protocol = { version = "2.0", features = ["unstable_elicitation", "unstable_auth_methods"] }
+anyhow = "1.0"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.1"
+futures-util = "0.3"
+getrandom = "0.3"
+hex = "0.4"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+jsonschema = { version = "0.52", default-features = false }
+rmcp = { version = "3.1", features = [
+  "client",
+  "server",
+  "transport-child-process",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
+process-wrap = { version = "9.1", features = ["tokio1"] }
+portable-pty = { version = "0.9", default-features = false }
+percent-encoding = "2.3"
+rusqlite = { version = "0.40", features = ["bundled"] }
+schemars = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.49", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["compat", "io"] }
+url = "2.5"
+tar = "0.4"
+zip = { version = "8.3", default-features = false, features = ["deflate"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+# ACP/RMCP bring a large Windows dependency graph. Debug PDBs add no value to
+# this fixture-driven workspace and can exhaust local linker/disk limits.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

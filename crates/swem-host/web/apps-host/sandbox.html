@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SWEM Apps sandbox</title>
+<style>
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+iframe { display: block; margin: 0; padding: 0; border: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<!-- Spec-exact sandbox proxy (SEP-1865 "Sandbox proxy"): served from a
+     DIFFERENT origin than the shell (second 127.0.0.1 port). The per-app CSP
+     computed by the Rust host arrived as a REAL HTTP header on this document
+     (echoed by the sandbox listener from the ?csp= query parameter); the
+     srcdoc inner iframe inherits it. The proxy forwards every JSON-RPC
+     message both ways EXCEPT ui/notifications/sandbox-*, never originates
+     requests, and validates the host origin on every parent message. -->
+<script>
+"use strict";
+const query = new URLSearchParams(location.search);
+const HOST_ORIGIN = query.get("host") || "";
+let inner = null;
+// The permissions the host declared for this App, as the View may ask for
+// them through the lane below.
+let declaredPermissions = {};
+
+function toHost(message) {
+  if (HOST_ORIGIN) window.parent.postMessage(message, HOST_ORIGIN);
+}
+
+// MCP Apps permission keys -> Permissions Policy feature names. Unknown keys
+// are ignored rather than guessed. The View is a sandboxed srcdoc document
+// with an opaque origin, which the default allowlist ('src') can never
+// match, so each declared feature is granted with `*` - to this one frame,
+// which the sandbox flags keep from navigating the top; the browser still
+// asks the person before any device is used.
+const PERMISSION_FEATURES = {
+  camera: "camera",
+  microphone: "microphone",
+  geolocation: "geolocation",
+  clipboardWrite: "clipboard-write",
+  midi: "midi",
+};
+function permissionsToAllow(permissions) {
+  if (!permissions || typeof permissions !== "object") return "";
+  return Object.keys(permissions)
+    .map((key) => PERMISSION_FEATURES[key])
+    .filter(Boolean)
+    .map((feature) => `${feature} *`)
+    .join("; ");
+}
+
+// ----------------------------------------------------------------- devices
+// A View is a sandboxed srcdoc document with an opaque origin, and the
+// browser refuses `getUserMedia` to an opaque origin whatever the
+// Permissions Policy says ("Invalid security origin"), and will not
+// transfer a track into one either. This proxy document has a real origin
+// and carries the same declared permissions, so it opens the device on the
+// View's behalf, runs the worklet the View names on it in a context of its
+// own (the worklet script must come from this origin, where the App's
+// resources are served), and hands the worklet's port over - a port does
+// transfer. The lane is not JSON-RPC and never reaches the host: a message
+// from the inner frame shaped `{swemSandbox: <kind>, id, params}` is
+// answered here with `{swemSandbox: <kind>, id, result | error}`; while a
+// capture runs, `{swemSandbox: "clock"}` ticks carry this context's clock
+// so the View can name its frames in another context. Only a kind the App
+// declared is granted (`audio` needs `microphone`, `video` needs `camera`),
+// which is the same rule the `allow` attribute enforces.
+let held = null;
+function answer(kind, id, body, transfer) {
+  if (!inner) return;
+  inner.contentWindow.postMessage({swemSandbox: kind, id, ...body}, "*", transfer || []);
+}
+function stopHeld() {
+  const gone = held;
+  held = null;
+  if (!gone) return;
+  if (gone.ticker) clearInterval(gone.ticker);
+  try { gone.source && gone.source.disconnect(); } catch {}
+  try { gone.node && gone.node.disconnect(); } catch {}
+  for (const track of gone.tracks) { try { track.stop(); } catch {} }
+  if (gone.context) { gone.context.close().catch(() => {}); }
+}
+function failure(error) {
+  return {error: {name: error && error.name || "Error", message: error && error.message || String(error)}};
+}
+async function serveSandboxLane(message) {
+  const kind = message.swemSandbox;
+  const id = message.id;
+  const params = message.params || {};
+  if (kind === "media-devices") {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      answer(kind, id, {result: {devices: devices.map((d) => ({deviceId: d.deviceId, kind: d.kind, label: d.label, groupId: d.groupId}))}});
+    } catch (error) { answer(kind, id, failure(error)); }
+    return;
+  }
+  if (kind === "user-media") {
+    const constraints = params.constraints || {};
+    if (constraints.audio && !declaredPermissions.microphone) {
+      answer(kind, id, {error: {name: "NotAllowedError", message: "this App declared no microphone permission"}});
+      return;
+    }
+    if (constraints.video && !declaredPermissions.camera) {
+      answer(kind, id, {error: {name: "NotAllowedError", message: "this App declared no camera permission"}});
+      return;
+    }
+    stopHeld();
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) { answer(kind, id, failure(error)); return; }
+    const tracks = stream.getTracks();
+    const described = tracks.map((track) => ({kind: track.kind, label: track.label, settings: track.getSettings()}));
+    for (const track of tracks) {
+      track.addEventListener("ended", () => {
+        if (held && held.tracks.includes(track)) {
+          stopHeld();
+          answer("media-ended", null, {});
+        }
+      });
+    }
+    const capture = params.capture;
+    if (!capture || typeof capture !== "object") {
+      held = {tracks, context: null, ticker: null};
+      answer(kind, id, {result: {described, port: null, context: null}});
+      return;
+    }
+    let context = null;
+    try {
+      const url = new URL(String(capture.workletUrl || ""), location.href);
+      if (url.origin !== location.origin) throw new Error("the capture worklet must come from the sandbox origin");
+      const wanted = Number(capture.sampleRate);
+      const options = {latencyHint: "interactive"};
+      if (Number.isFinite(wanted) && wanted >= 8000 && wanted <= 192000) options.sampleRate = wanted;
+      try { context = new AudioContext(options); } catch { context = new AudioContext({latencyHint: "interactive"}); }
+      await context.audioWorklet.addModule(url.href);
+      await context.resume();
+      const channels = Math.max(1, Math.min(2, Number(capture.channels) || 1));
+      const outputs = Math.max(1, Math.min(2, Number(capture.outputs) || 2));
+      const source = context.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(context, String(capture.processor), {
+        numberOfInputs: 1, numberOfOutputs: 1, channelCount: channels, channelCountMode: "explicit",
+        outputChannelCount: [outputs], processorOptions: {channels},
+      });
+      source.connect(node);
+      node.connect(context.destination);
+      const clock = () => {
+        const stamp = typeof context.getOutputTimestamp === "function" ? context.getOutputTimestamp() : null;
+        const known = stamp && typeof stamp.contextTime === "number" && typeof stamp.performanceTime === "number";
+        return {
+          contextTime: known ? stamp.contextTime : context.currentTime,
+          epochMs: performance.timeOrigin + (known ? stamp.performanceTime : performance.now()),
+          sampleRate: context.sampleRate,
+        };
+      };
+      const ticker = setInterval(() => answer("clock", null, {clock: clock()}), 250);
+      held = {tracks, context, ticker, source, node};
+      answer(kind, id, {result: {
+        described,
+        port: node.port,
+        context: {
+          sampleRate: context.sampleRate,
+          baseLatency: typeof context.baseLatency === "number" ? context.baseLatency : null,
+          outputLatency: typeof context.outputLatency === "number" ? context.outputLatency : null,
+        },
+      }}, [node.port]);
+      answer("clock", null, {clock: clock()});
+    } catch (error) {
+      for (const track of tracks) track.stop();
+      if (context) { try { await context.close(); } catch {} }
+      answer(kind, id, failure(error));
+    }
+    return;
+  }
+  if (kind === "stop-media") {
+    stopHeld();
+    answer(kind, id, {result: {stopped: true}});
+    return;
+  }
+  answer(kind, id, {error: {name: "Error", message: `unknown sandbox lane kind: ${kind}`}});
+}
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => answer("media-devices-changed", null, {}));
+}
+
+window.addEventListener("message", (event) => {
+  const message = event.data;
+  if (message && typeof message.swemSandbox === "string") {
+    if (inner && event.source === inner.contentWindow) serveSandboxLane(message);
+    return;
+  }
+  if (!message || message.jsonrpc !== "2.0") return;
+  const method = typeof message.method === "string" ? message.method : "";
+  if (method.startsWith("ui/notifications/sandbox-")) {
+    // Sandbox-reserved lane: consumed here, never forwarded.
+    if (
+      event.origin === HOST_ORIGIN &&
+      event.source === window.parent &&
+      method === "ui/notifications/sandbox-resource-ready" &&
+      !inner
+    ) {
+      const params = message.params || {};
+      inner = document.createElement("iframe");
+      inner.setAttribute("sandbox", params.sandbox || "allow-scripts");
+      // The App's declared `_meta.ui.permissions` become the frame's
+      // Permissions Policy allowlist (spec keys -> policy features); nothing
+      // undeclared is granted, and the browser still asks the person.
+      let allow = permissionsToAllow(params.permissions);
+      // A View served as a document of this origin inherits the isolation
+      // the shell delegated to the origin only if this frame passes it on.
+      if (typeof params.url === "string") allow = `${allow ? `${allow}; ` : ""}cross-origin-isolated`;
+      if (allow) inner.setAttribute("allow", allow);
+      declaredPermissions = params.permissions && typeof params.permissions === "object" ? params.permissions : {};
+      if (typeof params.url === "string" && params.url.startsWith(location.origin + "/apps/")) {
+        // A View served as a document of THIS origin (the App asked for a
+        // real origin); never a foreign URL.
+        inner.src = params.url;
+      } else {
+        inner.srcdoc = params.html || "";
+      }
+      document.body.appendChild(inner);
+    }
+    return;
+  }
+  if (event.source === window.parent) {
+    // Host -> View: only from the exact host origin, forwarded verbatim.
+    if (event.origin === HOST_ORIGIN && inner) {
+      inner.contentWindow.postMessage(message, "*");
+    }
+    return;
+  }
+  if (inner && event.source === inner.contentWindow) {
+    // View -> Host: the inner srcdoc frame has an opaque origin; identity is
+    // the source window, the destination is the exact host origin.
+    toHost(message);
+  }
+});
+
+// The proxy may finish loading before the host bridge attaches its
+// transport; re-announce readiness until the resource arrives.
+const announce = setInterval(() => {
+  if (inner) { clearInterval(announce); return; }
+  toHost({jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {}});
+}, 200);
+toHost({jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {}});
+</script>
+</body>
+</html>

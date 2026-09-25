@@ -1,0 +1,67 @@
+SWEM
+Copyright (c) 2025-2026 the SWEM authors
+
+  [TO FILL IN BEFORE PUBLICATION: the copyright holder's legal name, as it
+  should appear in every copy. "the SWEM authors" is a placeholder, not a
+  decision. It must also replace the placeholder in CLA.md.]
+
+This product is licensed under the GNU Affero General Public License, version 3
+or later, except for the directory `interface/`, which is licensed under the
+Apache License, Version 2.0. See LICENSES.md for the map and the reasoning, and
+LICENSE and interface/LICENSE for the two texts.
+
+A commercial licence for the AGPL side is available from the copyright holder.
+
+This NOTICE file must be included in copies and in derivative works. Both
+licences require that copyright and licence notices survive; the AGPL adds that
+modified files must carry prominent notices stating that you changed them and
+when (section 5).
+
+--------------------------------------------------------------------------------
+Third-party code this product contains or conveys
+--------------------------------------------------------------------------------
+
+openDAW SDK
+  AGPL-3.0-or-later. Copyright (c) the openDAW authors.
+  https://github.com/andremichelle/opendaw
+
+  The music domain stands on this SDK, and the repository conveys its built
+  object code: `crates/swem-domain-music/web/composition-workbench/dist`
+  (including `assets/engine.js` and `wasm-engine/wasm/engine.wasm`) is
+  committed and compiled into the `swem` binary by that crate's `build.rs`.
+  Section 6 of the AGPL asks for directions to the corresponding source next to
+  the object code. Those directions, the exact package versions and their
+  registry URLs are in `crates/swem-domain-music/THIRD-PARTY.md`, which is
+  generated from the lockfile by `scripts/music_third_party.py`.
+
+  This is the reason the music domain is AGPL-3.0-or-later, and it is a
+  direct obligation of the SDK rather than a choice of this project.
+
+GeneralUser GS 2.0.3
+  Copyright (c) S. Christian Collins.
+  https://github.com/mrbumpy409/GeneralUser-GS
+
+  The General MIDI soundfont the music package ships, so an imported MIDI file
+  plays on real instruments with nothing brought first:
+  `crates/swem-domain-music/web/composition-workbench/public/soundfonts/GeneralUser-GS.sf2`
+  (32 319 396 bytes). Its licence travels beside it in that directory as
+  `GeneralUser-GS-LICENSE.txt` and must stay there. The licence allows use in
+  software projects and in commercial music and asks for no attribution; this
+  entry is here because the file is conveyed, not because it is required.
+
+  The bank's own licence text notes that its author cannot be certain where
+  every sample originally came from, though none came from commercial sample
+  packages and no complaint has been made since 2000. Anyone
+  selling this package as part of a commercial product should read that
+  paragraph first.
+
+Rust crate dependencies
+  Permissive (MIT, Apache-2.0, BSD and similar). Their licences are in
+  `Cargo.lock` and, verbatim, in each crate's own source under
+  `~/.cargo/registry`. None of them imposes a copyleft obligation on this
+  product.
+
+npm dependencies of the composition workbench
+  Listed with versions, licences and source URLs in
+  `crates/swem-domain-music/THIRD-PARTY.md`. Sixteen of them are
+  AGPL-3.0-or-later (the openDAW libraries above); the rest are permissive.

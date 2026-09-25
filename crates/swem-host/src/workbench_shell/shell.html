@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SWEM Workbench</title>
+<!-- The shared palette and view kit, inlined by the host at serve time. Both
+     are the same files every domain App gets: one set of values, one set of
+     shapes, so the shell and an App cannot disagree about what a row, a card,
+     a chip or "muted" is. The block below only composes this shell's screens. -->
+<style>__PALETTE_CSS__</style>
+<style>__KIT_CSS__</style>
+<style>
+  /* The shared palette and kit are inlined here by the host. */
+  * { box-sizing: border-box; }
+  body { margin:0; height:100vh; overflow:hidden;
+    font:var(--font-weight-normal) var(--font-text-md-size)/var(--font-text-md-line-height) var(--font-sans);
+    color:var(--color-text-primary); background:var(--color-background-primary); }
+  button,input,select,textarea { font:inherit; }
+  button { color:var(--color-text-primary); border:var(--border-width-regular) solid var(--color-border-secondary);
+    border-radius:var(--border-radius-lg); background:var(--color-background-tertiary);
+    padding:.55rem .8rem; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--color-border-primary); background:var(--color-background-tertiary); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .primary { color:var(--on-accent); background:var(--accent); border-color:var(--accent);
+    font-weight:var(--font-weight-bold); }
+  .primary:hover:not(:disabled) { background:var(--accent); border-color:var(--accent); }
+  [hidden] { display:none !important; }
+  .app-shell { display:flex; flex-direction:column; height:100vh; }
+  .space-bar { display:flex; gap:6px; padding:8px 18px; border-bottom:var(--border-width-regular) solid var(--line); background:var(--panel); }
+  .space-bar button { padding:.4rem .8rem; }
+  .space-bar button[aria-pressed="true"] { color:var(--on-accent); background:var(--accent2); border-color:var(--accent2); font-weight:700; }
+  .space { flex:1; min-height:0; }
+  /* The single row is pinned to the space height: columns scroll inside
+     themselves and never grow with the conversation, so an App frame keeps its
+     measured position while the agent's answer is still arriving. */
+  .agent-space { display:grid; grid-template-columns:260px minmax(360px,1fr) 360px; grid-template-rows:minmax(0,1fr); }
+  /* The Store: where things come from on the left, what they are on the
+     right, one row per thing with its one button. */
+  .store-space { display:grid; grid-template-columns:300px minmax(360px,1fr); grid-template-rows:minmax(0,1fr); }
+  .store-sources { display:grid; align-content:start; gap:10px; padding:16px; border-right:var(--border-width-regular) solid var(--line); background:var(--panel); overflow:auto; min-width:0; }
+  .store-sources p { margin:0; }
+  .index-row { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
+  .store-list { display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; gap:10px; padding:16px 24px; min-width:0; overflow:auto; }
+  .store-toolbar { display:flex; gap:8px; }
+  .store-toolbar input { flex:1; min-width:0; }
+  .store-entry { display:flex; align-items:center; justify-content:space-between; gap:14px; min-width:0; }
+  .store-entry-words { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
+  .store-entry small { color:var(--muted); }
+  #store-status { min-height:1.4em; overflow-wrap:anywhere; }
+  .project-space { display:grid; grid-template-columns:260px minmax(360px,1fr) 320px; grid-template-rows:minmax(0,1fr) auto;
+    grid-template-areas:"nav home collab" "activity activity activity"; }
+  #project-navigator { grid-area:nav; }
+  /* The main area is the workbench: a tab strip and whatever it opened. */
+  .surface { grid-area:home; display:grid; grid-template-rows:auto minmax(0,1fr); min-width:0; min-height:0; }
+  /* A workbench open on a slot owns the whole space: the project's other
+     panels step aside until the rail strip's way back is taken. */
+  .project-space[data-open-slot] { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); grid-template-areas:"home"; }
+  .project-space[data-open-slot] > :not(.surface) { display:none; }
+  /* The strip over an open workbench: the slot's rungs as chips, the next
+     step, the way back. The rail never leaves the screen. */
+  .rail-strip { display:flex; align-items:center; gap:10px; padding:6px 12px; border-bottom:var(--border-width-regular) solid var(--line);
+    background:var(--panel); overflow-x:auto; white-space:nowrap; }
+  .rail-chips { display:flex; gap:4px; list-style:none; margin:0; padding:0; }
+  .rail-chip { padding:2px 8px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-full); font-size:var(--font-text-xs-size); color:var(--muted);
+    border-top:calc(var(--border-width-regular) * 2) solid var(--color-text-secondary); }
+  .rail-chip[data-state="present"] { border-top-color:var(--accent2); color:var(--text); }
+  .rail-chip[data-state="attention"] { border-top-color:var(--color-text-warning); }
+  .rail-chip[data-state="blocked"] { border-top-color:var(--bad); }
+  .rail-chip[data-state="accepted"] { border-top-color:var(--accent); }
+  .rail-chip[data-next="true"] { border-color:var(--accent2); }
+  .rail-strip-next { font-size:var(--font-text-sm-size); overflow:hidden; text-overflow:ellipsis; }
+  /* One rail per slot: its rungs, the door on "what it is made of", the workbench. */
+  #slot-rails { display:grid; gap:10px; }
+  /* A rail is a row: the chips of the cycle, what the row owes under them.
+     The rung element itself has no box (display:contents) so its chip sits
+     in the row and its owed lines and actions wrap to full width below;
+     every data attribute stays on the rung for whoever reads the DOM. */
+  .rail { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:10px 14px; display:grid; gap:6px; background:var(--panel); }
+  .rail-head { display:flex; align-items:baseline; gap:10px; }
+  .rail-head .rail-open { margin-left:auto; }
+  .rail .rungs { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; list-style:none; margin:0; padding:0; }
+  .rail .rung { display:contents; }
+  .rail .rung-title { order:0; font-size:var(--font-text-sm-size); padding:2px 10px; border-radius:var(--border-radius-full);
+    border:var(--border-width-regular) solid var(--line); color:var(--muted); white-space:nowrap; }
+  /* A step that still has something to offer opens from its own chip. */
+  .rail button.rung-title { background:transparent; font:inherit; font-size:var(--font-text-sm-size); cursor:pointer; }
+  .rail .rung[data-state="present"] > .rung-title { border-color:var(--accent2); color:var(--text); }
+  .rail .rung[data-state="attention"] > .rung-title { border-color:var(--color-text-warning); color:var(--text); }
+  .rail .rung[data-state="blocked"] > .rung-title { border-color:var(--bad); color:var(--text); }
+  .rail .rung[data-state="accepted"] > .rung-title { border-color:var(--accent); color:var(--text); }
+  .rail .rung[data-next="true"] > .rung-title { box-shadow:0 0 0 1px var(--accent2) inset; color:var(--text); }
+  .rail .rung-notices { order:0; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
+    display:grid; gap:4px; }
+  .rail .rung-notice { padding:4px 8px; border-left:var(--border-width-regular) solid var(--color-text-warning);
+    color:var(--text); font-size:var(--font-text-sm-size); }
+  .rail .rung-produced-from { order:1; flex-basis:100%; margin:0; padding-left:16px; }
+  .rail .rung-produced { order:1; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
+    display:grid; gap:2px; }
+  .rail .produced-row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  .rail .produced-name { font-size:var(--font-text-sm-size); }
+  .rail .produced-download, .rail .produced-bring { font-size:var(--font-text-sm-size); }
+  .rail .produced-play { flex-basis:100%; height:32px; max-width:320px; }
+  /* A name the Cycle marked, not code: the same face, without the box a
+     reader would read as a snippet. */
+  .said-name { font-family:inherit; font-weight:600; }
+  .rail .rung-running { order:0; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
+    display:grid; gap:4px; }
+  .rail .rung-running-row { padding:4px 8px; border-left:var(--border-width-regular) solid var(--accent2);
+    color:var(--text); font-size:var(--font-text-sm-size); }
+  .rail .rung-owed { order:1; flex-basis:100%; margin:0; padding-left:16px; color:var(--muted); font-size:var(--font-text-sm-size); }
+  .rail .rung-actions { order:2; flex-basis:100%; display:flex; flex-wrap:wrap; gap:6px; margin:0; }
+  .rail .slot-units { order:3; flex-basis:100%; display:flex; flex-wrap:wrap; gap:4px; margin:0; }
+  .rail .rail-next { margin:0; font-size:var(--font-text-sm-size); }
+  /* A slot's card is a zoom, not a ladder: its steps are sections stacked
+     under the slot, each headed by a plain caption rather than a chip, and
+     only the steps with something to say are there at all. */
+  .rail .rungs-zoom { display:grid; gap:8px; }
+  .rail .rungs-zoom .rung { display:grid; gap:4px; padding-left:10px; border-left:var(--border-width-regular) solid var(--line); }
+  .rail .rungs-zoom .rung-title,.rail .rungs-zoom button.rung-title { order:0; padding:0; border:0; border-radius:0; background:transparent;
+    font-size:var(--font-text-xs-size); text-transform:uppercase; letter-spacing:.04em; color:var(--muted); text-align:left; }
+  .rail .rungs-zoom .rung[data-state="attention"] { border-left-color:var(--color-text-warning); }
+  .rail .rungs-zoom .rung[data-state="blocked"] { border-left-color:var(--bad); }
+  .rail .rungs-zoom .rung[data-state="accepted"] { border-left-color:var(--accent); }
+  .rail .rungs-zoom .rung[data-next="true"] > .rung-title { color:var(--text); box-shadow:none; }
+  .rail .rungs-zoom .rung-notices,.rail .rungs-zoom .rung-owed,.rail .rungs-zoom .rung-produced,.rail .rungs-zoom .rung-produced-from,
+  .rail .rungs-zoom .rung-running,.rail .rungs-zoom .rung-actions,.rail .rungs-zoom .slot-units { padding-left:0; }
+  .slot-units { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:4px; }
+  .slot-unit { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; padding:4px 8px;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); font-size:var(--font-text-sm-size); }
+  .slot-unit[data-filled="false"] { border-style:dashed; border-color:var(--color-text-warning); }
+  .slot-unit-title { font-weight:600; }
+  .slot-unit-kind { text-transform:uppercase; letter-spacing:.06em; font-size:var(--font-text-xs-size); }
+  .slot-unit-intent { color:var(--muted); }
+  .slot-unit-missing { color:var(--color-text-warning); margin-left:auto; }
+  .slot-rail-head strong { min-width:80px; }
+  .open-workbench { padding:.4rem .6rem; font-size:var(--font-text-sm-size); }
+  .rail-next { margin:8px 0 0; }
+  /* What the rails are derived from, folded away for whoever needs digests. */
+  #developer-diagnostics { margin-top:8px; }
+  #developer-diagnostics > summary { cursor:pointer; font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.1em; color:var(--muted); }
+  .diagnostics-body { display:grid; gap:20px; padding-top:12px; }
+  .domain-app { display:flex; flex-direction:column; min-height:0; min-width:0; }
+  .domain-app .app-host { flex:1 1 auto; min-height:0; display:flex; }
+  .domain-app .app-mount { flex:1 1 auto; min-height:0; display:flex; }
+  .domain-app .app-mount > iframe { flex:1 1 auto; min-height:0; }
+  .domain-app .app-status { margin:0; padding:6px 12px; color:var(--color-text-secondary); font-size:var(--font-text-sm-size); }
+  #project-home { overflow:auto; min-height:0; }
+  #project-collaborator { grid-area:collab; }
+  #project-activity { grid-area:activity; max-height:160px; overflow:auto; border-top:var(--border-width-regular) solid var(--line);
+    background:var(--panel); padding:10px 18px; font-size:var(--font-text-sm-size); }
+  .home-body { padding:18px 22px; display:grid; gap:20px; }
+  .home-body h3 { margin:0 0 8px; font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.1em; color:var(--muted); }
+  #project-empty { margin:auto; width:min(560px,calc(100% - 40px)); text-align:center; padding:60px 0; }
+  #project-empty h1 { font:var(--font-weight-bold) var(--font-heading-3xl-size)/var(--font-heading-3xl-line-height) var(--font-sans);
+    margin:0 0 12px; letter-spacing:var(--k-tracking-display); }
+  #project-empty p { color:var(--muted); }
+  /* The cycle as a readable axis. State colours come from the same tokens
+     the rest of the shell paints with, so a theme change carries them. */
+  #cycle-axis-next { margin:0; }
+  /* What can be done at a rung: a button that opens the tool's own form. */
+  .rung-action { padding:.4rem .6rem; font-size:var(--font-text-sm-size); }
+  .rung-agent-step { margin:0; font-size:var(--font-text-sm-size); }
+  .rung-form { display:grid; gap:8px; padding:10px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); }
+  .rung-form textarea,.rung-form input,.rung-form select { width:100%; min-width:0; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:8px; }
+  /* The projection rung's own editor: what was asked, the reading of it, and
+     one row per thing the reading declares. */
+  .rail .decompose { order:3; flex-basis:100%; text-align:left; }
+  .decompose-intent { margin:0; padding:8px 10px; border-left:calc(var(--border-width-regular) * 3) solid var(--line); color:var(--muted);
+    font-size:var(--font-text-sm-size); }
+  .decompose-intent p { margin:0 0 4px; }
+  .decompose-outdated { margin:0; color:var(--color-text-warning); font-size:var(--font-text-sm-size); }
+  .decompose-declared { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+  .decompose-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 8px;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
+  .decompose-row[data-state="cited"] { opacity:0.7; }
+  .decompose-row[data-state="unknown"] { border-color:var(--bad); }
+  .decompose-row > label { display:flex; align-items:center; gap:4px; flex:0 1 auto; }
+  .decompose-row > label > span { color:var(--muted); font-size:var(--font-text-sm-size); }
+  .decompose-row > input[data-field="intent"] { flex:1 1 220px; }
+  .decompose-row input,.decompose-row select { width:auto; min-width:0; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:4px 6px; }
+  #project-slots .slot-row { display:flex; align-items:center; gap:10px; }
+  #project-slots .slot-row button { margin-left:auto; }
+  .new-slot { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  /* The project's assets: what it is made of, with the names a person gave. */
+  .asset-list { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+  .asset-row { display:grid; gap:6px; border:var(--border-width-regular) solid var(--line);
+    border-radius:var(--border-radius-lg); padding:10px 12px; }
+  .asset-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .asset-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .asset-actions input { min-width:0; flex:1 1 160px; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:6px; }
+  .asset-actions audio { height:32px; }
+  .asset-actions img { max-height:64px; border-radius:var(--border-radius-md); }
+  .bring-asset { display:grid; gap:4px; margin-top:10px; }
+  /* A panel that failed says so where it is, instead of blanking the page. */
+  .panel-failed { padding:24px; display:grid; gap:10px; align-content:start; }
+  .panel-failed button { justify-self:start; }
+  .new-slot input,.new-slot select { min-width:0; flex:1 1 140px; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; }
+  /* Why a unit exists, beside the unit itself. The state colour repeats the
+     axis vocabulary so a stale pin reads the same everywhere. */
+  .provenance-block { display:grid; gap:8px; margin:6px 0 0; }
+  .provenance { border-left:calc(var(--border-width-regular) * 2) solid var(--line); padding:2px 0 2px 8px; display:grid; gap:2px; }
+  .provenance[data-state="current"] { border-left-color:var(--accent2); }
+  .provenance[data-state="stale"] { border-left-color:var(--color-text-warning); }
+  .provenance[data-state^="unresolved"] { border-left-color:var(--bad); }
+  .provenance-state { color:var(--muted); font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.06em; }
+  .provenance-claim { margin:0; }
+  .provenance-quote { margin:0; padding-left:8px; border-left:calc(var(--border-width-regular) * 2) solid var(--color-border-primary);
+    color:var(--muted); font-style:italic; }
+  .provenance-caveat { display:block; }
+  .provenance-debt { margin:6px 0 0; }
+  .rows { display:grid; gap:6px; }
+  .branch-card { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:12px; margin-bottom:10px; cursor:pointer; }
+  .branch-card.active { border-color:var(--accent2); }
+  .branch-card header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+  .branch-card .roots { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+  .root { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); color:var(--muted); }
+  .decision { font-weight:700; }
+  .decision-accepted { color:var(--accent); }
+  .decision-rejected,.decision-blocked { color:var(--bad); }
+  .obligations { margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:var(--font-text-sm-size); }
+  .bad { color:var(--bad); min-height:1.4em; }
+  #viewing,#agent-context { display:grid; gap:4px; padding:8px 0; }
+  .rail,.context { background:var(--panel); overflow:auto; }
+  .rail { border-right:var(--border-width-regular) solid var(--line); padding:18px; }
+  .new-project { display:grid; gap:6px; margin:8px 0 12px; }
+  .new-project input,.new-project textarea,.new-project select { width:100%; min-width:0; box-sizing:border-box; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; font:inherit; }
+  #new-project-seed-summary { margin:0; font-size:var(--font-text-xs-size); }
+  /* Packages: what this SWEM can do at all, and how to give it more. It sits
+     under the projects because a domain is not a thing of one project. */
+  /* Everything here holds a path, a url or a digest, none of which break at
+     spaces. Without min-width:0 and a break rule one of them widens the rail
+     and pushes its own Install button off the side of the screen. */
+  #packages { margin-top:16px; min-width:0; }
+  #packages > summary { cursor:pointer; color:var(--muted); font-size:var(--font-text-sm-size); }
+  .packages-body { display:grid; gap:8px; margin-top:8px; min-width:0; }
+  .package-row { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
+  .package-row[data-refused="true"] { border-color:var(--bad); }
+  .package-source { display:grid; gap:6px; min-width:0; }
+  .package-source input,.package-source select { width:100%; min-width:0; box-sizing:border-box; color:var(--text);
+    background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md);
+    padding:7px; font:inherit; }
+  /* The one thing in this panel that is not a field and not a row: what the
+     host says when it refuses. A mismatched digest is answered with both
+     digests in it, 64 characters each and no break in either, and this line
+     had no break rule - so the sentence ran off the rail, the panel grew to
+     the width of the text, and the full-width button the person had to press
+     again was stretched with it, label and middle off the side of the screen.
+     Nothing had ever made this line long. */
+  #packages-status { min-width:0; overflow-wrap:anywhere; }
+  /* The plan is what the person consents to, so it is read before the button
+     that acts on it, not summarised beside it. */
+  .package-plan { display:grid; gap:6px; min-width:0; padding:8px 10px;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
+  .package-plan p { margin:0; overflow-wrap:anywhere; }
+  .package-plan code { overflow-wrap:anywhere; word-break:break-all; font-size:var(--font-text-xs-size); }
+  /* Recipes: what the installed packages say to do with a project like this
+     one. A row is read before it is run, so the steps sit above the button. */
+  #recipes { min-width:0; }
+  .recipes-body { display:grid; gap:10px; margin-top:8px; min-width:0; }
+  .recipe-row { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:start; min-width:0;
+    padding:8px 10px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
+  .recipe-row p { margin:2px 0 0; overflow-wrap:anywhere; }
+  .recipe-steps { margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:var(--font-text-xs-size); }
+  .recipe-run-report { margin-top:10px; padding:8px 10px; min-width:0; overflow-wrap:anywhere;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
+  .recipe-run-report[data-completed="false"] { border-color:var(--bad); }
+  .recipe-run-report li[data-outcome="not run"] { color:var(--muted); }
+  .context { border-left:var(--border-width-regular) solid var(--line); padding:18px; }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:24px; font-weight:800; letter-spacing:.12em; }
+  .brand-mark { width:26px; height:26px; border-radius:var(--border-radius-md); background:linear-gradient(135deg,var(--accent),var(--accent2)); }
+  #profiles { width:100%; color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:.65rem; }
+  .session-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:8px; }
+  /* One installed agent can hold several profiles, one per person. The rail
+     asks for a name before it makes one, so the select never grows a row
+     nobody can tell apart. */
+  .add-profile-open { width:100%; margin-top:6px; text-align:left; }
+  .add-profile { display:grid; gap:6px; margin-top:6px; }
+  /* The sessions this agent already has: a person continues one rather than
+     remembering a route id. */
+  .sessions { display:grid; gap:6px; margin-top:14px; }
+  .session-row { width:100%; text-align:left; display:grid; gap:2px; }
+  .session-name { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #open-new { grid-column:1/-1; }
+  .main { min-width:0; min-height:0; display:flex; flex-direction:column; }
+  /* Configuring an agent, signing it in and talking to it are three panels of
+     one space, so the header carries the choice between them. */
+  .agent-panels { display:flex; gap:4px; margin-left:16px; }
+  .agent-panels button { padding:.35rem .7rem; font-size:var(--font-text-sm-size); }
+  /* Standing instructions: what an agent does when nobody asks it to. */
+  .schedule-list { display:grid; gap:8px; margin:6px 0; padding:0; list-style:none; }
+  .schedule-row { display:grid; gap:2px; padding:8px 10px;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
+  .schedule-row button { justify-self:start; }
+  .schedule-new { display:grid; gap:6px; }
+  /* Inbox and outbox: two lists of files in the agent's own workspace. */
+  .files-panel { flex:1 1 auto; min-height:0; overflow:auto; padding:18px 22px; display:grid; gap:18px; align-content:start; }
+  .files-panel .panel-header { display:flex; align-items:baseline; gap:12px; }
+  .files-area { display:grid; gap:4px; }
+  .files-list { margin:4px 0 0; padding-left:18px; display:grid; gap:3px; }
+  .environment,.terminal-panel { flex:1 1 auto; min-height:0; overflow:auto; padding:18px 22px; display:grid; gap:10px; align-content:start; }
+  .environment .field { display:grid; gap:4px; }
+  .environment input,.environment select { width:100%; min-width:0; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:8px; }
+  .environment button { justify-self:start; }
+  .server-list { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+  .server-row { display:grid; gap:2px; border:var(--border-width-regular) solid var(--line);
+    border-radius:var(--border-radius-lg); padding:8px 10px; }
+  .server-row label { display:flex; align-items:center; gap:8px; }
+  .server-row input[type="checkbox"] { width:auto; }
+  .server-row .server-forget { justify-self:end; margin-top:4px; padding:.3rem .6rem; font-size:var(--font-text-sm-size); }
+  .server-row[data-origin="project"] { border-left:calc(var(--border-width-regular) * 3) solid var(--accent2); }
+  .declare-server { display:grid; gap:8px; border:var(--border-width-regular) solid var(--line);
+    border-radius:var(--border-radius-lg); padding:10px; background:var(--panel); }
+  .declare-server .pair { display:flex; gap:8px; }
+  /* The terminal owns its own screen; the panel only gives it room. */
+  .terminal-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .terminal-list { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+  .terminal-list li { display:flex; align-items:center; gap:8px; font-size:var(--font-size-sm); color:var(--muted); }
+  .terminal-list li[aria-current="true"] { color:var(--fg); font-weight:600; }
+  .terminal-screen { flex:1 1 auto; min-height:360px; border:var(--border-width-regular) solid var(--line);
+    border-radius:var(--border-radius-lg); background:var(--bg); padding:8px; overflow:hidden; }
+  .main-header { height:64px; border-bottom:var(--border-width-regular) solid var(--line); display:flex; align-items:center;
+    justify-content:space-between; padding:0 22px; }
+  .status { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  #empty-state { margin:auto; width:min(580px,calc(100% - 40px)); text-align:center; }
+  #empty-state h1 { font:var(--font-weight-bold) var(--font-heading-3xl-size)/var(--font-heading-3xl-line-height) var(--font-sans);
+    margin:0 0 12px; letter-spacing:var(--k-tracking-display); }
+  #empty-state p { color:var(--muted); margin:0 auto 24px; max-width:480px; }
+  #agent-options { display:grid; gap:9px; text-align:left; }
+  .agent-option { display:flex; align-items:center; justify-content:space-between; gap:14px;
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); padding:13px; }
+  .agent-option small { display:block; color:var(--muted); }
+  #onboarding-status,#close-error { color:var(--bad); margin-top:10px; min-height:1.4em; }
+  #conversation { flex:1; overflow:auto; padding:28px max(24px,calc((100% - 760px)/2)); }
+  .message { margin:0 0 20px; }
+  .message-label { color:var(--muted); font-size:var(--font-text-xs-size); text-transform:uppercase; letter-spacing:.1em; margin-bottom:6px; }
+  .message-body { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--font-text-lg-size); }
+  .message.user .message-body { color:var(--text); }
+  .message.thought { opacity:.68; }
+  .composer-wrap { padding:14px max(20px,calc((100% - 800px)/2)) 22px; }
+  .composer { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); padding:12px; box-shadow:var(--shadow-md); }
+  #prompt-text { display:block; width:100%; min-height:70px; resize:none; border:0; outline:0;
+    color:var(--text); background:transparent; }
+  .composer-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .writing-as { margin-left:auto; max-width:14rem; }
+  #attachment-list { color:var(--muted); font-size:var(--font-text-sm-size); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #file-input { display:none; }
+  .attach-label { cursor:pointer; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:.5rem .7rem; }
+  #permission { position:fixed; inset:0; z-index:20; display:none; place-items:center; background:var(--k-scrim); }
+  .permission-card { width:min(520px,calc(100% - 36px)); border:var(--border-width-regular) solid var(--color-border-primary); border-radius:var(--border-radius-lg);
+    background:var(--panel); padding:20px; box-shadow:var(--shadow-lg); }
+  #permission-options { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+  #elicitation { position:fixed; inset:0; z-index:21; display:none; place-items:center; background:var(--k-scrim); }
+  .elicitation-card { width:min(620px,calc(100% - 36px)); max-height:calc(100vh - 36px); overflow:auto;
+    border:var(--border-width-regular) solid var(--color-border-primary); border-radius:var(--border-radius-lg); background:var(--panel); padding:20px; box-shadow:var(--shadow-lg); }
+  #elicitation-context,#elicitation-message,#elicitation-error { overflow-wrap:anywhere; }
+  #elicitation-context { color:var(--muted); font:var(--font-text-sm-size)/var(--font-text-sm-line-height) var(--font-mono); }
+  #elicitation-message { margin:12px 0; }
+  #elicitation-error { color:var(--bad); min-height:1.4em; }
+  #elicitation-fields { display:grid; gap:10px; }
+  .elicitation-field { display:grid; gap:4px; }
+  .elicitation-field small { color:var(--muted); }
+  .elicitation-field input,.elicitation-field select { width:100%; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:8px; }
+  .elicitation-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+  .context h2 { margin:0; font-size:var(--font-text-lg-size); }
+  #apps-list { display:grid; gap:8px; margin:12px 0; }
+  #app-container iframe { width:100%; min-height:420px; border:0; border-radius:var(--border-radius-lg); background:var(--bg); }
+  details { color:var(--muted); margin-top:16px; }
+  details pre,#events { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+  #events { max-height:240px; overflow:auto; padding-left:24px; }
+  .artifact-card img,.artifact-card video { display:block; max-width:100%; max-height:360px; margin:.55rem 0; }
+  .artifact-card audio { display:block; width:100%; margin:.55rem 0; }
+  .artifact-actions { display:flex; gap:.75rem; font-size:var(--font-text-sm-size); }
+  /* The dev drawer: what the page carries for whoever builds it, under the
+     Dev switch on the bar. A drawer over the bottom edge rather than a column,
+     because it belongs to no one column, and hidden rather than absent,
+     because the walks read its ids by text and value. */
+  /* The selected profile on the rail: whose agent, what it runs on, its role's
+     first line, and whether a session is open on it. */
+  .profile-card { display:grid; gap:4px; padding:8px 10px; margin:6px 0; }
+  /* Setup: the role and a skill's body are paragraphs, not one-line fields. */
+  .environment textarea { width:100%; min-width:0; box-sizing:border-box; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; font:inherit; resize:vertical; }
+  .provider-row,.skill-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .provider-row .k-caption,.skill-row .k-caption { flex-basis:100%; }
+  .profile-card-head { display:flex; align-items:center; gap:8px; }
+  .profile-card-line { display:flex; align-items:center; gap:8px; }
+  .profile-card-role { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Over the conversation: the session's model, its mode, its usage and the
+     agent's plan - all the agent's own words, read from the session. */
+  .conversation-header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:8px 22px;
+    border-bottom:var(--border-width-regular) solid var(--line); color:var(--muted); font-size:var(--font-text-sm-size); }
+  .conversation-model { display:flex; align-items:center; gap:6px; }
+  .conversation-model select { color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:4px 6px; font:inherit; }
+  .session-mode { cursor:pointer; font:inherit; font-size:var(--font-text-xs-size); }
+  .session-plan { margin:0; flex-basis:100%; color:var(--muted); }
+  .session-plan > summary { cursor:pointer; }
+  #plan { margin:4px 0 0; padding-left:20px; }
+  #plan li[data-status="completed"] { text-decoration:line-through; opacity:.7; }
+  #plan li[data-status="in_progress"] { color:var(--text); }
+  /* A tool the agent used: title and status on one line, the rest folded. */
+  .tool-card { margin:6px 0; padding:8px 12px; }
+  .tool-card-head { display:flex; align-items:center; gap:8px; }
+  .tool-card-title { font-size:var(--font-text-sm-size); color:var(--text); overflow:hidden; text-overflow:ellipsis; }
+  .tool-card-status { margin-left:auto; font-size:var(--font-text-xs-size); }
+  .tool-card[data-status="failed"] { border-color:var(--bad); }
+  .tool-card[data-status="in_progress"] { border-color:var(--accent2); }
+  .tool-card-detail { margin-top:4px; }
+  .tool-card-detail pre { margin:4px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); }
+  /* The slash commands the agent offers, over the draft while it starts with "/". */
+  .composer { position:relative; }
+  .commands { position:absolute; left:0; right:0; bottom:100%; margin:0 0 6px; padding:4px; list-style:none; z-index:5; max-height:240px; overflow:auto; }
+  .command-row { display:flex; gap:8px; width:100%; text-align:left; background:transparent; border:0; padding:6px 8px; font:inherit; color:var(--text); cursor:pointer; border-radius:var(--border-radius-md); }
+  .command-row:hover,.command-row:focus { background:var(--bg); }
+  .dev-toggle { margin-left:8px; font-size:var(--font-text-xs-size); }
+  .dev-toggle[aria-pressed="true"] { color:var(--on-accent); background:var(--accent); border-color:var(--accent); }
+  .dev-panel { position:fixed; right:0; bottom:0; left:0; max-height:40vh; overflow:auto; padding:10px 18px; z-index:20;
+    color:var(--muted); background:var(--panel); border-top:var(--border-width-regular) solid var(--line); box-shadow:var(--shadow-lg); }
+  .dev-panel-columns { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
+  .dev-panel pre { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0; }
+  .legacy-inputs { display:grid; gap:6px; margin-top:8px; }
+  .legacy-inputs input,#route-id { min-width:0; color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; }
+  #terminal { color:var(--bad); margin-top:8px; min-height:1.4em; }
+  #terminal[data-status="finished"] { color:var(--muted); }
+  /* Access: the sign-in flow the agent's own handshake describes. */
+  .auth-card { margin-top:12px; display:grid; gap:8px; }
+  .auth-card[data-needs-auth="true"] { outline:calc(var(--border-width-regular) * 2) solid var(--color-text-warning); outline-offset:6px; border-radius:var(--border-radius-md); }
+  .auth-hint { color:var(--color-text-warning); font-size:var(--font-text-sm-size); }
+  #auth-status { color:var(--muted); font-size:var(--font-text-sm-size); }
+  #auth-methods { display:grid; gap:8px; }
+  .auth-method { display:grid; gap:6px; padding:10px; }
+  .auth-method-title { display:flex; align-items:center; gap:8px; cursor:pointer; }
+  .auth-method small,.auth-var small,.vault small { color:var(--muted); }
+  .auth-var { display:grid; grid-template-columns:minmax(0,1fr); gap:4px; }
+  .auth-var label { display:block; }
+  .auth-var code,.secret-entry code { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); color:var(--muted); margin-left:6px; }
+  .auth-var-row { display:flex; gap:6px; min-width:0; }
+  .auth-var input,.secret-add input,.secret-add select { min-width:0; flex:1; color:var(--text); background:var(--bg);
+    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; }
+  .auth-terminal pre { margin:4px 0 0; padding:8px; border-radius:var(--border-radius-md); background:var(--bg); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .vault { margin-top:4px; }
+  #secret-list { list-style:none; margin:8px 0; padding:0; display:grid; gap:6px; }
+  .secret-entry { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .secret-add { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; }
+  #turn-outcome { color:var(--muted); font-size:var(--font-text-sm-size); }
+  @media (max-width:1000px) { .agent-space,.project-space,.store-space { grid-template-columns:220px 1fr; }
+    .project-space { grid-template-areas:"nav home" "collab collab" "activity activity"; grid-template-rows:minmax(0,1fr) auto auto; }
+    .agent-space .context { display:none; } }
+  @media (max-width:680px) { body { overflow:auto; } .app-shell { height:auto; min-height:100vh; }
+    .agent-space,.project-space { display:block; height:auto; }
+    .rail { border:0; border-bottom:var(--border-width-regular) solid var(--line); } .main { min-height:75vh; } }
+</style>
+</head>
+<body>
+<!-- The shell is a projection of the host route ledger and driver commands.
+     It stores no conversation of its own: the only position is the durable
+     surface cursor, and the browser never sees the native session id. -->
+<div id="workbench-root"></div>
+<script src="/workbench.js"></script>
+</body>
+</html>

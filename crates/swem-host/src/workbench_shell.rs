@@ -1,0 +1,6133 @@
+//! Minimal generic Workbench browser shell (implementation.typ, "Следующая
+//! автономная итерация" before H1).
+//!
+//! The shell is a thin product boundary over three already-proven seams:
+//! profile selection ([`PersonalAgentProfileStore`]), the interactive driver
+//! ([`run_interactive_native_session`] + [`NativeSessionControl`]) and the
+//! durable surface projection ([`RoutingLedger`] cursors fed by
+//! [`project_native_session_events`]). Every HTTP endpoint is a projection of
+//! a ledger read or a driver command; there is no second ACP JSON-RPC wire,
+//! no second conversation history and no knowledge of any agent, Cycle or
+//! domain schema. The browser never carries the native session id - reconnect
+//! is route binding plus `session/load`/`session/resume`, host-side.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use agent_client_protocol::schema::v1::{
+    ContentBlock, ElicitationAction as AcpElicitationAction, ElicitationCapabilities,
+    ElicitationFormCapabilities, ElicitationUrlCapabilities, EmbeddedResourceResource,
+    FileSystemCapabilities, McpServer,
+};
+use base64::Engine as _;
+use futures_util::TryStreamExt as _;
+use http_body_util::{BodyExt as _, Full, StreamBody};
+use hyper::body::{Bytes, Frame};
+use hyper::{Method, Request, Response, StatusCode};
+use rmcp::model::{ElicitationAction, JsonObject};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _, SeekFrom};
+use tokio_util::io::ReaderStream;
+
+use crate::routing::{NativeOutputProjectionRequest, project_native_session_events_with_output};
+use crate::workbench_apps::{self, ConnectionApps, OpenApp, OpenedApp, RelayRefusal};
+#[path = "workbench_shell/agent_environment.rs"]
+mod agent_environment;
+#[path = "workbench_shell/mcp_servers.rs"]
+mod mcp_servers;
+mod model_providers;
+pub use model_providers::{
+    DeclareModelProviderBody, MODEL_PROVIDER_SCHEMA, ModelChoice, ModelProvider, ModelProviderBook,
+    ModelProviderOrigin, ModelProviderView,
+};
+#[path = "workbench_shell/project_apps.rs"]
+mod project_apps;
+mod project_tools;
+mod recipes;
+pub use recipes::{RecipeRun, RecipeStepRun, RecipeView};
+#[path = "workbench_shell/schedules.rs"]
+mod schedules;
+mod store;
+pub use schedules::{SCHEDULE_SURFACE, Schedule, ScheduleBook, SetScheduleBody};
+#[path = "workbench_shell/terminal.rs"]
+mod terminal;
+use crate::workbench_content::{
+    WorkbenchContentDescriptor, WorkbenchContentSource, WorkbenchContentStore,
+};
+use crate::workbench_observation::{
+    ObservationIngress, ObservationRuntime, ObservedAppCall, ObserverCommand,
+};
+use crate::workbench_project::{
+    self, AgentContextBinding, BindAgentContextBody, EnvelopeRead, MaterializeArtifactBody,
+    ProjectSourceView, ProjectSources,
+};
+use crate::{
+    CredentialSourceRef, EnvironmentLease, EnvironmentRequirements, EnvironmentTransport,
+    LaunchCommand, NativeOutputProjection, NativeSessionControl, NativeSessionOptions,
+    NativeSessionOutcome, NativeSessionStart, NativeTurnOutcome, PersonalAgentProfile,
+    PersonalAgentProfileStore, ProfileError, Readiness, ResolvedMcpAttachment, RoutingLedger,
+    SessionRouteBinding, SupplyError, SurfaceEventBatch, SurfaceEventSource,
+    direct_environment_lease, run_interactive_native_session,
+};
+pub use agent_environment::{AmendProfileBody, TerminalInputBody, TerminalSizeBody};
+pub use mcp_servers::{
+    DeclareMcpServerBody, McpCatalogue, McpServerOrigin, McpServerView, NamedValue,
+};
+pub use store::{
+    ACP_REGISTRY_CACHE, AddIndexBody, ArchiveDistribution, BinaryDistribution, CATALOG_SCHEMA,
+    Catalog, CatalogDistribution, CatalogEntry, INDEX_SCHEMA, IndexFile, InstalledSkill,
+    NpxDistribution, RegistryStatus, StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody,
+    StoreView,
+};
+pub(crate) use terminal::working_directory;
+pub use terminal::{
+    ExitReport, OpenTerminalBody, TerminalOpener, TerminalOutput, TerminalView, Terminals,
+};
+
+/// A config option's value as a person's form sends it: a boolean for a
+/// toggle, a string for a choice, or the wire shape itself.
+fn config_value_of(
+    value: &Value,
+) -> Result<agent_client_protocol::schema::v1::SessionConfigOptionValue, WorkbenchShellError> {
+    use agent_client_protocol::schema::v1::{SessionConfigOptionValue, SessionConfigValueId};
+    match value {
+        Value::Bool(value) => Ok(SessionConfigOptionValue::Boolean { value: *value }),
+        Value::String(value) => Ok(SessionConfigOptionValue::ValueId {
+            value: SessionConfigValueId::new(value.as_str()),
+        }),
+        other => serde_json::from_value(other.clone()).map_err(|error| {
+            WorkbenchShellError::Invalid(format!("not a config option value: {error}"))
+        }),
+    }
+}
+
+/// Offer the profile's model to the agent through `session/set_config_option`
+/// when the agent lists it, and say what came of it.
+///
+/// A value the agent did not advertise is never sent: the control refuses it
+/// first, and a refusal on the wire would end the session. A model the agent
+/// does not offer is not a failure of the open - the agent runs with its own,
+/// and the sentence says so.
+async fn apply_profile_model(control: &crate::NativeSessionControl, model: &str) -> String {
+    use agent_client_protocol::schema::v1::{
+        SessionConfigKind, SessionConfigOptionCategory, SessionConfigOptionValue,
+        SessionConfigSelectOptions, SessionConfigValueId,
+    };
+    let configuration = control.configuration().await;
+    let Some(options) = configuration.config_options else {
+        return "this agent offers no model choice on the session; it runs with its own".into();
+    };
+    let wanted = model.rsplit('/').next().unwrap_or(model);
+    let listed = options.iter().find(|option| {
+        matches!(option.category, Some(SessionConfigOptionCategory::Model))
+            && match &option.kind {
+                SessionConfigKind::Select(select) => {
+                    let choices: Vec<&str> = match &select.options {
+                        SessionConfigSelectOptions::Ungrouped(choices) => choices
+                            .iter()
+                            .map(|choice| choice.value.0.as_ref())
+                            .collect(),
+                        SessionConfigSelectOptions::Grouped(groups) => groups
+                            .iter()
+                            .flat_map(|group| group.options.iter())
+                            .map(|choice| choice.value.0.as_ref())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    choices.contains(&model) || choices.contains(&wanted)
+                }
+                _ => false,
+            }
+    });
+    let Some(option) = listed else {
+        return format!("this agent does not offer the model {model}; it runs with its own");
+    };
+    let value = match &option.kind {
+        SessionConfigKind::Select(select) => match &select.options {
+            SessionConfigSelectOptions::Ungrouped(choices)
+                if choices
+                    .iter()
+                    .any(|choice| choice.value.0.as_ref() == model) =>
+            {
+                model
+            }
+            SessionConfigSelectOptions::Grouped(groups)
+                if groups
+                    .iter()
+                    .flat_map(|group| group.options.iter())
+                    .any(|choice| choice.value.0.as_ref() == model) =>
+            {
+                model
+            }
+            _ => wanted,
+        },
+        _ => wanted,
+    };
+    match control
+        .set_config_option(
+            option.id.0.as_ref(),
+            SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new(value),
+            },
+        )
+        .await
+    {
+        Ok(_) => format!("model {value} set on the session"),
+        Err(error) => format!("the agent refused the model {value}: {error}"),
+    }
+}
+
+/// The process environment a direct connection adds to the filtered bootstrap
+/// set: the secrets a person gave the profile (what an `env_var`
+/// authentication method asks for) plus the profile's credential bindings,
+/// each read from its source variable of THIS host process and handed to the
+/// agent under its declared target name. The prepared (container) path materializes the same bindings
+/// as runtime secrets; the direct path had no equivalent, so a profile that
+/// needs a token could never authenticate through the shell. Values are never
+/// recorded: the session ledger keeps override names only.
+///
+/// # Errors
+///
+/// Fails closed when a bound source variable is absent or empty.
+pub fn credential_environment(
+    profile: &PersonalAgentProfile,
+    secrets: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, WorkbenchShellError> {
+    // What the person typed into the profile comes first; a host-side
+    // binding for the same name is the operator's decision and wins.
+    let mut environment = secrets;
+    for binding in &profile.credential_bindings {
+        let CredentialSourceRef::EnvironmentVariable { name } = &binding.source;
+        let value = std::env::var(name).map_err(|_| {
+            WorkbenchShellError::Failed(format!(
+                "credential binding {} needs the host environment variable {name}",
+                binding.binding_id
+            ))
+        })?;
+        if value.is_empty() {
+            return Err(WorkbenchShellError::Failed(format!(
+                "credential binding {} found the host environment variable {name} empty",
+                binding.binding_id
+            )));
+        }
+        environment.insert(binding.target_environment.clone(), value);
+    }
+    Ok(environment)
+}
+
+/// The static shell page served at `/`. It knows profile/route/driver/event
+/// vocabulary only; agents, Cycle, Telegram and domain schemas never appear.
+/// How often the host re-reads a watched project's digest. Short enough that a
+/// human sees an agent's edit land while still looking at it, long enough that
+/// an idle project is not re-derived continuously.
+const PROJECT_WATCH_INTERVAL: Duration = Duration::from_millis(700);
+
+const SHELL_HTML: &str = include_str!("workbench_shell/shell.html");
+/// The shared view kit: one stylesheet the shell and every domain App render
+/// from. It lives at the repository root rather than inside this crate because
+/// the host and the domain modules are peers that both consume it.
+const KIT_CSS: &str = include_str!("../../../web/view-kit/kit.css");
+/// SWEM's own values for the host-style vocabulary, in both themes. The shell
+/// is a host, so these are what it sends across the sandbox; an App inlines the
+/// same file so it has values before any host context arrives.
+const PALETTE_CSS: &str = include_str!("../../../web/view-kit/palette.css");
+
+/// The production-built Workbench shell is compiled into the Rust binary.
+/// Node is a source-build dependency, never a product runtime dependency.
+const WORKBENCH_JS: &str = include_str!("../web/apps-host/dist/workbench.js");
+
+/// Connection-local launch material for a profile resolved to a direct
+/// process. The CLI resolves through agent discovery; tests resolve to fixture
+/// binaries. The durable profile never stores commands, so this value exists
+/// only for the lifetime of one open connection.
+#[derive(Clone, Debug)]
+pub struct ResolvedDirectAgentConnection {
+    pub launch: LaunchCommand,
+    pub agent_executable: PathBuf,
+    /// Connection-local MCP declarations. Every durable profile attachment
+    /// must be resolved by `server_name`; the shell fails closed otherwise.
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// Environment selected by the product resolver for one Workbench connection.
+/// A prepared environment is already bound to one exact lease and transport;
+/// Workbench must neither reconstruct nor weaken either value.
+#[derive(Clone, Debug)]
+pub enum ResolvedAgentEnvironment {
+    Direct,
+    Prepared {
+        environment_profile_id: String,
+        lease: Box<EnvironmentLease>,
+        transport: Box<EnvironmentTransport>,
+    },
+}
+
+/// Connection-local native agent launch after supply, environment and MCP
+/// profile resolution. It contains no durable session state or secret value.
+#[derive(Clone, Debug)]
+pub struct ResolvedAgentConnection {
+    pub launch: LaunchCommand,
+    pub agent_executable: PathBuf,
+    pub mcp_servers: Vec<McpServer>,
+    pub environment: ResolvedAgentEnvironment,
+}
+
+impl From<ResolvedDirectAgentConnection> for ResolvedAgentConnection {
+    fn from(connection: ResolvedDirectAgentConnection) -> Self {
+        Self {
+            launch: connection.launch,
+            agent_executable: connection.agent_executable,
+            mcp_servers: connection.mcp_servers,
+            environment: ResolvedAgentEnvironment::Direct,
+        }
+    }
+}
+
+/// How the shell reports a failed operation to its HTTP layer and tests.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkbenchShellError {
+    /// Unknown profile, connection or route.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// The operation is well-formed but refused (unsupported close, binding
+    /// drift, invalid permission option). The connection stays usable.
+    #[error("conflict: {0}")]
+    Conflict(String),
+    /// Malformed input.
+    #[error("invalid request: {0}")]
+    Invalid(String),
+    /// The underlying session/ledger failed.
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl WorkbenchShellError {
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Invalid(_) => StatusCode::BAD_REQUEST,
+            Self::Failed(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+}
+
+type Resolver =
+    dyn Fn(&PersonalAgentProfile) -> Result<ResolvedAgentConnection, String> + Send + Sync;
+
+#[derive(Default)]
+struct ArtifactTurnProjection {
+    capture: WorkbenchArtifactCapture,
+    seen: BTreeSet<String>,
+    complete: bool,
+}
+
+#[derive(Default)]
+struct ArtifactProjectionState {
+    turns: BTreeMap<usize, ArtifactTurnProjection>,
+    closed: bool,
+}
+
+#[derive(Clone)]
+struct WorkbenchArtifactProjector {
+    content: WorkbenchContentStore,
+    ledger_path: PathBuf,
+    route_id: String,
+    agent_id: String,
+    environment_lease: EnvironmentLease,
+    event_namespace: String,
+    next_event: Arc<AtomicU64>,
+    state: Arc<tokio::sync::Mutex<ArtifactProjectionState>>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl WorkbenchArtifactProjector {
+    async fn run(
+        self,
+        mut input: tokio::sync::mpsc::UnboundedReceiver<NativeOutputProjectionRequest>,
+    ) {
+        while let Some(request) = input.recv().await {
+            match request.projection.clone() {
+                NativeOutputProjection::Content {
+                    turn_index,
+                    ordinal,
+                    content,
+                } => self.project_content(turn_index, ordinal, &content).await,
+                NativeOutputProjection::TurnComplete { turn_index } => {
+                    self.state
+                        .lock()
+                        .await
+                        .turns
+                        .entry(turn_index)
+                        .or_default()
+                        .complete = true;
+                    self.changed.notify_waiters();
+                }
+            }
+            request.acknowledge();
+        }
+        self.state.lock().await.closed = true;
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_turn(&self, turn_index: usize) -> WorkbenchArtifactCapture {
+        loop {
+            let changed = self.changed.notified();
+            {
+                let mut state = self.state.lock().await;
+                if state
+                    .turns
+                    .get(&turn_index)
+                    .is_some_and(|turn| turn.complete)
+                {
+                    return state
+                        .turns
+                        .remove(&turn_index)
+                        .map_or_else(WorkbenchArtifactCapture::default, |turn| turn.capture);
+                }
+                if state.closed {
+                    let mut capture = state
+                        .turns
+                        .remove(&turn_index)
+                        .map_or_else(WorkbenchArtifactCapture::default, |turn| turn.capture);
+                    capture.issues.push(WorkbenchArtifactIssue::new(
+                        format!("turn-{turn_index}"),
+                        None,
+                        "artifact_projection_incomplete",
+                    ));
+                    return capture;
+                }
+            }
+            changed.await;
+        }
+    }
+
+    async fn project_content(&self, turn_index: usize, ordinal: usize, block: &ContentBlock) {
+        let Some(captured) = self.capture_content_block(ordinal, block).await else {
+            return;
+        };
+        match captured {
+            Ok(descriptor) => {
+                let is_new = self
+                    .state
+                    .lock()
+                    .await
+                    .turns
+                    .entry(turn_index)
+                    .or_default()
+                    .seen
+                    .insert(descriptor.descriptor_id.clone());
+                if !is_new {
+                    return;
+                }
+                let projected = self
+                    .record_artifact_event(
+                        "host/artifact_available",
+                        turn_index,
+                        ordinal,
+                        &descriptor,
+                    )
+                    .await;
+                let mut state = self.state.lock().await;
+                let turn = state.turns.entry(turn_index).or_default();
+                if projected.is_err() {
+                    turn.capture.issues.push(WorkbenchArtifactIssue::new(
+                        descriptor.name.clone(),
+                        Some(descriptor.media_type.clone()),
+                        "route_projection_failed",
+                    ));
+                }
+                turn.capture.artifacts.push(descriptor);
+            }
+            Err(issue) => {
+                let _ = self
+                    .record_artifact_event("host/artifact_unavailable", turn_index, ordinal, &issue)
+                    .await;
+                self.state
+                    .lock()
+                    .await
+                    .turns
+                    .entry(turn_index)
+                    .or_default()
+                    .capture
+                    .issues
+                    .push(issue);
+            }
+        }
+    }
+
+    async fn capture_content_block(
+        &self,
+        index: usize,
+        block: &ContentBlock,
+    ) -> Option<CapturedArtifact> {
+        match block {
+            ContentBlock::Image(image) => {
+                let fallback = format!("agent-image-{}", index + 1);
+                let name = image.uri.as_deref().map_or_else(
+                    || fallback.clone(),
+                    |uri| content_name_from_uri(uri, &fallback),
+                );
+                Some(
+                    self.capture_encoded_content(&image.data, name, image.mime_type.clone())
+                        .await,
+                )
+            }
+            ContentBlock::Audio(audio) => Some(
+                self.capture_encoded_content(
+                    &audio.data,
+                    format!("agent-audio-{}", index + 1),
+                    audio.mime_type.clone(),
+                )
+                .await,
+            ),
+            ContentBlock::ResourceLink(resource) => Some(
+                match self
+                    .environment_lease
+                    .resolve_workspace_file_uri(&resource.uri)
+                {
+                    // The inbox holds what a person handed over. An agent
+                    // naming one of those files is quoting the person, not
+                    // producing an artifact, and recording it as agent output
+                    // would put the person's own file in the record under the
+                    // agent's name. Everything else in the workspace is the
+                    // agent's to hand back.
+                    Ok(requested)
+                        if requested.starts_with(
+                            self.environment_lease
+                                .workspace
+                                .join(crate::workbench_files::INBOX),
+                        ) =>
+                    {
+                        return None;
+                    }
+                    Ok(requested) => self
+                        .content
+                        .ingest_workspace_link(
+                            resource,
+                            &self.environment_lease.workspace,
+                            &requested,
+                            self.agent_id.clone(),
+                        )
+                        .await
+                        .map_err(|error| {
+                            let reason = match error {
+                                WorkbenchShellError::Invalid(_)
+                                | WorkbenchShellError::NotFound(_) => "resource_link_unavailable",
+                                WorkbenchShellError::Conflict(_)
+                                | WorkbenchShellError::Failed(_) => "artifact_store_failed",
+                            };
+                            WorkbenchArtifactIssue::new(
+                                resource.name.clone(),
+                                resource.mime_type.clone(),
+                                reason,
+                            )
+                        }),
+                    Err(_) => Err(WorkbenchArtifactIssue::new(
+                        resource.name.clone(),
+                        resource.mime_type.clone(),
+                        "resource_link_unavailable",
+                    )),
+                },
+            ),
+            ContentBlock::Resource(resource) => match &resource.resource {
+                EmbeddedResourceResource::TextResourceContents(text) => {
+                    let name =
+                        content_name_from_uri(&text.uri, &format!("agent-resource-{}", index + 1));
+                    let media_type = text
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "text/plain;charset=utf-8".into());
+                    Some(
+                        self.capture_content_bytes(text.text.as_bytes(), name, media_type)
+                            .await,
+                    )
+                }
+                EmbeddedResourceResource::BlobResourceContents(blob) => {
+                    let name =
+                        content_name_from_uri(&blob.uri, &format!("agent-resource-{}", index + 1));
+                    let media_type = blob
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".into());
+                    Some(
+                        self.capture_encoded_content(&blob.blob, name, media_type)
+                            .await,
+                    )
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    async fn capture_encoded_content(
+        &self,
+        encoded: &str,
+        name: String,
+        media_type: String,
+    ) -> CapturedArtifact {
+        let bytes = decode_standard_base64(encoded).map_err(|_| {
+            WorkbenchArtifactIssue::new(
+                name.clone(),
+                Some(media_type.clone()),
+                "invalid_inline_content",
+            )
+        })?;
+        self.capture_content_bytes(&bytes, name, media_type).await
+    }
+
+    async fn capture_content_bytes(
+        &self,
+        bytes: &[u8],
+        name: String,
+        media_type: String,
+    ) -> CapturedArtifact {
+        self.content
+            .ingest_bytes(
+                bytes,
+                name.clone(),
+                media_type.clone(),
+                WorkbenchContentSource::AgentOutput,
+                self.agent_id.clone(),
+            )
+            .await
+            .map_err(|_| {
+                WorkbenchArtifactIssue::new(name, Some(media_type), "artifact_store_failed")
+            })
+    }
+
+    async fn record_artifact_event(
+        &self,
+        kind: &'static str,
+        turn_index: usize,
+        ordinal: usize,
+        payload: &impl Serialize,
+    ) -> Result<(), WorkbenchShellError> {
+        let event = self.next_event.fetch_add(1, Ordering::SeqCst);
+        let route = self.route_id.clone();
+        let event_id = format!("{}:artifact:{event}", self.event_namespace);
+        let mut payload = serde_json::to_value(payload)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        if let Value::Object(object) = &mut payload {
+            object.insert("turn_index".into(), json!(turn_index));
+            object.insert("content_ordinal".into(), json!(ordinal));
+        }
+        let ledger_path = self.ledger_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut ledger = RoutingLedger::open(&ledger_path)?;
+            ledger.append_event(&route, &event_id, kind, SurfaceEventSource::Host, &payload)
+        })
+        .await
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+        .map(|_| ())
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+}
+
+struct WorkbenchConnection {
+    control: NativeSessionControl,
+    route_id: String,
+    artifact_projector: WorkbenchArtifactProjector,
+    runner: tokio::sync::Mutex<
+        Option<tokio::task::JoinHandle<Result<NativeSessionOutcome, SupplyError>>>,
+    >,
+    projection: tokio::sync::Mutex<Option<crate::NativeRouteProjection>>,
+    artifact_projection: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Durable attachment identity paired with the connection-local MCP
+    /// declaration - the Apps host dials these with ITS OWN clients; the
+    /// agent's MCP children stay agent-owned.
+    attachments: Vec<ResolvedMcpAttachment>,
+    /// Lazily discovered Apps state (host-side clients, open registry).
+    apps: tokio::sync::Mutex<Option<ConnectionApps>>,
+    /// Exact agent-initiated App payloads. This state is never persisted and
+    /// is destroyed with the connection.
+    observation: tokio::sync::Mutex<Option<ObservationRuntime>>,
+    /// Idempotent observation-to-view binding. A retried long poll must not
+    /// create a second App instance for the same native tool call.
+    observed_apps: tokio::sync::Mutex<BTreeMap<String, OpenedApp>>,
+    /// Exact project refs the operator bound as the next turns' context.
+    /// Connection-local: it dies with the connection and is never restored
+    /// from the ledger (re-binding is an explicit act).
+    agent_context: tokio::sync::Mutex<Option<AgentContextBinding>>,
+    context_events: AtomicU64,
+    /// What the profile's setup came to on this connection, in sentences:
+    /// where the role went, which variable the model took, whether the agent
+    /// offered the model natively. Read off the connection's status.
+    setup_notes: tokio::sync::Mutex<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ObservedAppOpen {
+    pub opened: OpenedApp,
+    pub observation: ObservedAppCall,
+}
+
+/// The project changed: its record set is no longer the one the caller saw.
+///
+/// The digest is the Cycle's own `record_set_digest` - SHA-256 over the sorted
+/// set of record refs the envelope was derived from - so it answers exactly
+/// "is anything different?" and nothing else. The caller passes the last one it
+/// held back as `after`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ProjectChange {
+    pub record_set_digest: String,
+}
+
+/// One host-discovered agent shown by the first-run Workbench. Discovery is
+/// read-only; `available` only means that this host can attempt a native ACP
+/// launch. The handshake performed while opening a connection remains the
+/// authority for readiness.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkbenchAgentOption {
+    pub agent_id: String,
+    pub name: String,
+    pub readiness: Readiness,
+    pub available: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkbenchOnboarding {
+    pub enabled: bool,
+    pub agents: Vec<WorkbenchAgentOption>,
+}
+
+struct LocalOnboarding {
+    /// What this host knows is installed. Behind a lock because installing an
+    /// agent changes the answer while the product is running, and a person who
+    /// just pressed Install should not have to restart to use what they
+    /// installed.
+    agents: std::sync::RwLock<BTreeMap<String, WorkbenchAgentOption>>,
+    workspaces_root: PathBuf,
+    agent_homes_root: PathBuf,
+}
+
+/// How a host finds out what is installed now.
+///
+/// Discovery is the host's, not the shell's - it probes executables and reads
+/// receipts - so the shell holds it as a function and calls it when the answer
+/// can have changed.
+type RediscoverAgents = Box<dyn Fn() -> Vec<WorkbenchAgentOption> + Send + Sync>;
+
+/// How the host makes a project when a person asks for one: a directory to
+/// put it in and the command that serves it. The command is this product's own
+/// binary, so a project is a workspace, a journal and one declaration - never a
+/// file the person has to write.
+#[derive(Clone, Debug)]
+pub struct ProjectFactory {
+    pub root: PathBuf,
+    pub command: PathBuf,
+    /// Plugin package directories every project's Cycle loads beside the
+    /// built-in modules; written into each project's declaration so the
+    /// served Cycle and the product agree on what a project can hold.
+    pub plugins: Vec<PathBuf>,
+    /// Where a package a person installs lands (`<data root>/plugins`). It is
+    /// one of `plugins`, named on its own because that list may also hold
+    /// directories the command line pointed at, which are not ours to write
+    /// into.
+    pub packages_home: PathBuf,
+    /// The file the Cycle reads tool paths from at every close
+    /// (`<data root>/installed/tools/tools.json`, [`crate::tools_file`]).
+    pub tools_file: PathBuf,
+    /// Where prepared environments live, shared across projects.
+    pub environment_root: PathBuf,
+    /// The declarations a personal agent profile may attach to, by ACP name.
+    /// A project created here lands in the same map, so an agent session can
+    /// be bound to it without restarting the product.
+    pub attachments: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
+}
+
+impl ProjectFactory {
+    /// The declaration that serves the project `slug`: this product's own
+    /// binary over the project's workspace and journal, with the packages,
+    /// the tools file, the project's vault and the environment root. Files,
+    /// not values, so a tool installed or a secret added later is read at
+    /// the next close without a restart.
+    #[must_use]
+    pub fn declaration(&self, slug: &str) -> McpServer {
+        let root = self.root.join(slug);
+        let mut args = vec![
+            "mcp".to_owned(),
+            "serve".to_owned(),
+            "--workspace".to_owned(),
+            root.join("workspace").display().to_string(),
+            "--journal".to_owned(),
+            root.join("journal").display().to_string(),
+        ];
+        for directory in &self.plugins {
+            args.push("--plugins".to_owned());
+            args.push(directory.display().to_string());
+        }
+        args.push("--tools".to_owned());
+        args.push(self.tools_file.display().to_string());
+        args.push("--secrets".to_owned());
+        args.push(root.join(crate::PROJECT_VAULT_FILE).display().to_string());
+        args.push("--environment-root".to_owned());
+        args.push(self.environment_root.display().to_string());
+        McpServer::Stdio(
+            agent_client_protocol::schema::v1::McpServerStdio::new(
+                slug.to_owned(),
+                self.command.clone(),
+            )
+            .args(args),
+        )
+    }
+}
+
+/// The official MCP Apps bridge this product was built against, committed in
+/// the repository and pinned by the bundle-freshness gate.
+const APPS_BRIDGE: &str = include_str!("../web/apps-host/dist/apps-bridge.js");
+
+/// The node runtime an npx distribution needs, if the host has one.
+fn which_node() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let names: &[&str] = if cfg!(windows) {
+        &["node.exe", "node"]
+    } else {
+        &["node"]
+    };
+    std::env::split_paths(&path)
+        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The declaration's ACP name, refusing a transport this host cannot dial.
+fn declaration_name(declaration: &McpServer) -> Result<String, WorkbenchShellError> {
+    match declaration {
+        McpServer::Stdio(stdio) => Ok(stdio.name.clone()),
+        McpServer::Http(http) => Ok(http.name.clone()),
+        McpServer::Sse(sse) => Ok(sse.name.clone()),
+        other => Err(WorkbenchShellError::Invalid(format!(
+            "unsupported MCP declaration transport: {other:?}"
+        ))),
+    }
+}
+
+/// A directory- and ACP-safe name for a project the person typed.
+fn project_slug(name: &str) -> Result<String, WorkbenchShellError> {
+    let slug = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let slug = slug.trim_matches('-').to_owned();
+    let collapsed = slug
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        return Err(WorkbenchShellError::Invalid(
+            "a project name needs at least one letter or digit".into(),
+        ));
+    }
+    Ok(collapsed)
+}
+
+/// Requested connection start, before the ledger supplies the session id.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellConnectionMode {
+    New,
+    Load,
+    Resume,
+}
+
+/// The state behind every shell endpoint. Component tests drive these methods
+/// directly; the HTTP layer only serializes them.
+pub struct WorkbenchShellState {
+    inventory: PersonalAgentProfileStore,
+    ledger_path: PathBuf,
+    operation_timeout: Duration,
+    resolver: Box<Resolver>,
+    connections: tokio::sync::Mutex<BTreeMap<String, Arc<WorkbenchConnection>>>,
+    next_connection: AtomicU64,
+    content: WorkbenchContentStore,
+    /// `(sandbox_url, sandbox_origin)` once the serve layer bound the
+    /// second-origin sandbox listener; `None` in headless/component use.
+    sandbox: std::sync::OnceLock<(String, String)>,
+    /// The secret a caller must hold to work this Workbench, when the product
+    /// minted one. Absent = this shell asks for none, which is what an
+    /// in-process test or an embedder gets; the product always mints one.
+    session_token: std::sync::OnceLock<String>,
+    /// Directory holding the esbuild output `apps-bridge.js`; absent = the
+    /// Apps panel stays disabled (the honest App-disabled mode).
+    apps_bundle: std::sync::OnceLock<PathBuf>,
+    /// Product-internal command used only to wrap App-linked stdio servers.
+    mcp_observer: std::sync::OnceLock<ObserverCommand>,
+    /// Optional product onboarding. Tests and embedders may omit it and retain
+    /// the original read-only inventory shell.
+    onboarding: std::sync::OnceLock<LocalOnboarding>,
+    /// How to ask the host what is installed now; see `set_agent_discovery`.
+    rediscover: std::sync::OnceLock<RediscoverAgents>,
+    /// Connection-local MCP declarations the Project space may dial without
+    /// any agent session. Environment-free by construction: no resolver, no
+    /// lease, no profile takes part. Mutable because a person creates projects
+    /// from the product rather than by writing declaration files by hand.
+    project_declarations: std::sync::Mutex<Vec<McpServer>>,
+    /// Boot-time enabling happens once; `declare_project` is what adds later.
+    projects_enabled: std::sync::OnceLock<()>,
+    /// Where `create_project` puts a new project and which command serves it.
+    /// Absent in tests and embedders that declare their projects themselves.
+    project_factory: std::sync::OnceLock<ProjectFactory>,
+    /// The project sources this host may dial (resources-only clients), one
+    /// slot per declaration, dialled the first time somebody opens that one.
+    /// Refreshed from `project_declarations` by name on every use, so a
+    /// project declared while another is open is found on the next request
+    /// and the open one keeps its child.
+    projects: ProjectSources,
+    /// The project Apps this host may dial, the same way: one slot per
+    /// declaration, dialled when an App of that project is opened or acted
+    /// on, refreshed by name. There is no generation to compare any more:
+    /// a project declared while another is being read is found because the
+    /// next lookup reads the declarations, and nothing built earlier has to
+    /// be thrown away for that - which is what a `try_lock` clear once
+    /// silently failed to do, leaving a new project "not answering".
+    project_apps: project_apps::ProjectApps,
+    /// The MCP servers a person declared for their agents, and the directory
+    /// they are kept in. Absent in tests and embedders that declare their own.
+    mcp_catalogue: std::sync::OnceLock<McpCatalogue>,
+    /// The model providers a profile may name, shipped and declared.
+    model_providers: std::sync::OnceLock<ModelProviderBook>,
+    /// What the product root supplies about packages; a host alone has
+    /// none and lists nothing.
+    supply: std::sync::OnceLock<Box<dyn crate::ProductSupply>>,
+    /// Where what this product installs lands (`<data root>/installed`), when
+    /// installing is enabled; a host alone installs nothing.
+    installed_root: std::sync::OnceLock<PathBuf>,
+    /// The indexes the store reads, when a store is enabled.
+    store: std::sync::OnceLock<store::StoreHome>,
+    /// The standing instructions a clock runs, and the directory they are
+    /// kept in. Absent until a host enables them.
+    schedules: std::sync::OnceLock<ScheduleBook>,
+    /// The terminals open on this host. A terminal runs in the environment of
+    /// one profile, which is how an agent that signs in at a prompt is signed
+    /// in at all - and, since a session may open one over ACP, how an agent
+    /// runs a command a person can watch. Shared, because a session holds it
+    /// for as long as it is connected.
+    terminals: Arc<Terminals>,
+}
+
+/// What a person changed about a profile since a session was bound to it, in
+/// words. Empty when the only difference is the native session id, which is
+/// drift and not configuration.
+fn configuration_differences(
+    stored: &SessionRouteBinding,
+    wanted: &SessionRouteBinding,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    if stored.workspace != wanted.workspace {
+        differences.push("it works somewhere else now".to_owned());
+    }
+    if stored.environment_profile_id != wanted.environment_profile_id {
+        differences.push("it runs in another environment now".to_owned());
+    }
+    let names = |binding: &SessionRouteBinding| {
+        binding
+            .attachments
+            .iter()
+            .map(|attachment| attachment.server_name.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let (before, now) = (names(stored), names(wanted));
+    if before != now {
+        let added: Vec<&String> = now.difference(&before).collect();
+        let removed: Vec<&String> = before.difference(&now).collect();
+        if !added.is_empty() {
+            differences.push(format!(
+                "it now reaches {}",
+                added
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !removed.is_empty() {
+            differences.push(format!(
+                "it no longer reaches {}",
+                removed
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    differences
+}
+
+fn nanos_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
+}
+
+fn profile_error(error: ProfileError) -> WorkbenchShellError {
+    match error {
+        ProfileError::ProfileNotFound(_) => WorkbenchShellError::NotFound(error.to_string()),
+        ProfileError::InvalidProfile(_) => WorkbenchShellError::Invalid(error.to_string()),
+        other => WorkbenchShellError::Failed(other.to_string()),
+    }
+}
+
+async fn abort_resolved_environment(
+    environment: &ResolvedAgentEnvironment,
+    primary: WorkbenchShellError,
+) -> WorkbenchShellError {
+    let ResolvedAgentEnvironment::Prepared { transport, .. } = environment else {
+        return primary;
+    };
+    match transport.abort_prepared().await {
+        Ok(_) => primary,
+        Err(cleanup) => WorkbenchShellError::Failed(format!(
+            "{primary}; prepared environment cleanup also failed: {cleanup}"
+        )),
+    }
+}
+
+impl WorkbenchShellState {
+    /// Open the shell over an existing profile inventory and route ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the inventory cannot be opened.
+    pub fn open(
+        inventory_root: &Path,
+        ledger_path: &Path,
+        operation_timeout: Duration,
+        resolver: impl Fn(&PersonalAgentProfile) -> Result<ResolvedDirectAgentConnection, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<Self, WorkbenchShellError> {
+        Self::open_with_environment(
+            inventory_root,
+            ledger_path,
+            operation_timeout,
+            move |profile| resolver(profile).map(Into::into),
+        )
+    }
+
+    /// Open the shell with a resolver that may supply either the enforced
+    /// direct process path or an already prepared exact environment transport.
+    /// Environment preparation and secret materialization remain resolver
+    /// responsibilities; Workbench validates identity and owns terminal use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the inventory cannot be opened.
+    pub fn open_with_environment(
+        inventory_root: &Path,
+        ledger_path: &Path,
+        operation_timeout: Duration,
+        resolver: impl Fn(&PersonalAgentProfile) -> Result<ResolvedAgentConnection, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<Self, WorkbenchShellError> {
+        let inventory = PersonalAgentProfileStore::open(inventory_root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let content = WorkbenchContentStore::open(&ledger_path.with_extension("content"))?;
+        Ok(Self {
+            inventory,
+            ledger_path: ledger_path.to_path_buf(),
+            operation_timeout,
+            resolver: Box::new(resolver),
+            connections: tokio::sync::Mutex::new(BTreeMap::new()),
+            next_connection: AtomicU64::new(1),
+            content,
+            sandbox: std::sync::OnceLock::new(),
+            session_token: std::sync::OnceLock::new(),
+            apps_bundle: std::sync::OnceLock::new(),
+            mcp_observer: std::sync::OnceLock::new(),
+            onboarding: std::sync::OnceLock::new(),
+            rediscover: std::sync::OnceLock::new(),
+            project_declarations: std::sync::Mutex::new(Vec::new()),
+            projects_enabled: std::sync::OnceLock::new(),
+            project_factory: std::sync::OnceLock::new(),
+            projects: ProjectSources::new(),
+            project_apps: project_apps::ProjectApps::new(),
+            mcp_catalogue: std::sync::OnceLock::new(),
+            model_providers: std::sync::OnceLock::new(),
+            supply: std::sync::OnceLock::new(),
+            installed_root: std::sync::OnceLock::new(),
+            store: std::sync::OnceLock::new(),
+            schedules: std::sync::OnceLock::new(),
+            terminals: Arc::new(Terminals::default()),
+        })
+    }
+
+    /// Declare the MCP servers the Project space may dial on its own. Nothing
+    /// is spawned here; discovery happens on the first project read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate names or when already configured.
+    pub fn enable_projects(&self, declarations: Vec<McpServer>) -> Result<(), WorkbenchShellError> {
+        let mut names = BTreeSet::new();
+        for declaration in &declarations {
+            let name = match declaration {
+                McpServer::Stdio(stdio) => stdio.name.clone(),
+                McpServer::Http(http) => http.name.clone(),
+                McpServer::Sse(sse) => sse.name.clone(),
+                other => {
+                    return Err(WorkbenchShellError::Invalid(format!(
+                        "unsupported MCP declaration transport: {other:?}"
+                    )));
+                }
+            };
+            if !names.insert(name.clone()) {
+                return Err(WorkbenchShellError::Invalid(format!(
+                    "duplicate project declaration {name}"
+                )));
+            }
+        }
+        self.projects_enabled
+            .set(())
+            .map_err(|()| WorkbenchShellError::Conflict("projects already enabled".into()))?;
+        *self
+            .project_declarations
+            .lock()
+            .map_err(|_| WorkbenchShellError::Invalid("project declarations poisoned".into()))? =
+            declarations;
+        Ok(())
+    }
+
+    /// What installing `agent_id` would fetch, so the person consents to an
+    /// exact plan instead of to a word.
+    ///
+    /// # Errors
+    ///
+    /// Returns the supply diagnostic when the registry cannot be resolved.
+    pub fn agent_install_plan(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::InstallPlan, WorkbenchShellError> {
+        crate::install_plan(agent_id).map_err(|error| {
+            // The registry is a network dependency of this machine, not a
+            // fault in the request: say which host, so the person knows
+            // whether to fix their network or install the agent themselves.
+            WorkbenchShellError::Invalid(format!(
+                "the agent registry ({}) could not be read: {error}. Point {} at one this machine can reach, or install the agent yourself and it appears here.",
+                crate::acp_registry_index(),
+                crate::ACP_REGISTRY_INDEX_VAR
+            ))
+        })
+    }
+
+    /// Install the agent the person chose, against the exact plan they saw.
+    ///
+    /// The click is the consent, and `plan_id` is what it consented to: a plan
+    /// that moved since it was shown is refused rather than silently applied.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a plan mismatch, a missing node runtime for an npx
+    /// distribution, or any supply failure.
+    pub fn install_agent(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+    ) -> Result<crate::InstallReceipt, WorkbenchShellError> {
+        let plan = self.agent_install_plan(agent_id)?;
+        if plan.plan_id != plan_id {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "the install plan changed since it was shown ({} now); read it again",
+                plan.plan_id
+            )));
+        }
+        let node = if matches!(plan.distribution, crate::RegistryDistribution::Npx { .. }) {
+            Some(which_node().ok_or_else(|| {
+                WorkbenchShellError::Invalid(
+                    "this distribution runs through npx and node is not on PATH".into(),
+                )
+            })?)
+        } else {
+            None
+        };
+        let installation = crate::install(&plan, true, self.installed_root()?, node.as_deref())
+            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
+        // What is installed just changed, and the list this shell answers
+        // from was made when the product started. Without this a person
+        // presses Install, the install succeeds, and the product goes on
+        // telling them the agent is not available on this host until they
+        // restart it.
+        self.rediscover_agents();
+        Ok(installation)
+    }
+
+    /// Let this host install things: agents from the registry, tools packages
+    /// declare. `root` is `<data root>/installed`; one place for all of it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a second root.
+    pub fn enable_installs(&self, root: PathBuf) -> Result<(), WorkbenchShellError> {
+        self.installed_root
+            .set(root)
+            .map_err(|_| WorkbenchShellError::Conflict("installs already enabled".into()))
+    }
+
+    fn installed_root(&self) -> Result<&Path, WorkbenchShellError> {
+        self.installed_root
+            .get()
+            .map(PathBuf::as_path)
+            .ok_or_else(|| WorkbenchShellError::NotFound("this host installs nothing".into()))
+    }
+
+    /// Everything this product has installed, of every kind, by receipt.
+    ///
+    /// # Errors
+    ///
+    /// Not found when this host installs nothing.
+    pub fn installs(&self) -> Result<Vec<crate::InstallReceipt>, WorkbenchShellError> {
+        Ok(crate::all_receipts(self.installed_root()?))
+    }
+
+    fn factory(&self) -> Result<&ProjectFactory, WorkbenchShellError> {
+        self.project_factory
+            .get()
+            .ok_or_else(|| WorkbenchShellError::NotFound("project creation is not enabled".into()))
+    }
+
+    /// The tools loaded packages declare for this machine, each with the
+    /// exact plan installing it consents to, and whether it is installed.
+    ///
+    /// # Errors
+    ///
+    /// Not found when this host installs nothing.
+    pub fn tools(&self) -> Result<Vec<crate::ToolView>, WorkbenchShellError> {
+        Ok(crate::tool_views_of(
+            &self.declared_tools(),
+            self.installed_root()?,
+        ))
+    }
+
+    /// Every tool a person could install here: the ones this process
+    /// assembled, plus the ones of packages installed into it since it
+    /// started.
+    ///
+    /// The two sources are not the same set, for the reason
+    /// `declared_secret_types` gives: `assembly::configure` fixes this
+    /// process's module set once, so a package installed into a running host
+    /// never joins the host's own vocabulary. Without reading the installed
+    /// manifests as well, a person who installs a package that brings a tool
+    /// is shown no tool to install, and the adapters that ask the host for it
+    /// have nothing to be given until the product is restarted.
+    fn declared_tools(&self) -> Vec<crate::SupplyTool> {
+        self.supply().tools(self.packages_home())
+    }
+
+    /// Install one declared tool against the plan the person saw; the file
+    /// the Cycle reads is rewritten, so the next close has it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown tool, a moved plan, or a supply failure.
+    pub fn install_tool(
+        &self,
+        name: &str,
+        plan_id: &str,
+    ) -> Result<crate::ToolView, WorkbenchShellError> {
+        let view = self
+            .tools()?
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .ok_or_else(|| {
+                WorkbenchShellError::NotFound(format!("no loaded package declares tool {name}"))
+            })?;
+        let executable = crate::install_tool(&view, plan_id, self.installed_root()?)
+            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
+        Ok(crate::ToolView {
+            executable: Some(executable),
+            ..view
+        })
+    }
+
+    /// Every package this product reads, whether or not it loads, wherever it
+    /// came from: the ones the distribution ships beside the binary and the
+    /// ones this person installed. Listing only the second is what made a page
+    /// say "Packages (0)" while the domain it was showing came from a package.
+    ///
+    /// A package the loader refuses is listed with its diagnostic rather
+    /// than left out, because a person who installed it needs to know.
+    ///
+    /// # Errors
+    ///
+    /// Not found when the product has no plugins directory.
+    pub fn packages(&self) -> Result<Vec<crate::PackageView>, WorkbenchShellError> {
+        let factory = self.factory()?;
+        Ok(factory
+            .plugins
+            .iter()
+            .flat_map(|directory| {
+                let home = if directory == &factory.packages_home {
+                    crate::PackageHome::Yours
+                } else {
+                    crate::PackageHome::Product
+                };
+                self.supply().package_views(directory, home)
+            })
+            .collect())
+    }
+
+    /// Read a source and answer the plan installing it consents to: what the
+    /// package is, what it declares and what it would replace. The package is
+    /// fetched, checked and loaded to answer this, so a package the Cycle
+    /// could not run is refused here rather than at the next start.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unreadable source, a digest that does not match, or a
+    /// package the loader refuses.
+    pub fn plan_package(
+        &self,
+        source: &crate::PackageSource,
+    ) -> Result<crate::PackagePlan, WorkbenchShellError> {
+        let factory = self.factory()?;
+        self.supply()
+            .plan_package(source, &factory.packages_home)
+            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+    }
+
+    /// Install the package staged under the plan the person read. Every
+    /// project's Cycle started after this loads it; the process that did the
+    /// installing keeps the assembly it started with.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a plan nothing is staged under, which is what a plan gone
+    /// stale looks like.
+    pub fn install_package(
+        &self,
+        plan_id: &str,
+    ) -> Result<crate::PackageView, WorkbenchShellError> {
+        let factory = self.factory()?;
+        self.supply()
+            .install_package(plan_id, &factory.packages_home)
+            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+    }
+
+    /// The vault file of a project this product created.
+    fn project_vault(&self, server_name: &str) -> Result<PathBuf, WorkbenchShellError> {
+        let factory = self.factory()?;
+        let root = factory.root.join(server_name);
+        if !root.join("project.json").is_file() {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "project {server_name} was not created by this product; it has no vault here"
+            )));
+        }
+        Ok(root.join(crate::PROJECT_VAULT_FILE))
+    }
+
+    /// What a project's vault holds and may hold; values never leave the
+    /// host.
+    ///
+    /// # Errors
+    ///
+    /// Not found for a project without a vault here.
+    pub fn project_secrets(
+        &self,
+        server_name: &str,
+    ) -> Result<crate::ProjectSecrets, WorkbenchShellError> {
+        let file = self.project_vault(server_name)?;
+        Ok(crate::ProjectSecrets {
+            types: self.declared_secret_types(),
+            entries: crate::project_secret_entries(&file)
+                .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?,
+        })
+    }
+
+    /// Every secret type a person could keep a value of here: the ones this
+    /// process assembled, plus the ones of packages installed into it since
+    /// it started.
+    ///
+    /// The two sources are not the same set, for the reason `declared_recipes`
+    /// gives: `assembly::configure` fixes this process's module set once, so a
+    /// package installed into a running host never joins the host's own
+    /// vocabulary, and yet its recipes are offered here and run in the Cycle
+    /// of every project opened afterwards. Without reading the installed
+    /// manifests as well, the recipe is offered and the key it requires has
+    /// nowhere to go until the product is restarted.
+    fn declared_secret_types(&self) -> Vec<crate::SupplySecretType> {
+        self.supply().secret_types(self.packages_home())
+    }
+
+    /// Where this person's own packages are installed, when this host
+    /// creates projects; a host that does not has no such place, and the
+    /// supply answers from what the distribution ships alone.
+    pub(crate) fn packages_home(&self) -> Option<&Path> {
+        self.factory()
+            .ok()
+            .map(|factory| factory.packages_home.as_path())
+    }
+
+    /// The product root's supply, or the empty one of a host alone.
+    pub(crate) fn supply(&self) -> &dyn crate::ProductSupply {
+        self.supply
+            .get()
+            .map_or(&crate::NoSupply as &dyn crate::ProductSupply, |supply| {
+                supply.as_ref()
+            })
+    }
+
+    /// Hand the host what the product root knows about packages: the
+    /// tools and secret types they declare, their recipes, and how one is
+    /// installed. Set once, before the shell serves.
+    ///
+    /// # Errors
+    ///
+    /// Conflict when a supply is already set.
+    pub fn enable_product_supply(
+        &self,
+        supply: Box<dyn crate::ProductSupply>,
+    ) -> Result<(), WorkbenchShellError> {
+        self.supply
+            .set(supply)
+            .map_err(|_| WorkbenchShellError::Conflict("the product supply is already set".into()))
+    }
+
+    /// Store one value of one declared type in a project's vault and return
+    /// the entry a `bind_secret` names.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a type no loaded package declares or an empty value.
+    pub fn set_project_secret(
+        &self,
+        server_name: &str,
+        type_id: &str,
+        value: &str,
+    ) -> Result<crate::ProjectSecretEntry, WorkbenchShellError> {
+        // Blanks are not a value. The empty check alone let a field of spaces
+        // through, and a vault entry of spaces reaches the release exactly as
+        // a real one does, so what is stored is refused here rather than
+        // discovered at the delivery. The value itself is kept as typed: only
+        // the emptiness is judged on the trimmed text.
+        if value.trim().is_empty() {
+            return Err(WorkbenchShellError::Invalid(
+                "a secret needs a value, not blanks".into(),
+            ));
+        }
+        if !self
+            .declared_secret_types()
+            .iter()
+            .any(|declared| declared.type_id == type_id)
+        {
+            return Err(WorkbenchShellError::Invalid(format!(
+                "no loaded package declares secret type {type_id}"
+            )));
+        }
+        let file = self.project_vault(server_name)?;
+        crate::set_project_secret(&file, server_name, type_id, value)
+            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+    }
+
+    /// Enable project creation from the product: where new projects live and
+    /// which command serves them.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conflict when creation is already configured.
+    pub fn enable_project_creation(
+        &self,
+        factory: ProjectFactory,
+    ) -> Result<(), WorkbenchShellError> {
+        self.project_factory
+            .set(factory)
+            .map_err(|_| WorkbenchShellError::Conflict("project creation already enabled".into()))
+    }
+
+    /// Create a project the person named: a workspace, a journal and the
+    /// declaration that serves them, added to the Project space at once.
+    ///
+    /// The project is empty on purpose. What fills it is the person and their
+    /// agent working through the Cycle, not content the host invented.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an empty or unusable name, a name already taken, a host with no
+    /// project factory configured, or a directory it cannot create.
+    pub async fn create_project(
+        &self,
+        name: &str,
+    ) -> Result<ProjectSourceView, WorkbenchShellError> {
+        let factory = self.project_factory.get().ok_or_else(|| {
+            WorkbenchShellError::Invalid("this host does not create projects".into())
+        })?;
+        let slug = project_slug(name)?;
+        let root = factory.root.join(&slug);
+        if root.exists() {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "project {slug} already exists"
+            )));
+        }
+        for directory in [root.join("workspace"), root.join("journal")] {
+            std::fs::create_dir_all(&directory).map_err(|error| {
+                WorkbenchShellError::Invalid(format!("create {}: {error}", directory.display()))
+            })?;
+        }
+        let declaration = factory.declaration(&slug);
+        // The declaration lives beside the project it serves, so the next
+        // start finds it without an index the two could disagree about.
+        std::fs::write(
+            root.join("project.json"),
+            serde_json::to_vec_pretty(&declaration)
+                .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?,
+        )
+        .map_err(|error| {
+            WorkbenchShellError::Invalid(format!("write project declaration: {error}"))
+        })?;
+        if let Ok(mut attachments) = factory.attachments.lock() {
+            attachments.insert(slug.clone(), declaration.clone());
+        }
+        self.declare_project(declaration)?;
+        // The one project just made is dialled here, and no other: a created
+        // project must answer before it is handed back, and that is the only
+        // fact worth a child process at this point.
+        self.project_source(&slug)
+            .await
+            .map(|entry| entry.view())
+            .map_err(|error| {
+                WorkbenchShellError::Invalid(format!(
+                    "project {slug} did not answer after creation: {error}"
+                ))
+            })
+    }
+
+    /// Add one declaration to the Project space and drop the discovery cache
+    /// so the next read dials it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a transport this host cannot dial or a name already declared.
+    pub fn declare_project(&self, declaration: McpServer) -> Result<(), WorkbenchShellError> {
+        let name = declaration_name(&declaration)?;
+        let mut declarations = self
+            .project_declarations
+            .lock()
+            .map_err(|_| WorkbenchShellError::Invalid("project declarations poisoned".into()))?;
+        if declarations
+            .iter()
+            .any(|held| declaration_name(held).is_ok_and(|held| held == name))
+        {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "project {name} is already declared"
+            )));
+        }
+        declarations.push(declaration);
+        Ok(())
+    }
+
+    /// Bring the project sources up to date with the declarations, by name.
+    /// Dials nothing; a name already known keeps what it has.
+    fn refresh_project_sources(&self) {
+        let declarations = self
+            .project_declarations
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        self.projects.refresh(&declarations);
+    }
+
+    /// The dialled source of one project, dialling it now if nobody has.
+    /// Only this project: a request for one project never waits on another.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source or one that publishes no envelope;
+    /// failed when its process could not be started.
+    async fn project_source(
+        &self,
+        server_name: &str,
+    ) -> Result<Arc<workbench_project::ProjectSourceEntry>, WorkbenchShellError> {
+        self.refresh_project_sources();
+        self.projects.source(server_name).await
+    }
+
+    /// Every declared project, from what listing knows. A project nobody has
+    /// opened is listed by name with what the server says of itself absent;
+    /// one that has been opened carries its server's own words. Nothing is
+    /// dialled to answer this. Empty when nothing is declared.
+    ///
+    /// # Errors
+    ///
+    /// Never fails today; the signature leaves room for a failing refresh.
+    /// Not `async`: nothing here waits, which is the whole point of it.
+    pub fn projects(&self) -> Result<Vec<ProjectSourceView>, WorkbenchShellError> {
+        self.refresh_project_sources();
+        Ok(self.projects.views())
+    }
+
+    /// Read the whole envelope of one project source, verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source; failed when the read is refused.
+    pub async fn project_envelope(
+        &self,
+        server_name: &str,
+    ) -> Result<EnvelopeRead, WorkbenchShellError> {
+        self.project_source(server_name).await?.read_root().await
+    }
+
+    /// The digest of the record set this project's envelope was derived from.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source; failed when the read is refused or the
+    /// envelope does not carry the digest.
+    async fn project_record_digest(
+        &self,
+        server_name: &str,
+    ) -> Result<String, WorkbenchShellError> {
+        let read = self.project_envelope(server_name).await?;
+        serde_json::from_str::<Value>(&read.text)
+            .ok()
+            .as_ref()
+            .and_then(|envelope| envelope.get("record_set_digest"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                WorkbenchShellError::Failed(format!(
+                    "{server_name} published no record_set_digest to watch"
+                ))
+            })
+    }
+
+    /// Wait until this project's record set differs from `after`, or `wait`
+    /// elapses. `None` means nothing changed in that window; the caller asks
+    /// again with the digest it still holds.
+    ///
+    /// This polls, and that is a considered choice rather than a shortcut. The
+    /// Cycle publishes no resource notification, and even if it did, the
+    /// process an agent mutates is not this one: the agent owns its own MCP
+    /// child and this host opens an independent connection over the same
+    /// journal (see `workbench_apps.rs`). A notification emitted in a tool
+    /// handler would travel down the agent's pipe, not to the human's
+    /// workbench. So the host watches the digest the Cycle already computes -
+    /// once per project, on one schedule it controls - instead of every open
+    /// browser tab re-deriving the whole envelope on a timer of its own.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source; failed when the read is refused.
+    pub async fn next_project_change(
+        &self,
+        server_name: &str,
+        after: &str,
+        wait: Duration,
+    ) -> Result<Option<ProjectChange>, WorkbenchShellError> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let digest = self.project_record_digest(server_name).await?;
+            if digest != after {
+                return Ok(Some(ProjectChange {
+                    record_set_digest: digest,
+                }));
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            tokio::time::sleep(PROJECT_WATCH_INTERVAL.min(remaining)).await;
+        }
+    }
+
+    /// Read one declared view (`selections` or `revisions`) by exact ref: the
+    /// URI comes from the envelope the server published, never from the host.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source or a ref the envelope does not declare.
+    pub async fn project_view(
+        &self,
+        server_name: &str,
+        kind: &str,
+        digest: &str,
+    ) -> Result<EnvelopeRead, WorkbenchShellError> {
+        let entry = self.project_source(server_name).await?;
+        let root = entry.read_root().await?;
+        let envelope: Value = serde_json::from_str(&root.text)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let reference = format!("sha256:{digest}");
+        let uri =
+            workbench_project::declared_view_uri(&envelope, kind, &reference).ok_or_else(|| {
+                WorkbenchShellError::NotFound(format!(
+                    "the project envelope of {server_name} declares no {kind} entry {reference}"
+                ))
+            })?;
+        entry.read_declared(&uri).await
+    }
+
+    /// Bring the bytes of one artifact the envelope lists into the content
+    /// store: read the blob at the URI the envelope declares, verify the
+    /// digest, ingest. The descriptor names the exact record the bytes belong
+    /// to; the bytes are then served like any other content, including as a
+    /// download. `scope` is the selection the caller is reading: the same bytes
+    /// can be produced by several branches, so the descriptor names a producing
+    /// execution only when that selection produced them, and names none rather
+    /// than one from a branch the reader is not on. Idempotent: the same bytes
+    /// read from the same selection yield the same descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown source or an artifact the envelope does not
+    /// list; failed when the blob read or the digest check fails.
+    pub async fn project_artifact(
+        &self,
+        server_name: &str,
+        digest: &str,
+        scope: Option<&str>,
+    ) -> Result<(WorkbenchContentDescriptor, String), WorkbenchShellError> {
+        let entry = self.project_source(server_name).await?;
+        let root = entry.read_root().await?;
+        let envelope: Value = serde_json::from_str(&root.text)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let declared =
+            workbench_project::declared_artifact(&envelope, digest, scope).ok_or_else(|| {
+                WorkbenchShellError::NotFound(format!(
+                    "the project envelope of {server_name} lists no artifact with digest {digest}"
+                ))
+            })?;
+        let blob = entry.read_declared_blob(&declared.uri, digest).await?;
+        if blob.mime != declared.media_type {
+            return Err(WorkbenchShellError::Failed(format!(
+                "artifact {digest} is listed as {} but served as {}",
+                declared.media_type, blob.mime
+            )));
+        }
+        let descriptor = self
+            .content
+            .ingest_bytes_with_reference(
+                &blob.bytes,
+                declared.name,
+                blob.mime,
+                WorkbenchContentSource::ProjectArtifact,
+                server_name.to_owned(),
+                declared.reference,
+            )
+            .await?;
+        Ok((descriptor, blob.uri))
+    }
+
+    /// Terminate the project clients and await their child boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first cleanup failure.
+    pub async fn shutdown_projects(&self) -> Result<(), String> {
+        self.close_terminals().await;
+        let sources_result = self.projects.shutdown().await;
+        let apps_result = self.project_apps.shutdown().await;
+        sources_result.and(apps_result)
+    }
+
+    /// Ids of the open native connections (a test oracle for "no agent").
+    pub async fn active_connections(&self) -> Vec<String> {
+        self.connections.lock().await.keys().cloned().collect()
+    }
+
+    /// Stage exact project refs as the context of this connection's next
+    /// turns. Requires an open connection whose profile attaches the same
+    /// server name (so the agent reads the same persistent records) and a
+    /// journal-backed envelope that declares the refs. Nothing is sent to the
+    /// agent here; the next prompt carries the link.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown connection or source; conflict for a foreign
+    /// ref, a mismatched selection, an unattached server or an ephemeral one.
+    pub async fn bind_agent_context(
+        &self,
+        connection_id: &str,
+        body: BindAgentContextBody,
+    ) -> Result<AgentContextBinding, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        if !connection
+            .attachments
+            .iter()
+            .any(|attachment| attachment.binding.server_name == body.server_name)
+        {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "connection {connection_id} does not attach {}; the agent would not see the project",
+                body.server_name
+            )));
+        }
+        let root = self.project_envelope(&body.server_name).await?;
+        let envelope: Value = serde_json::from_str(&root.text)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let uri = workbench_project::validate_binding(&envelope, &body)?;
+        let binding = AgentContextBinding {
+            server_name: body.server_name,
+            revision_ref: body.revision_ref,
+            selection_ref: body.selection_ref,
+            uri,
+        };
+        *connection.agent_context.lock().await = Some(binding.clone());
+        let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
+        self.append_context_event(
+            &connection,
+            event,
+            "host/agent_context_bound",
+            serde_json::to_value(&binding)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?,
+        )
+        .await?;
+        Ok(binding)
+    }
+
+    /// Drop the staged context; later prompts carry no project link.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown connection.
+    pub async fn clear_agent_context(
+        &self,
+        connection_id: &str,
+    ) -> Result<Value, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let previous = connection.agent_context.lock().await.take();
+        if let Some(previous) = previous {
+            let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
+            self.append_context_event(
+                &connection,
+                event,
+                "host/agent_context_cleared",
+                json!({ "server_name": previous.server_name }),
+            )
+            .await?;
+        }
+        Ok(json!({ "cleared": true }))
+    }
+
+    /// The staged context of one open connection, if any.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown connection.
+    pub async fn agent_context(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<AgentContextBinding>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let context = connection.agent_context.lock().await.clone();
+        Ok(context)
+    }
+
+    async fn append_context_event(
+        &self,
+        connection: &WorkbenchConnection,
+        event: u64,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(), WorkbenchShellError> {
+        let route = connection.route_id.clone();
+        // In the connection's own namespace, like every other event on this
+        // route. A route's lane is read back by asking which connection each
+        // event belongs to, and an event id of another shape is a connection
+        // nobody opened - which is what `a_real_browser_runs_the_whole_shell_
+        // acceptance_on_the_fixture_profile` counts and refuses.
+        let event_id = format!(
+            "{}:host:{event}",
+            connection.artifact_projector.event_namespace
+        );
+        let kind = kind.to_owned();
+        self.with_ledger(move |ledger| {
+            ledger.append_event(&route, &event_id, &kind, SurfaceEventSource::Host, &payload)
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    /// Enable explicit first-run creation of local direct-host profiles.
+    /// This does not install, verify or start an agent and stores no secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the roots cannot be created/canonicalized or the
+    /// configuration was already installed on this state.
+    pub fn enable_local_onboarding(
+        &self,
+        agents: Vec<WorkbenchAgentOption>,
+        workspaces_root: &Path,
+        agent_homes_root: &Path,
+    ) -> Result<(), WorkbenchShellError> {
+        let mut indexed_agents = BTreeMap::new();
+        for agent in agents {
+            crate::profile::validate_id("onboarding agent id", &agent.agent_id)
+                .map_err(WorkbenchShellError::Invalid)?;
+            let agent_id = agent.agent_id.clone();
+            if indexed_agents.insert(agent_id.clone(), agent).is_some() {
+                return Err(WorkbenchShellError::Invalid(format!(
+                    "duplicate onboarding agent {agent_id}"
+                )));
+            }
+        }
+        std::fs::create_dir_all(workspaces_root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        std::fs::create_dir_all(agent_homes_root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let workspaces_root = std::fs::canonicalize(workspaces_root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let agent_homes_root = std::fs::canonicalize(agent_homes_root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        self.onboarding
+            .set(LocalOnboarding {
+                agents: std::sync::RwLock::new(indexed_agents),
+                workspaces_root,
+                agent_homes_root,
+            })
+            .map_err(|_| WorkbenchShellError::Conflict("onboarding is already configured".into()))
+    }
+
+    /// Tell this shell how to find out what is installed, so it can ask again
+    /// after an install instead of answering from what was true at startup.
+    ///
+    /// Optional: a shell without it still works and still lists what it was
+    /// given, which is what the in-process gates rely on.
+    pub fn set_agent_discovery<F>(&self, rediscover: F)
+    where
+        F: Fn() -> Vec<WorkbenchAgentOption> + Send + Sync + 'static,
+    {
+        let _ = self.rediscover.set(Box::new(rediscover));
+    }
+
+    /// Ask discovery again and replace what this shell lists.
+    ///
+    /// Silent when no discovery was configured: there is nothing to ask.
+    fn rediscover_agents(&self) {
+        let (Some(onboarding), Some(rediscover)) = (self.onboarding.get(), self.rediscover.get())
+        else {
+            return;
+        };
+        let found = rediscover();
+        let mut indexed = BTreeMap::new();
+        for agent in found {
+            if crate::profile::validate_id("onboarding agent id", &agent.agent_id).is_err() {
+                continue;
+            }
+            indexed.insert(agent.agent_id.clone(), agent);
+        }
+        if let Ok(mut agents) = onboarding.agents.write() {
+            *agents = indexed;
+        }
+    }
+
+    #[must_use]
+    pub fn onboarding(&self) -> WorkbenchOnboarding {
+        self.onboarding.get().map_or(
+            WorkbenchOnboarding {
+                enabled: false,
+                agents: Vec::new(),
+            },
+            |onboarding| WorkbenchOnboarding {
+                enabled: true,
+                agents: onboarding
+                    .agents
+                    .read()
+                    .map(|agents| agents.values().cloned().collect())
+                    .unwrap_or_default(),
+            },
+        )
+    }
+
+    /// Create the minimal durable profile selected in first-run UI. This is a
+    /// create-only mutation and deliberately attaches neither Cycle nor MCP.
+    ///
+    /// A configured agent can hold more than one profile. `profile_id` is the
+    /// name the person gives this one; without it the profile is named after
+    /// the agent, which is what first run does when there is nothing to tell
+    /// apart yet. The workspace and the native home are the profile's, not the
+    /// agent's, so two people working the same installed agent do not write
+    /// into each other's files.
+    ///
+    /// # Errors
+    ///
+    /// Fails for disabled onboarding, unknown/unavailable agents, unsafe
+    /// paths, or an existing profile identity.
+    pub fn create_local_profile(
+        &self,
+        agent_id: &str,
+        profile_id: Option<&str>,
+        setup: Option<crate::AgentSetup>,
+    ) -> Result<PersonalAgentProfile, WorkbenchShellError> {
+        let onboarding = self
+            .onboarding
+            .get()
+            .ok_or_else(|| WorkbenchShellError::NotFound("local onboarding is disabled".into()))?;
+        let available = onboarding
+            .agents
+            .read()
+            .ok()
+            .and_then(|agents| agents.get(agent_id).map(|agent| agent.available))
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown agent {agent_id}")))?;
+        if !available {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "agent {agent_id} is not available on this host"
+            )));
+        }
+        let profile_id = profile_id.unwrap_or(agent_id);
+        crate::profile::validate_id("profile_id", profile_id)
+            .map_err(WorkbenchShellError::Invalid)?;
+        let workspace = onboarding.workspaces_root.join(profile_id);
+        let agent_home = onboarding.agent_homes_root.join(profile_id);
+        std::fs::create_dir_all(&workspace)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        std::fs::create_dir_all(&agent_home)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let workspace = std::fs::canonicalize(&workspace)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let agent_home = std::fs::canonicalize(&agent_home)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        if !workspace.starts_with(&onboarding.workspaces_root)
+            || !agent_home.starts_with(&onboarding.agent_homes_root)
+        {
+            return Err(WorkbenchShellError::Conflict(
+                "local profile directory escaped its configured root".into(),
+            ));
+        }
+        let profile = PersonalAgentProfile::new(
+            profile_id,
+            agent_id,
+            "direct-host-distribution",
+            crate::THIS_MACHINE,
+            crate::ASK_EVERY_TIME,
+            &workspace,
+            &agent_home,
+            Vec::new(),
+            Vec::new(),
+        )
+        .and_then(|profile| match setup {
+            Some(setup) => profile.with_setup(setup),
+            None => Ok(profile),
+        })
+        .map_err(|error| match error {
+            ProfileError::InvalidProfile(_) => WorkbenchShellError::Invalid(error.to_string()),
+            _ => WorkbenchShellError::Failed(error.to_string()),
+        })?;
+        self.check_setup(&profile.setup())?;
+        self.inventory
+            .create(&profile)
+            .map_err(|error| match error {
+                ProfileError::ProfileExists(_) => WorkbenchShellError::Conflict(error.to_string()),
+                _ => WorkbenchShellError::Failed(error.to_string()),
+            })?;
+        Ok(profile)
+    }
+
+    /// List the durable profiles (non-secret by construction).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the inventory fails closed.
+    /// What the profile's agent advertises at `initialize`, authentication
+    /// methods included, without opening a session. The surface asks this
+    /// before offering to start, so a person is asked for a key up front
+    /// rather than told about it by a failed connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile, an agent that
+    /// cannot be launched, or a handshake that fails or times out.
+    pub async fn profile_handshake(
+        &self,
+        profile_id: &str,
+    ) -> Result<crate::AcpHandshake, WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let connection = (self.resolver)(&profile).map_err(WorkbenchShellError::Failed)?;
+        let expected = crate::builtin_catalog()
+            .into_iter()
+            .find(|entry| entry.id == profile.agent_id)
+            .and_then(|entry| entry.expected_agent_name);
+        // Ask the agent where the agent is. A prepared environment's launch
+        // command names a path inside it, so starting that path on this
+        // machine asks nothing and fails with "no such file" on a path that
+        // plainly exists in the environment the profile chose.
+        let handshake = match &connection.environment {
+            ResolvedAgentEnvironment::Direct => {
+                crate::verify_launch(
+                    &connection.launch,
+                    &connection.agent_executable,
+                    self.operation_timeout,
+                    expected,
+                )
+                .await
+            }
+            ResolvedAgentEnvironment::Prepared { transport, .. } => {
+                crate::verify_transport((**transport).clone(), self.operation_timeout, expected)
+                    .await
+            }
+        };
+        // A prepared environment was leased for this handshake alone and is
+        // released the same way an aborted open releases it - whether the
+        // handshake answered or failed, because a lease released only on
+        // success is a container left behind by every failure.
+        let _ = abort_resolved_environment(
+            &connection.environment,
+            WorkbenchShellError::Failed("handshake only".into()),
+        )
+        .await;
+        handshake.map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    /// What a profile holds and may hold; values never leave the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile.
+    pub fn profile_secrets(&self, profile_id: &str) -> Result<ProfileSecrets, WorkbenchShellError> {
+        let secrets = self
+            .inventory
+            .secret_entries(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        Ok(ProfileSecrets {
+            types: crate::secret_types(),
+            secrets,
+        })
+    }
+
+    /// Store one secret of a profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile, an unknown
+    /// type, or a name that is not an environment variable name.
+    pub fn set_profile_secret(
+        &self,
+        profile_id: &str,
+        type_id: &str,
+        label: &str,
+        name: Option<&str>,
+        value: &str,
+    ) -> Result<ProfileSecrets, WorkbenchShellError> {
+        let kind = crate::secret_types()
+            .iter()
+            .find(|kind| kind.type_id == type_id)
+            .ok_or_else(|| {
+                WorkbenchShellError::Invalid(format!("unknown secret type {type_id:?}"))
+            })?;
+        let name = match (kind.env_var, name) {
+            (_, Some(given)) if !given.is_empty() => given,
+            (Some(conventional), _) => conventional,
+            (None, _) => {
+                return Err(WorkbenchShellError::Invalid(
+                    "an environment variable needs a name".into(),
+                ));
+            }
+        };
+        let label = if label.is_empty() { kind.label } else { label };
+        self.inventory
+            .set_secret(profile_id, type_id, label, name, value)
+            .map_err(profile_error)?;
+        self.profile_secrets(profile_id)
+    }
+
+    /// Forget one secret of a profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile.
+    pub fn remove_profile_secret(
+        &self,
+        profile_id: &str,
+        name: &str,
+    ) -> Result<ProfileSecrets, WorkbenchShellError> {
+        self.inventory
+            .remove_secret(profile_id, name)
+            .map_err(profile_error)?;
+        self.profile_secrets(profile_id)
+    }
+
+    /// Every session this profile has opened, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub async fn profile_sessions(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<crate::SessionSummary>, WorkbenchShellError> {
+        let profile_id = profile_id.to_owned();
+        self.with_ledger(move |ledger| ledger.sessions_of_profile(&profile_id))
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    /// What this profile's agent has been handed and what it has handed back:
+    /// the files in `inbox` and `outbox` inside its own workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile or a workspace
+    /// that exists and cannot be read.
+    pub async fn profile_files(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<crate::HandedFile>, WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        crate::workbench_files::list(&profile.workspace).await
+    }
+
+    /// One of those files, with the media type to serve it as.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile, an area that is
+    /// neither directory, a name that is a path, or a file that is not there.
+    pub async fn profile_file(
+        &self,
+        profile_id: &str,
+        area: &str,
+        name: &str,
+    ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        crate::workbench_files::read(&profile.workspace, area, name).await
+    }
+
+    /// What a route's lane holds, from the beginning: the conversation a
+    /// resumed session opens on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown route.
+    pub async fn route_history(
+        &self,
+        route_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::SurfaceEvent>, WorkbenchShellError> {
+        let route_id = route_id.to_owned();
+        self.with_ledger(move |ledger| ledger.history(&route_id, limit))
+            .await
+            .map_err(|error| match error {
+                crate::RoutingError::RouteNotFound(route) => {
+                    WorkbenchShellError::NotFound(format!("unknown session {route}"))
+                }
+                other => WorkbenchShellError::Failed(other.to_string()),
+            })
+    }
+
+    /// Every durable profile of this inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the inventory cannot be listed.
+    pub fn profiles(&self) -> Result<Vec<PersonalAgentProfile>, WorkbenchShellError> {
+        self.inventory
+            .list()
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    /// Open a new/load/resume connection for one exact profile and attach the
+    /// durable projector. Returns `(connection_id, route_id, session_id)`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on unknown profile/route, binding drift, an unresolvable
+    /// attachment, or a session that never reached ready.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear open transaction keeps resolve, start, bind and projection ordering auditable"
+    )]
+    pub async fn open_connection(
+        &self,
+        profile_id: &str,
+        mode: ShellConnectionMode,
+        route_id: Option<String>,
+    ) -> Result<(String, String, String), WorkbenchShellError> {
+        self.open_connection_with_id(profile_id, mode, route_id, None, None, None)
+            .await
+    }
+
+    /// Open while honoring an optional surface-generated ephemeral connection
+    /// handle. This lets the surface poll request-scoped ACP elicitation during
+    /// authentication, before the native session id exists.
+    ///
+    /// `file_callbacks` names the exact ACP `fs/*` methods the surface opening
+    /// this connection can carry out. A surface that owns no files - the
+    /// Workbench's browser tab - passes `None` and the agent is told so at the
+    /// handshake. What a surface never names is the directory those calls are
+    /// bounded to: that is the profile's own workspace, taken here, so asking
+    /// cannot widen it.
+    ///
+    /// # Errors
+    ///
+    /// Has the same fail-closed conditions as [`Self::open_connection`], plus
+    /// malformed or already-active requested handles.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear open transaction keeps resolve, early control registration, start, bind and projection ordering auditable"
+    )]
+    pub async fn open_connection_with_id(
+        &self,
+        profile_id: &str,
+        mode: ShellConnectionMode,
+        route_id: Option<String>,
+        requested_connection_id: Option<String>,
+        auth_method_id: Option<String>,
+        file_callbacks: Option<FileSystemCapabilities>,
+    ) -> Result<(String, String, String), WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let (route_id, start) = match mode {
+            // A new session gets a new route, always. A route is bound to the
+            // exact native session it was opened with, so reusing one for a
+            // second session could only ever end as binding drift - which is
+            // what a person met the second time they ever pressed Start.
+            ShellConnectionMode::New => {
+                if let Some(named) = route_id {
+                    let known = self
+                        .with_ledger({
+                            let named = named.clone();
+                            move |ledger| ledger.route(&named)
+                        })
+                        .await;
+                    if known.is_ok() {
+                        return Err(WorkbenchShellError::Conflict(format!(
+                            "session {named} already exists: resume it, or start a new one without naming it"
+                        )));
+                    }
+                    (named, NativeSessionStart::New)
+                } else {
+                    (
+                        format!("route-{}-{}", std::process::id(), nanos_now()),
+                        NativeSessionStart::New,
+                    )
+                }
+            }
+            ShellConnectionMode::Load | ShellConnectionMode::Resume => {
+                let route_id = route_id.ok_or_else(|| {
+                    WorkbenchShellError::Invalid("load/resume requires route_id".into())
+                })?;
+                let stored = self
+                    .with_ledger({
+                        let route_id = route_id.clone();
+                        move |ledger| ledger.route(&route_id)
+                    })
+                    .await
+                    .map_err(|error| match error {
+                        crate::RoutingError::RouteNotFound(route) => {
+                            WorkbenchShellError::NotFound(format!("unknown route {route}"))
+                        }
+                        other => WorkbenchShellError::Failed(other.to_string()),
+                    })?;
+                let expected = SessionRouteBinding::new(
+                    route_id.clone(),
+                    profile.agent_id.clone(),
+                    profile.profile_id.clone(),
+                    stored.native_session_id.clone(),
+                    profile.environment_profile_id.clone(),
+                    &profile.workspace,
+                    profile.attachments.clone(),
+                )
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+                // A session is bound to the configuration it was started
+                // with. Once a person edits the profile - attaches a project,
+                // moves the workspace - an old session no longer matches, and
+                // that is a thing to say rather than a drift to fail on.
+                let differences = configuration_differences(&stored, &expected);
+                self.with_ledger(move |ledger| ledger.require_binding(&expected))
+                    .await
+                    .map_err(|error| {
+                        WorkbenchShellError::Conflict(if differences.is_empty() {
+                            error.to_string()
+                        } else {
+                            format!(
+                                "this session was started with a different configuration of {} ({}); start a new session to use the current one",
+                                profile.profile_id,
+                                differences.join(", ")
+                            )
+                        })
+                    })?;
+                let session_id = stored.native_session_id;
+                (
+                    route_id,
+                    match mode {
+                        ShellConnectionMode::Load => NativeSessionStart::Load { session_id },
+                        _ => NativeSessionStart::Resume { session_id },
+                    },
+                )
+            }
+        };
+        let connection_number = self.next_connection.fetch_add(1, Ordering::SeqCst);
+        // A connection's id is in the address of every App it opens, on the
+        // sandbox origin, where an App View has an opaque origin and so
+        // cannot be told apart from any other page by where it came from.
+        // While the id was `c1`, `c2`, a page that found that port could name
+        // an open App's upload and blob routes by guessing. The counter stays
+        // for reading a log in order; what makes the address a capability is
+        // what follows it.
+        let connection_id = if let Some(requested) = requested_connection_id {
+            requested
+        } else {
+            // Refuse rather than fall back to the guessable name: a door
+            // that quietly opens when the lock cannot be made is the lock
+            // nobody knows is missing.
+            let secret = mint_session_token().map_err(|error| {
+                WorkbenchShellError::Failed(format!(
+                    "this machine would not give random bytes for a connection address: {error}"
+                ))
+            })?;
+            format!("c{connection_number}-{}", &secret[..22])
+        };
+        if connection_id.is_empty()
+            || connection_id.len() > 96
+            || !connection_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(WorkbenchShellError::Invalid(
+                "connection_id must contain 1-96 ASCII letters, digits, '-' or '_'".into(),
+            ));
+        }
+        if self.connections.lock().await.contains_key(&connection_id) {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "connection {connection_id} is already active"
+            )));
+        }
+        let connection = (self.resolver)(&profile).map_err(WorkbenchShellError::Failed)?;
+        // The profile's setup - its role, its skills, its model - goes where
+        // the agent reads it before the agent starts: files in the working
+        // directory, which both a direct process and a container see, and
+        // variables for the direct process below. Written at every open, so
+        // a role edited between two sessions reaches the second one.
+        let setup = {
+            let provider = match &profile.model_provider {
+                Some(id) => Some(self.model_provider_book()?.get(id)?),
+                None => None,
+            };
+            let materialised = crate::agent_setup::materialise_profile(&profile, provider.as_ref())
+                .map_err(WorkbenchShellError::Failed)?;
+            crate::agent_setup::write_materialised(&materialised)
+                .map_err(WorkbenchShellError::Failed)?;
+            materialised
+        };
+        let (environment_lease, environment_transport) = match &connection.environment {
+            ResolvedAgentEnvironment::Direct => {
+                let lease = direct_environment_lease(
+                    format!("workbench-direct-{}-{}", std::process::id(), nanos_now()),
+                    &EnvironmentRequirements::new(&profile.workspace),
+                )
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+                (lease, None)
+            }
+            ResolvedAgentEnvironment::Prepared {
+                environment_profile_id,
+                lease,
+                transport,
+            } => {
+                let mismatch = if environment_profile_id != &profile.environment_profile_id {
+                    Some("resolved environment profile differs from the durable profile")
+                } else if lease.backend_id == "direct-process" {
+                    Some("prepared environment cannot use the direct-process backend")
+                } else if lease.workspace != profile.workspace {
+                    Some("resolved environment workspace differs from the durable profile")
+                } else if !transport.matches_lease(lease) {
+                    Some("resolved environment transport identity differs from its lease")
+                } else {
+                    None
+                };
+                if let Some(message) = mismatch {
+                    return Err(abort_resolved_environment(
+                        &connection.environment,
+                        WorkbenchShellError::Conflict(message.into()),
+                    )
+                    .await);
+                }
+                (lease.as_ref().clone(), Some(transport.as_ref().clone()))
+            }
+        };
+        // Pair every durable attachment with its connection-local declaration,
+        // fail-closed on any unmatched name. A non-exhaustive future transport
+        // cannot satisfy a durable attachment name here.
+        let mut resolved_attachments = Vec::with_capacity(profile.attachments.len());
+        for attachment in &profile.attachments {
+            let server = connection.mcp_servers.iter().find(|server| match server {
+                McpServer::Stdio(stdio) => stdio.name == attachment.server_name,
+                McpServer::Http(http) => http.name == attachment.server_name,
+                McpServer::Sse(sse) => sse.name == attachment.server_name,
+                _ => false,
+            });
+            let Some(server) = server else {
+                return Err(
+                    abort_resolved_environment(
+                        &connection.environment,
+                        WorkbenchShellError::Failed(format!(
+                            "profile attachment {} was not resolved to a connection-local MCP declaration",
+                            attachment.server_name
+                        )),
+                    )
+                    .await,
+                );
+            };
+            resolved_attachments.push(ResolvedMcpAttachment {
+                binding: attachment.clone(),
+                server: server.clone(),
+            });
+        }
+        let mut apps = None;
+        let mut observation = None;
+        let mut app_links = BTreeMap::new();
+        let mut session_mcp_servers = connection.mcp_servers.clone();
+        if Self::apps_enabled()
+            && let Some(observer_command) = self.mcp_observer.get()
+        {
+            let discovered =
+                workbench_apps::discover(&resolved_attachments, Some(&environment_lease.workspace))
+                    .await;
+            app_links = discovered.model_app_links();
+            let observed_servers = app_links
+                .keys()
+                .map(|(server, _tool)| server.clone())
+                .collect::<BTreeSet<_>>();
+            if !observed_servers.is_empty() {
+                let ingress = match ObservationIngress::bind(observed_servers.clone()).await {
+                    Ok(ingress) => ingress,
+                    Err(error) => {
+                        return Err(abort_resolved_environment(
+                            &connection.environment,
+                            WorkbenchShellError::Failed(error),
+                        )
+                        .await);
+                    }
+                };
+                for server in &mut session_mcp_servers {
+                    if let McpServer::Stdio(stdio) = server
+                        && observed_servers.contains(&stdio.name)
+                    {
+                        *server = match ingress.wrap(stdio, observer_command) {
+                            Ok(server) => server,
+                            Err(error) => {
+                                return Err(abort_resolved_environment(
+                                    &connection.environment,
+                                    WorkbenchShellError::Failed(error),
+                                )
+                                .await);
+                            }
+                        };
+                    }
+                }
+                observation = Some(ingress);
+            }
+            apps = Some(discovered);
+        }
+        let control = NativeSessionControl::new();
+        let mut surface_events = match control.take_surface_events() {
+            Ok(events) => events,
+            Err(error) => {
+                return Err(abort_resolved_environment(
+                    &connection.environment,
+                    WorkbenchShellError::Failed(error.to_string()),
+                )
+                .await);
+            }
+        };
+        let mut options = NativeSessionOptions::interactive(self.operation_timeout);
+        options.control = Some(control.clone());
+        // How this agent's requests are answered is the person's choice, kept
+        // on the profile. It used to be Surface for everybody, which is right
+        // while somebody is watching and useless when nobody is: an agent left
+        // alone stopped at its first question and waited. The boundary a
+        // choice names is built from the profile's own workspace and
+        // attachments, so picking one cannot widen it.
+        let permission_policy = crate::permission_policy(
+            &profile.permission_profile_id,
+            &profile.workspace,
+            profile
+                .attachments
+                .iter()
+                .map(|attachment| attachment.server_name.clone())
+                .collect(),
+        );
+        options.permission_policy = match permission_policy {
+            Ok(policy) => policy,
+            Err(error) => {
+                return Err(abort_resolved_environment(
+                    &connection.environment,
+                    WorkbenchShellError::Invalid(error),
+                )
+                .await);
+            }
+        };
+        options.elicitation_capabilities = Some(
+            ElicitationCapabilities::new()
+                .form(ElicitationFormCapabilities::new())
+                .url(ElicitationUrlCapabilities::new()),
+        );
+        // The two halves of a file callback: what the surface said it can do,
+        // and where. Only the first half came from the surface.
+        options.file_callbacks = file_callbacks.map(|capabilities| crate::FileCallbacks {
+            capabilities,
+            boundary: profile.workspace.clone(),
+        });
+        options.mcp_servers = session_mcp_servers;
+        options.start = start;
+        let workspace = profile.workspace.clone();
+        let launch = connection.launch.clone();
+        let agent_executable = connection.agent_executable.clone();
+        options.environment_lease = Some(environment_lease.clone());
+        // A prepared environment carries its credentials as runtime secrets
+        // and refuses process overrides; the direct process gets the profile's
+        // bindings here, on top of the filtered bootstrap environment.
+        if matches!(connection.environment, ResolvedAgentEnvironment::Direct) {
+            let secrets = self
+                .inventory
+                .secrets(&profile.profile_id)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+            // The model and the provider's address first, the credentials
+            // over them: a key is never shadowed by a setup variable.
+            let mut overrides = setup.environment.clone();
+            overrides.extend(credential_environment(&profile, secrets.clone())?);
+            options.process_environment_overrides = overrides;
+            // Whether this agent may run a command on its own is the same
+            // choice as whether it may edit a file on its own, and the person
+            // already made it: the profile that works alone inside its
+            // workspace runs commands there without being asked, and the one
+            // that asks every time is asked about each command before it
+            // starts, on the same lane its tool calls are asked on.
+            //
+            // Only a direct environment. A session prepared elsewhere - a
+            // container - must not have its commands run on this machine, and
+            // that is the same line `process_environment_overrides` draws
+            // right above.
+            let ask = if profile.permission_profile_id
+                == crate::permission_profile::INSIDE_ITS_WORKSPACE
+            {
+                crate::AskBeforeRunning::No
+            } else {
+                crate::AskBeforeRunning::EveryTime
+            };
+            options.terminal_callbacks = Some(crate::TerminalCallbacks {
+                terminals: Arc::clone(&self.terminals),
+                profile: profile.clone(),
+                secrets,
+                ask,
+            });
+        }
+        options.auth_method_id = auth_method_id;
+        options.environment_transport = environment_transport;
+        let namespace = format!("conn-{connection_number}-{}", nanos_now());
+        let observation_namespace = format!("observer-{connection_number}-{}", nanos_now());
+        let observation = observation.map(|ingress| {
+            ingress.start(
+                app_links,
+                self.ledger_path.clone(),
+                route_id.clone(),
+                observation_namespace,
+            )
+        });
+        let artifact_projector = WorkbenchArtifactProjector {
+            content: self.content.clone(),
+            ledger_path: self.ledger_path.clone(),
+            route_id: route_id.clone(),
+            agent_id: profile.agent_id.clone(),
+            environment_lease,
+            event_namespace: namespace.clone(),
+            next_event: Arc::new(AtomicU64::new(1)),
+            state: Arc::new(tokio::sync::Mutex::new(ArtifactProjectionState::default())),
+            changed: Arc::new(tokio::sync::Notify::new()),
+        };
+        let registered = {
+            let mut connections = self.connections.lock().await;
+            if connections.contains_key(&connection_id) {
+                let error = WorkbenchShellError::Conflict(format!(
+                    "connection {connection_id} is already active"
+                ));
+                drop(connections);
+                return Err(abort_resolved_environment(&connection.environment, error).await);
+            }
+            let runner = tokio::spawn(async move {
+                run_interactive_native_session(&launch, &agent_executable, &workspace, &options)
+                    .await
+            });
+            let registered = Arc::new(WorkbenchConnection {
+                control,
+                route_id: route_id.clone(),
+                artifact_projector,
+                runner: tokio::sync::Mutex::new(Some(runner)),
+                projection: tokio::sync::Mutex::new(None),
+                artifact_projection: tokio::sync::Mutex::new(None),
+                attachments: resolved_attachments,
+                apps: tokio::sync::Mutex::new(apps),
+                observation: tokio::sync::Mutex::new(observation),
+                observed_apps: tokio::sync::Mutex::new(BTreeMap::new()),
+                agent_context: tokio::sync::Mutex::new(None),
+                context_events: AtomicU64::new(1),
+                setup_notes: tokio::sync::Mutex::new(setup.notes.clone()),
+            });
+            connections.insert(connection_id.clone(), Arc::clone(&registered));
+            registered
+        };
+        let Ok(session_id) = registered.control.wait_until_ready().await else {
+            // The control was registered before initialize specifically so a
+            // browser could answer request-scoped elicitation. Once startup
+            // fails, the ordinary finish path drains every child and removes
+            // that provisional handle.
+            let failure = match self.finish_connection(&connection_id, &registered).await {
+                Ok(_) => "session finished before ready".to_owned(),
+                Err(error) => error.to_string(),
+            };
+            // Nothing had read this lane yet: the projector below starts only
+            // once a session exists, so a handshake the agent refuses used to
+            // be dropped here together with the receiver, and the person was
+            // left with "session finished before ready" over an empty route
+            //. Whatever the handshake managed to say is still queued,
+            // so it is read out now and carried in the failure instead.
+            return Err(WorkbenchShellError::Failed(
+                match handshake_refusal(&mut surface_events) {
+                    Some(reason) => format!("{failure}: {reason}"),
+                    None => failure,
+                },
+            ));
+        };
+        // The model by the native road too: an agent that offers a model
+        // choice on the session gets the profile's, when it lists it. Only a
+        // value the agent advertised is ever sent - the control refuses any
+        // other before the wire, and a refusal on the wire would end the
+        // session. What happened is a sentence on the connection's status.
+        if let Some(model) = profile.model.as_deref().filter(|model| !model.is_empty()) {
+            let note = apply_profile_model(&registered.control, model).await;
+            registered.setup_notes.lock().await.push(note);
+        }
+        let binding = match SessionRouteBinding::new(
+            route_id.clone(),
+            profile.agent_id.clone(),
+            profile.profile_id.clone(),
+            session_id.clone(),
+            profile.environment_profile_id.clone(),
+            &profile.workspace,
+            profile.attachments.clone(),
+        ) {
+            Ok(binding) => binding,
+            Err(error) => {
+                let _ = registered.control.disconnect().await;
+                let _ = self.finish_connection(&connection_id, &registered).await;
+                return Err(WorkbenchShellError::Failed(error.to_string()));
+            }
+        };
+        if let Err(error) = self
+            .with_ledger(move |ledger| ledger.bind_route(&binding))
+            .await
+        {
+            let _ = registered.control.disconnect().await;
+            let _ = self.finish_connection(&connection_id, &registered).await;
+            return Err(WorkbenchShellError::Conflict(error.to_string()));
+        }
+        let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
+        let projection = match project_native_session_events_with_output(
+            &self.ledger_path,
+            route_id.clone(),
+            namespace,
+            surface_events,
+            output_tx,
+        ) {
+            Ok(projection) => projection,
+            Err(error) => {
+                let _ = registered.control.disconnect().await;
+                let _ = self.finish_connection(&connection_id, &registered).await;
+                return Err(WorkbenchShellError::Failed(error.to_string()));
+            }
+        };
+        *registered.projection.lock().await = Some(projection);
+        let artifact_projector = registered.artifact_projector.clone();
+        *registered.artifact_projection.lock().await = Some(tokio::spawn(async move {
+            artifact_projector.run(output_rx).await;
+        }));
+        Ok((connection_id, route_id, session_id))
+    }
+
+    async fn connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<Arc<WorkbenchConnection>, WorkbenchShellError> {
+        self.connections
+            .lock()
+            .await
+            .get(connection_id)
+            .cloned()
+            .ok_or_else(|| {
+                WorkbenchShellError::NotFound(format!("unknown connection {connection_id}"))
+            })
+    }
+
+    /// Submit the next exact ACP content turn and return its outcome.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the driver failure (capability violation, timeout, finished
+    /// connection) without retrying or rewriting content.
+    pub async fn submit_prompt(
+        &self,
+        connection_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<NativeTurnOutcome, WorkbenchShellError> {
+        self.submit_prompt_from(connection_id, content, None).await
+    }
+
+    /// The same turn, with who is writing it and from where.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection,
+    /// [`WorkbenchShellError::Invalid`] for a name that cannot be written,
+    /// and the session failure when the turn fails.
+    pub async fn submit_prompt_from(
+        &self,
+        connection_id: &str,
+        content: Vec<ContentBlock>,
+        correspondent: Option<crate::Correspondent>,
+    ) -> Result<NativeTurnOutcome, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let content = self
+            .name_who_is_writing(&connection, content, correspondent.as_ref())
+            .await?;
+        connection
+            .control
+            .submit_prompt(content)
+            .await
+            .map_err(|error| match error {
+                // Content the agent never said it could take: the turn is
+                // rejected and the session is untouched, so this is a refusal
+                // the caller can answer, not a failure it must recover from.
+                SupplyError::PromptRefused(refusal) => WorkbenchShellError::Conflict(refusal),
+                other => WorkbenchShellError::Failed(other.to_string()),
+            })
+    }
+
+    /// Put the correspondent where both readers of a turn will find it: ahead
+    /// of what was written, for the agent, and in the lane, for a person
+    /// reading the conversation back.
+    ///
+    /// ACP carries no author, so for the agent this can only be prose in the
+    /// content - in the open, where a reader of the transcript sees the same
+    /// thing the agent saw. The lane is the other half: a sentence inside a
+    /// turn is what the agent was told, while the event is what the host
+    /// knows, and only the second survives whatever the agent made of it.
+    async fn name_who_is_writing(
+        &self,
+        connection: &WorkbenchConnection,
+        mut content: Vec<ContentBlock>,
+        correspondent: Option<&crate::Correspondent>,
+    ) -> Result<Vec<ContentBlock>, WorkbenchShellError> {
+        let Some(correspondent) = correspondent else {
+            return Ok(content);
+        };
+        correspondent
+            .validate()
+            .map_err(WorkbenchShellError::Invalid)?;
+        // After what was written, not before it. An agent reads every block
+        // of a turn, so either place is equally visible to it; the first
+        // block is what a client that reads only one takes to be the message,
+        // and displacing the person's own words with a line about them turns
+        // every such client into one that hears the label and not the ask.
+        content.push(ContentBlock::Text(
+            agent_client_protocol::schema::v1::TextContent::new(correspondent.provenance_line()),
+        ));
+        let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
+        self.append_context_event(
+            connection,
+            event,
+            "host/turn_written",
+            json!({ "correspondent": correspondent, "text": text_of(&content) }),
+        )
+        .await?;
+        Ok(content)
+    }
+
+    async fn submit_workbench_prompt(
+        &self,
+        connection_id: &str,
+        mut content: Vec<ContentBlock>,
+        content_refs: Vec<String>,
+        correspondent: Option<crate::Correspondent>,
+    ) -> Result<WorkbenchPromptResponse, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let workspace = connection
+            .artifact_projector
+            .environment_lease
+            .workspace
+            .clone();
+        for descriptor_id in content_refs {
+            // A file a person hands over reaches the agent twice, because
+            // agents differ in what they can take. As an ACP content block,
+            // for one that reads the turn; and as a real file in the inbox
+            // directory inside its own workspace, for one that only opens
+            // paths. The turn names the path, so neither kind has to guess.
+            let descriptor = self.content.load(&descriptor_id).await?;
+            let bytes = self.content.bytes(&descriptor).await?;
+            match crate::workbench_files::hand_over(&workspace, &descriptor.name, &bytes).await {
+                Ok(path) => content.push(ContentBlock::ResourceLink(
+                    agent_client_protocol::schema::v1::ResourceLink::new(
+                        descriptor.name.clone(),
+                        format!("file://{}", path.display()),
+                    )
+                    .mime_type(descriptor.media_type.clone()),
+                )),
+                // The inbox is a convenience, not the transport. A workspace
+                // that cannot be written still gets the content block, and
+                // the person is not stopped from talking to their agent.
+                Err(refusal) => {
+                    self.append_context_event(
+                        &connection,
+                        connection.context_events.fetch_add(1, Ordering::Relaxed),
+                        "host/inbox_refused",
+                        json!({ "name": descriptor.name, "why": refusal.to_string() }),
+                    )
+                    .await?;
+                }
+            }
+            // The bytes themselves, for an agent that takes embedded content.
+            // One that does not has the file in its inbox and the path in
+            // this turn, so the attachment still reaches it - and refusing
+            // the whole turn over a block the agent never needed would be the
+            // product telling a person their own file is the problem.
+            let embedded = self.content.content_block(&descriptor_id).await?;
+            let takeable = connection
+                .control
+                .prompt_capabilities()
+                .is_none_or(|capabilities| crate::agent_takes(&embedded, &capabilities));
+            if takeable {
+                content.push(embedded);
+            } else {
+                self.append_context_event(
+                    &connection,
+                    connection.context_events.fetch_add(1, Ordering::Relaxed),
+                    "host/attachment_by_path",
+                    json!({
+                        "name": descriptor.name,
+                        "why": "the agent takes no embedded content, so it was handed the file's path",
+                    }),
+                )
+                .await?;
+            }
+        }
+        // A bound project context rides along as baseline ACP content on
+        // every turn until it is cleared; the route keeps the link verbatim.
+        if let Some(binding) = connection.agent_context.lock().await.as_ref() {
+            content.push(workbench_project::context_link(binding));
+        }
+        let content = self
+            .name_who_is_writing(&connection, content, correspondent.as_ref())
+            .await?;
+        let outcome = match connection.control.submit_prompt(content).await {
+            Ok(outcome) => outcome,
+            // Content the agent cannot take is this turn's problem, not the
+            // session's: nothing was sent, the driver is still waiting for the
+            // next command, and the person can say the same thing another way.
+            // Ending the connection here used to await a runner that will
+            // never finish, so attaching a file to an agent without embedded
+            // context hung the turn for good instead of refusing it.
+            Err(SupplyError::PromptRefused(refusal)) => {
+                return Err(WorkbenchShellError::Conflict(refusal));
+            }
+            Err(error) => {
+                let failure = error.to_string();
+                // A failed ACP prompt terminates this runner. Drain both
+                // projections so partial rich output is durable before the
+                // HTTP error is returned and remove the dead connection.
+                let _ = self.finish_connection(connection_id, &connection).await;
+                return Err(WorkbenchShellError::Failed(failure));
+            }
+        };
+        let capture = connection
+            .artifact_projector
+            .wait_turn(outcome.turn_index)
+            .await;
+        Ok(WorkbenchPromptResponse {
+            stop_reason: outcome.stop_reason,
+            control_outcome: outcome.control_outcome,
+            reply_text: outcome.reply_text,
+            artifacts: capture.artifacts,
+            artifact_issues: capture.issues,
+        })
+    }
+
+    /// Request cancellation of the active turn, if one is active right now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn cancel(&self, connection_id: &str) -> Result<Value, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        Ok(match connection.control.cancel_active_turn() {
+            Some(turn) => json!({
+                "active_turn": {"session_id": turn.session_id, "turn_index": turn.turn_index},
+            }),
+            None => json!({ "active_turn": null }),
+        })
+    }
+
+    /// Gracefully disconnect: the agent-owned session stays loadable/resumable.
+    /// Awaits the runner and the projector so the terminal event is durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session failure when the connection ended in an error.
+    pub async fn disconnect(
+        &self,
+        connection_id: &str,
+    ) -> Result<NativeSessionOutcome, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .disconnect()
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        self.finish_connection(connection_id, &connection).await
+    }
+
+    /// Capability-gated `session/close`. An unadvertised close is refused and
+    /// the connection stays registered and usable - it never degrades to a
+    /// silent disconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::Conflict`] when the agent does not
+    /// advertise close.
+    pub async fn close(
+        &self,
+        connection_id: &str,
+    ) -> Result<NativeSessionOutcome, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .close_session()
+            .await
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))?;
+        self.finish_connection(connection_id, &connection).await
+    }
+
+    async fn finish_connection(
+        &self,
+        connection_id: &str,
+        connection: &WorkbenchConnection,
+    ) -> Result<NativeSessionOutcome, WorkbenchShellError> {
+        let runner = connection.runner.lock().await.take();
+        let runner_result = match runner {
+            Some(task) => task.await,
+            None => {
+                return Err(WorkbenchShellError::Conflict(
+                    "connection already finished".into(),
+                ));
+            }
+        };
+        let projection_result = match connection.projection.lock().await.take() {
+            Some(projection) => projection.finish().await,
+            None => Ok(0),
+        };
+        let artifact_result = match connection.artifact_projection.lock().await.take() {
+            Some(projection) => projection.await,
+            None => Ok(()),
+        };
+        if let Some(observation) = connection.observation.lock().await.take() {
+            observation.shutdown().await;
+        }
+        let apps_result = match connection.apps.lock().await.take() {
+            Some(apps) => apps.shutdown().await,
+            None => Ok(()),
+        };
+        self.connections.lock().await.remove(connection_id);
+        let outcome = runner_result
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        projection_result.map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        artifact_result.map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        apps_result.map_err(WorkbenchShellError::Failed)?;
+        Ok(outcome)
+    }
+
+    /// Long-poll the next unmodified ACP permission request. `None` after the
+    /// wait means no request arrived (or the session finished).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn next_permission(
+        &self,
+        connection_id: &str,
+        wait: Duration,
+    ) -> Result<Option<crate::NativePermissionRequest>, WorkbenchShellError> {
+        self.permission_after(connection_id, 0, wait).await
+    }
+
+    /// Recover an unanswered permission after this attachment's cursor.
+    ///
+    /// # Errors
+    /// Returns not-found for an unknown connection.
+    pub async fn permission_after(
+        &self,
+        connection_id: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<crate::NativePermissionRequest>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        Ok(
+            tokio::time::timeout(wait, connection.control.permission_request_after(after))
+                .await
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Answer one pending permission request with an exact agent-offered
+    /// option id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::Conflict`] for an invalid sequence or
+    /// an option the agent did not offer (the request stays pending).
+    pub async fn select_permission(
+        &self,
+        connection_id: &str,
+        sequence: u64,
+        option_id: &str,
+    ) -> Result<(), WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .select_permission(sequence, option_id)
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
+    }
+
+    /// Recover an unanswered file call after this attachment's cursor.
+    ///
+    /// The path in what comes back has already been checked against the
+    /// profile's workspace by the host: a surface is never handed a path it
+    /// would have to refuse for the boundary's sake.
+    ///
+    /// # Errors
+    /// Returns not-found for an unknown connection.
+    pub async fn file_request_after(
+        &self,
+        connection_id: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<crate::NativeFileRequest>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        Ok(
+            tokio::time::timeout(wait, connection.control.file_request_after(after))
+                .await
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Tell one pending file call what the surface did with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::Conflict`] for a sequence that is no
+    /// longer pending, or an answer that does not fit the method asked for.
+    pub async fn answer_file_request(
+        &self,
+        connection_id: &str,
+        sequence: u64,
+        answer: crate::NativeFileAnswer,
+    ) -> Result<(), WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .answer_file_request(sequence, answer)
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
+    }
+
+    /// Long-poll the next connection-bound ACP elicitation. The exact request
+    /// is ephemeral and is not reconstructed from the routing ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn next_elicitation(
+        &self,
+        connection_id: &str,
+        wait: Duration,
+    ) -> Result<Option<crate::NativeElicitationRequest>, WorkbenchShellError> {
+        self.elicitation_after(connection_id, 0, wait).await
+    }
+
+    /// Recover an unanswered elicitation after this attachment's cursor.
+    ///
+    /// # Errors
+    /// Returns not-found for an unknown connection.
+    pub async fn elicitation_after(
+        &self,
+        connection_id: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<crate::NativeElicitationRequest>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        Ok(
+            tokio::time::timeout(wait, connection.control.elicitation_request_after(after))
+                .await
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Return an official accept/decline/cancel action to the requesting ACP
+    /// agent. Accepted form values remain connection-local.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conflict for a stale sequence or schema-invalid response and
+    /// not-found for an unknown connection.
+    pub async fn answer_elicitation(
+        &self,
+        connection_id: &str,
+        sequence: u64,
+        action: AcpElicitationAction,
+    ) -> Result<(), WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .answer_elicitation(sequence, action)
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
+    }
+
+    /// Report the connection phase and identity without exposing the native
+    /// session id to the browser.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn connection_status(
+        &self,
+        connection_id: &str,
+    ) -> Result<Value, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let phase = connection.control.phase();
+        let setup = connection.setup_notes.lock().await.clone();
+        Ok(json!({
+            "connection_id": connection_id,
+            "route_id": connection.route_id,
+            "phase": phase,
+            "setup": setup,
+        }))
+    }
+
+    /// What the agent offers to configure on this session, and its modes.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown connection.
+    pub async fn connection_options(
+        &self,
+        connection_id: &str,
+    ) -> Result<crate::SessionConfiguration, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        Ok(connection.control.configuration().await)
+    }
+
+    /// Choose one of the agent's config options on this session - its model,
+    /// its mode, whatever it declared.
+    ///
+    /// # Errors
+    ///
+    /// Not found for an unknown connection; conflict, with the control's own
+    /// sentence, when the option or the value is not one the agent offers.
+    /// The connection stays open either way.
+    pub async fn set_connection_option(
+        &self,
+        connection_id: &str,
+        config_id: &str,
+        value: &Value,
+    ) -> Result<Vec<agent_client_protocol::schema::v1::SessionConfigOption>, WorkbenchShellError>
+    {
+        let connection = self.connection(connection_id).await?;
+        let value = config_value_of(value)?;
+        connection
+            .control
+            .set_config_option(config_id, value)
+            .await
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
+    }
+
+    /// Choose one of the agent's transitional modes on this session.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_connection_option`].
+    pub async fn set_connection_mode(
+        &self,
+        connection_id: &str,
+        mode_id: &str,
+    ) -> Result<agent_client_protocol::schema::v1::SessionModeState, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        connection
+            .control
+            .set_legacy_mode(mode_id)
+            .await
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
+    }
+
+    /// Find the live runtime for an exact profile/route without starting or
+    /// loading an agent session. This returns only an ephemeral host handle.
+    ///
+    /// # Errors
+    /// Rejects missing or mismatched profiles/routes and ambiguous runtimes.
+    pub async fn live_route_connection(
+        &self,
+        profile_id: &str,
+        route_id: &str,
+    ) -> Result<Option<Value>, WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let route = route_id.to_owned();
+        let stored = self
+            .with_ledger(move |ledger| ledger.route(&route))
+            .await
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let expected = SessionRouteBinding::new(
+            route_id,
+            profile.agent_id,
+            profile.profile_id,
+            stored.native_session_id,
+            profile.environment_profile_id,
+            &profile.workspace,
+            profile.attachments,
+        )
+        .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
+        self.with_ledger(move |ledger| ledger.require_binding(&expected))
+            .await
+            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))?;
+        let connections = self.connections.lock().await;
+        let mut live = connections.iter().filter(|(_, connection)| {
+            connection.route_id == route_id
+                && !matches!(
+                    connection.control.phase(),
+                    crate::NativeSessionPhase::Finished
+                )
+        });
+        let result = live.next().map(|(id, _)| {
+            json!({
+                "connection_id": id, "route_id": route_id,
+            })
+        });
+        if live.next().is_some() {
+            return Err(WorkbenchShellError::Conflict(
+                "route has multiple live runtimes".into(),
+            ));
+        }
+        Ok(result)
+    }
+
+    /// Long-poll the durable ledger for the next delivery batch after this
+    /// surface's cursor. Reading never advances the cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown route.
+    pub async fn events(
+        &self,
+        route_id: &str,
+        surface_id: &str,
+        limit: usize,
+        wait: Duration,
+    ) -> Result<SurfaceEventBatch, WorkbenchShellError> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let route = route_id.to_owned();
+            let surface = surface_id.to_owned();
+            let batch = self
+                .with_ledger(move |ledger| ledger.events_for_surface(&route, &surface, limit))
+                .await
+                .map_err(|error| match error {
+                    crate::RoutingError::RouteNotFound(route) => {
+                        WorkbenchShellError::NotFound(format!("unknown route {route}"))
+                    }
+                    other => WorkbenchShellError::Failed(other.to_string()),
+                })?;
+            if !batch.events.is_empty() || tokio::time::Instant::now() >= deadline {
+                return Ok(batch);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Acknowledge this surface's cursor after the events were rendered.
+    ///
+    /// # Errors
+    ///
+    /// Regression/beyond-head acknowledgements are refused by the ledger.
+    pub async fn acknowledge(
+        &self,
+        route_id: &str,
+        surface_id: &str,
+        cursor: u64,
+    ) -> Result<(), WorkbenchShellError> {
+        let route = route_id.to_owned();
+        let surface = surface_id.to_owned();
+        self.with_ledger(move |ledger| ledger.acknowledge_surface(&route, &surface, cursor))
+            .await
+            .map_err(|error| match error {
+                crate::RoutingError::RouteNotFound(route) => {
+                    WorkbenchShellError::NotFound(format!("unknown route {route}"))
+                }
+                other => WorkbenchShellError::Conflict(other.to_string()),
+            })
+    }
+
+    /// Discover the Apps of this connection's attachments (lazily dialing
+    /// host-side stdio clients on first use) and project them for the panel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn apps_list(
+        &self,
+        connection_id: &str,
+    ) -> Result<Vec<crate::AppAttachmentView>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        if apps.is_none() {
+            *apps = Some(
+                workbench_apps::discover(
+                    &connection.attachments,
+                    Some(&connection.artifact_projector.environment_lease.workspace),
+                )
+                .await,
+            );
+        }
+        Ok(apps.as_ref().map(ConnectionApps::views).unwrap_or_default())
+    }
+
+    /// Start one App-only structured fallback on the explicitly independent
+    /// Workbench MCP connection. Success means the server returned a real MCP
+    /// `input_required` form; ordinary completed tool calls are refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit connection, discovery, visibility or MCP protocol
+    /// error; a completed ordinary tool is never accepted as an interaction.
+    pub async fn start_app_interaction(
+        &self,
+        connection_id: &str,
+        server_name: &str,
+        tool: &str,
+        arguments: JsonObject,
+    ) -> Result<crate::workbench_apps::PendingElicitationView, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        if apps.is_none() {
+            *apps = Some(
+                workbench_apps::discover(
+                    &connection.attachments,
+                    Some(&connection.artifact_projector.environment_lease.workspace),
+                )
+                .await,
+            );
+        }
+        let state = apps.as_mut().ok_or_else(|| {
+            WorkbenchShellError::Conflict("no Apps were discovered on this connection".into())
+        })?;
+        let view = state
+            .start_interaction(server_name, tool, arguments)
+            .await
+            .map_err(WorkbenchShellError::Conflict)?;
+        let event = state.next_event;
+        state.next_event += 1;
+        drop(apps);
+        self.append_app_event(
+            &connection,
+            connection_id,
+            event,
+            "host/app_elicitation_requested",
+            json!({
+                "server": view.server_name,
+                "tool": view.tool,
+                "interaction": view.interaction_id,
+                "connection_scope": view.connection_scope,
+            }),
+        )
+        .await?;
+        Ok(view)
+    }
+
+    /// Return one exact accept/decline/cancel action to the MCP server and
+    /// drive the second MRTR call. Raw form content remains connection-local.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit error for an unknown/consumed interaction, invalid
+    /// action payload, transport failure or unsupported additional MRTR round.
+    pub async fn answer_app_interaction(
+        &self,
+        connection_id: &str,
+        interaction_id: &str,
+        action: ElicitationAction,
+        content: Option<Value>,
+    ) -> Result<rmcp::model::CallToolResult, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        let state = apps.as_mut().ok_or_else(|| {
+            WorkbenchShellError::Conflict("no Apps were discovered on this connection".into())
+        })?;
+        let result = state
+            .answer_interaction(interaction_id, action.clone(), content)
+            .await
+            .map_err(WorkbenchShellError::Conflict)?;
+        let event = state.next_event;
+        state.next_event += 1;
+        drop(apps);
+        self.append_app_event(
+            &connection,
+            connection_id,
+            event,
+            "host/app_elicitation_answered",
+            json!({
+                "interaction": interaction_id,
+                "action": action,
+                "completed": true,
+            }),
+        )
+        .await?;
+        Ok(result)
+    }
+
+    /// Long-poll the next exact agent-initiated App call and open its declared
+    /// resource on the existing independent host-side App connection.
+    ///
+    /// Raw input/result comes only from connection-local observation memory.
+    /// The ledger contains redacted descriptors written by the observer
+    /// projector, not this payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection and
+    /// propagates App resource discovery/read failures.
+    pub async fn next_observed_app(
+        &self,
+        connection_id: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<ObservedAppOpen>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let observation = connection.observation.lock().await;
+        let Some(runtime) = observation.as_ref() else {
+            return Ok(None);
+        };
+        let Some(call) = runtime.next(after, wait).await else {
+            return Ok(None);
+        };
+        drop(observation);
+        let mut observed_apps = connection.observed_apps.lock().await;
+        let opened = if let Some(opened) = observed_apps.get(&call.observation_id) {
+            opened.clone()
+        } else {
+            let opened = self
+                .app_open(connection_id, &call.server_name, &call.resource_uri)
+                .await?;
+            observed_apps.insert(call.observation_id.clone(), opened.clone());
+            opened
+        };
+        Ok(Some(ObservedAppOpen {
+            opened,
+            observation: call,
+        }))
+    }
+
+    /// Await the terminal result of one already opened observed App call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection.
+    pub async fn observed_app_status(
+        &self,
+        connection_id: &str,
+        observation_id: &str,
+        wait: Duration,
+    ) -> Result<Option<ObservedAppCall>, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let observation = connection.observation.lock().await;
+        let Some(runtime) = observation.as_ref() else {
+            return Ok(None);
+        };
+        Ok(runtime.get_terminal(observation_id, wait).await)
+    }
+
+    /// Open one declared App: read its resource (content-level `_meta.ui`
+    /// wins), resolve CSP/permissions in Rust and register the app id.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on unknown connection/server, an undeclared URI, or a
+    /// resource that is not a spec-shaped App document.
+    pub async fn app_open(
+        &self,
+        connection_id: &str,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<OpenedApp, WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        if apps.is_none() {
+            *apps = Some(
+                workbench_apps::discover(
+                    &connection.attachments,
+                    Some(&connection.artifact_projector.environment_lease.workspace),
+                )
+                .await,
+            );
+        }
+        let Some(state) = apps.as_mut() else {
+            return Err(WorkbenchShellError::Failed(
+                "apps state disappeared after initialization".into(),
+            ));
+        };
+        let entry_index = state
+            .entries
+            .iter()
+            .position(|entry| entry.server_name == server_name)
+            .ok_or_else(|| {
+                WorkbenchShellError::NotFound(format!("unknown attachment {server_name}"))
+            })?;
+        let workbench_apps::AppRead {
+            html,
+            csp,
+            permissions,
+            prefers_border,
+            isolated,
+        } = workbench_apps::read_app(&state.entries[entry_index], uri)
+            .await
+            .map_err(WorkbenchShellError::Conflict)?;
+        let app_id = format!("a{}", state.next_app);
+        state.next_app += 1;
+        state.open.insert(
+            app_id.clone(),
+            OpenApp {
+                entry_index,
+                uri: uri.to_owned(),
+                html: html.clone(),
+                csp: csp.clone(),
+                isolated,
+            },
+        );
+        let event = state.next_event;
+        state.next_event += 1;
+        drop(apps);
+        self.append_app_event(
+            &connection,
+            connection_id,
+            event,
+            "host/app_opened",
+            json!({
+                "server": server_name,
+                "uri": uri,
+                "csp": csp,
+                "permissions": permissions,
+            }),
+        )
+        .await?;
+        let (sandbox_url, sandbox_origin) =
+            self.sandbox.get().map_or((None, None), |(url, origin)| {
+                (Some(url.clone()), Some(origin.clone()))
+            });
+        let view_url = sandbox_origin
+            .as_ref()
+            .filter(|_| isolated)
+            .map(|origin| format!("{origin}/apps/{connection_id}/{app_id}/view/"));
+        Ok(OpenedApp {
+            app_id,
+            connection_id: connection_id.to_owned(),
+            server_name: server_name.to_owned(),
+            uri: uri.to_owned(),
+            html,
+            csp,
+            permissions,
+            prefers_border,
+            sandbox_url,
+            sandbox_origin,
+            isolated,
+            view_url,
+        })
+    }
+
+    /// The View of an open App that asked for a real origin, as the document
+    /// the sandbox origin serves at `/apps/{connection}/{app}/view/`, with
+    /// the CSP the host resolved for it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unknown connections and App handles, and an App that did not
+    /// ask for a real origin (its View is a `srcdoc` document).
+    pub async fn app_view(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+    ) -> Result<(String, String), WorkbenchShellError> {
+        if connection_id == "project" {
+            return self.project_app_view(app_id).await;
+        }
+        let connection = self.connection(connection_id).await?;
+        let apps = connection.apps.lock().await;
+        let Some(state) = apps.as_ref() else {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "connection {connection_id} has no open Apps"
+            )));
+        };
+        let open = state
+            .open
+            .get(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown App {app_id}")))?;
+        if !open.isolated {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "App {app_id} is not served as a document"
+            )));
+        }
+        Ok((open.html.clone(), open.csp.clone()))
+    }
+
+    /// One file under an open App's View path: the server's resource whose
+    /// uri is the View's uri with its last segment replaced by `path`, text
+    /// or blob, with the media type the server lists.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unknown connections and App handles, a climbing or empty
+    /// path, and anything the server does not list.
+    pub async fn app_file_resource(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+        path: &str,
+    ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
+        if connection_id == "project" {
+            return self.project_app_file(app_id, path).await;
+        }
+        let connection = self.connection(connection_id).await?;
+        let apps = connection.apps.lock().await;
+        let Some(state) = apps.as_ref() else {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "connection {connection_id} has no open Apps"
+            )));
+        };
+        let open = state
+            .open
+            .get(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown App {app_id}")))?;
+        let entry = state
+            .entries
+            .get(open.entry_index)
+            .ok_or_else(|| WorkbenchShellError::Failed("open App lost its attachment".into()))?;
+        let uri = workbench_apps::sibling_uri(&open.uri, path)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("no file at {path}")))?;
+        workbench_apps::read_file_resource(entry, &uri)
+            .await
+            .map_err(WorkbenchShellError::Conflict)
+    }
+
+    /// A script resource of an open App's server, for the sandbox origin to
+    /// serve to that App (worklet and worker scripts cannot be `blob:` under
+    /// the App CSP and must come from a URL the CSP allows). Only resources
+    /// the server lists with the script MIME qualify; the App must be open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection or
+    /// App and [`WorkbenchShellError::Conflict`] when the server does not
+    /// list the URI as a script resource or the read disagrees.
+    pub async fn app_script_resource(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+        uri: &str,
+    ) -> Result<String, WorkbenchShellError> {
+        if connection_id == "project" {
+            return self.project_app_script(app_id, uri).await;
+        }
+        let connection = self.connection(connection_id).await?;
+        let apps = connection.apps.lock().await;
+        let Some(state) = apps.as_ref() else {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "connection {connection_id} has no open Apps"
+            )));
+        };
+        let open = state
+            .open
+            .get(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown App {app_id}")))?;
+        let entry = state
+            .entries
+            .get(open.entry_index)
+            .ok_or_else(|| WorkbenchShellError::Failed("open App lost its attachment".into()))?;
+        workbench_apps::read_script_resource(entry, uri)
+            .await
+            .map_err(WorkbenchShellError::Conflict)
+    }
+
+    /// The exact bytes of one blob resource of an open App's server, with the
+    /// media type the server gave them.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unknown connections and App handles, and anything the server
+    /// does not serve as a blob.
+    pub async fn app_blob_resource(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+        uri: &str,
+    ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
+        if connection_id == "project" {
+            return self.project_app_blob(app_id, uri).await;
+        }
+        let connection = self.connection(connection_id).await?;
+        let apps = connection.apps.lock().await;
+        let Some(state) = apps.as_ref() else {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "connection {connection_id} has no open Apps"
+            )));
+        };
+        let open = state
+            .open
+            .get(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown App {app_id}")))?;
+        let entry = state
+            .entries
+            .get(open.entry_index)
+            .ok_or_else(|| WorkbenchShellError::Failed("open App lost its attachment".into()))?;
+        workbench_apps::read_blob_resource(entry, uri)
+            .await
+            .map_err(WorkbenchShellError::Conflict)
+    }
+
+    /// The workspace an open App's server works in, where bytes the App
+    /// uploads land. The host that declared the server knows it; the App
+    /// never names a path, only a handle.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unknown connections and App handles, and a server the host
+    /// serves without a workspace.
+    pub async fn app_upload_root(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+    ) -> Result<PathBuf, WorkbenchShellError> {
+        let root = if connection_id == "project" {
+            self.project_app_upload_root(app_id).await?
+        } else {
+            let connection = self.connection(connection_id).await?;
+            let apps = connection.apps.lock().await;
+            let Some(state) = apps.as_ref() else {
+                return Err(WorkbenchShellError::NotFound(format!(
+                    "connection {connection_id} has no open Apps"
+                )));
+            };
+            let open = state
+                .open
+                .get(app_id)
+                .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown App {app_id}")))?;
+            state
+                .entries
+                .get(open.entry_index)
+                .ok_or_else(|| WorkbenchShellError::Failed("open App lost its attachment".into()))?
+                .upload_root
+                .clone()
+        };
+        root.ok_or_else(|| {
+            WorkbenchShellError::NotFound(format!(
+                "the server of App {app_id} has no workspace to upload into"
+            ))
+        })
+    }
+
+    /// Relay one bare JSON-RPC message from an open App. The method allowlist
+    /// and the tool visibility gate live HERE; `ui/*` never reaches the
+    /// server; cross-server calls are impossible because the app id maps to
+    /// exactly one server's client. A message without an integer/string id is
+    /// a notification and is deliberately not forwarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for unknown connection/app
+    /// and [`WorkbenchShellError::Invalid`] for a non-JSON-RPC body; relay
+    /// refusals are JSON-RPC errors in the returned value, not `Err`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear relay transaction keeps parse, gate, execute and ledger ordering auditable"
+    )]
+    pub async fn app_rpc(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+        message: Value,
+    ) -> Result<Value, WorkbenchShellError> {
+        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return Err(WorkbenchShellError::Invalid(
+                "relay accepts JSON-RPC 2.0 messages".into(),
+            ));
+        }
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return Err(WorkbenchShellError::Invalid(
+                "relay accepts requests and notifications, not responses".into(),
+            ));
+        };
+        let method = method.to_owned();
+        // Integer or string ids are requests; anything else (including the
+        // float-id trick that parses as a notification) is not forwarded.
+        let id = message.get("id").cloned().filter(|id| {
+            id.is_string()
+                || matches!(id, Value::Number(number) if number.is_i64() || number.is_u64())
+        });
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        let state = apps.as_mut().ok_or_else(|| {
+            WorkbenchShellError::Conflict("no apps were discovered on this connection".into())
+        })?;
+        let open = state
+            .open
+            .get(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown app {app_id}")))?;
+        let entry_index = open.entry_index;
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let tool_name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(id) = id else {
+            return Ok(Value::Null);
+        };
+        let decision =
+            workbench_apps::allow_relay(&state.entries[entry_index], &method, tool_name.as_deref());
+        let server_name = state.entries[entry_index].server_name.clone();
+        if let Err(refusal) = decision {
+            let event = state.next_event;
+            state.next_event += 1;
+            drop(apps);
+            self.append_app_event(
+                &connection,
+                connection_id,
+                event,
+                "host/app_tool_call",
+                json!({
+                    "server": server_name,
+                    "method": method,
+                    "tool": tool_name,
+                    "decision": "refused",
+                    "reason": refusal.message(),
+                }),
+            )
+            .await?;
+            let code = match refusal {
+                RelayRefusal::MethodNotAllowed(_) => -32601,
+                RelayRefusal::ToolNotDeclared(_) | RelayRefusal::ToolNotAppVisible(_) => -32602,
+            };
+            return Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": code, "message": refusal.message()},
+            }));
+        }
+        let ledger_event = (method == "tools/call").then(|| {
+            let event = state.next_event;
+            state.next_event += 1;
+            event
+        });
+        // Taking the client puts the lock down; the event number above is
+        // still reserved under it, so the ledger order does not move.
+        let outcome = match workbench_apps::take_relay_client(apps, entry_index) {
+            Ok(client) => workbench_apps::execute_relay(&client, &method, &params).await,
+            Err(refusal) => Err(refusal),
+        };
+        if let Some(event) = ledger_event {
+            self.append_app_event(
+                &connection,
+                connection_id,
+                event,
+                "host/app_tool_call",
+                json!({
+                    "server": server_name,
+                    "method": method,
+                    "tool": tool_name,
+                    "decision": "allowed",
+                }),
+            )
+            .await?;
+        }
+        Ok(match outcome {
+            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            Err(message) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32000, "message": message},
+            }),
+        })
+    }
+
+    /// Close one open App after its `ui/resource-teardown` request resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for unknown connection/app.
+    pub async fn app_close(
+        &self,
+        connection_id: &str,
+        app_id: &str,
+    ) -> Result<(), WorkbenchShellError> {
+        let connection = self.connection(connection_id).await?;
+        let mut apps = connection.apps.lock().await;
+        let state = apps.as_mut().ok_or_else(|| {
+            WorkbenchShellError::Conflict("no apps were discovered on this connection".into())
+        })?;
+        let open = state
+            .open
+            .remove(app_id)
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("unknown app {app_id}")))?;
+        let server_name = state.entries[open.entry_index].server_name.clone();
+        let event = state.next_event;
+        state.next_event += 1;
+        drop(apps);
+        connection
+            .observed_apps
+            .lock()
+            .await
+            .retain(|_, opened| opened.app_id != app_id);
+        self.append_app_event(
+            &connection,
+            connection_id,
+            event,
+            "host/app_closed",
+            json!({"server": server_name, "uri": open.uri}),
+        )
+        .await
+    }
+
+    /// Record the sandbox listener address once the serve layer bound it.
+    pub(crate) fn set_sandbox(&self, url: String, origin: String) {
+        let _ = self.sandbox.set((url, origin));
+    }
+
+    /// Mint nothing: record the secret the product minted for this run.
+    ///
+    /// A Workbench that is handed one asks every caller for it; one that is
+    /// not asks nobody, which is the shape a test serving the shell in
+    /// process has always had.
+    pub fn set_session_token(&self, token: String) {
+        let _ = self.session_token.set(token);
+    }
+
+    /// The secret this run asks for, if it asks for one.
+    fn session_token(&self) -> Option<&str> {
+        self.session_token.get().map(String::as_str)
+    }
+
+    /// Record the bundle directory holding `apps-bridge.js`.
+    pub(crate) fn set_apps_bundle(&self, bundle: PathBuf) {
+        let _ = self.apps_bundle.set(bundle);
+    }
+
+    /// Apps are part of the product: the bridge is embedded, so the panel is
+    /// live rather than waiting for a second install step.
+    pub(crate) fn apps_enabled() -> bool {
+        !APPS_BRIDGE.is_empty()
+    }
+
+    /// Configure the product-internal observer command. The command is inert
+    /// unless the Apps bundle is also enabled and a stdio tool declares a UI.
+    pub fn set_mcp_observer_command(&self, executable: PathBuf, prefix_args: Vec<String>) {
+        let _ = self.mcp_observer.set(ObserverCommand {
+            executable,
+            prefix_args,
+        });
+    }
+
+    async fn append_app_event(
+        &self,
+        connection: &WorkbenchConnection,
+        connection_id: &str,
+        event: u64,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(), WorkbenchShellError> {
+        let route = connection.route_id.clone();
+        let event_id = format!("app-{connection_id}-{event}");
+        let kind = kind.to_owned();
+        self.with_ledger(move |ledger| {
+            ledger.append_event(&route, &event_id, &kind, SurfaceEventSource::Host, &payload)
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    async fn with_ledger<T, F>(&self, operation: F) -> Result<T, crate::RoutingError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut RoutingLedger) -> Result<T, crate::RoutingError> + Send + 'static,
+    {
+        let path = self.ledger_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut ledger = RoutingLedger::open(&path)?;
+            operation(&mut ledger)
+        })
+        .await
+        .map_err(|error| crate::RoutingError::Projection(error.to_string()))?
+    }
+}
+
+/// A running shell server bound to a local address. Dropping it stops the
+/// server tasks; open connections keep their own runner tasks.
+pub struct WorkbenchShellHandle {
+    pub local_addr: SocketAddr,
+    /// The second-origin sandbox listener (origin = scheme+host+port).
+    pub sandbox_addr: SocketAddr,
+    state: Arc<WorkbenchShellState>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    sandbox_task: Option<tokio::task::JoinHandle<()>>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    sandbox_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl std::fmt::Debug for WorkbenchShellHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkbenchShellHandle")
+            .field("local_addr", &self.local_addr)
+            .field("sandbox_addr", &self.sandbox_addr)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WorkbenchShellHandle {
+    /// Stop both listeners and every accepted HTTP connection owned by them,
+    /// then terminate the Project space's host-side clients and await their
+    /// child boundaries. Native agent connections remain owned by
+    /// [`WorkbenchShellState`] and must be disconnected or closed through
+    /// their normal lifecycle first.
+    pub async fn shutdown(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(shutdown) = self.sandbox_shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        for task in [&mut self.task, &mut self.sandbox_task] {
+            if let Some(task) = task.take() {
+                let _ = task.await;
+            }
+        }
+        let _ = self.state.shutdown_projects().await;
+    }
+}
+
+impl Drop for WorkbenchShellHandle {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(shutdown) = self.sandbox_shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+type ShellBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+
+fn respond(status: StatusCode, content_type: &str, body: String) -> Response<ShellBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(infallible_to_io)
+                .boxed(),
+        )
+        .expect("static response")
+}
+
+/// Bytes as they are, with the type the caller decided on. Used for a file
+/// out of the agent's outbox, whose content type comes from its name rather
+/// than from anything the agent said.
+fn respond_bytes(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<ShellBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        // The page opens these in a tab. A file the agent wrote is not the
+        // Workbench's own script, so it is never run as one.
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", "sandbox")
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(infallible_to_io)
+                .boxed(),
+        )
+        .expect("static response")
+}
+
+fn infallible_to_io(value: Infallible) -> std::io::Error {
+    match value {}
+}
+
+fn decode_standard_base64(value: &str) -> Result<Vec<u8>, WorkbenchShellError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| WorkbenchShellError::Invalid("ACP binary content is not valid base64".into()))
+}
+
+fn content_name_from_uri(uri: &str, fallback: &str) -> String {
+    uri.rsplit(['/', ':'])
+        .next()
+        .map(percent_decode)
+        .filter(|name| !name.is_empty() && name.len() <= 512 && !name.chars().any(char::is_control))
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn respond_json(status: StatusCode, value: &Value) -> Response<ShellBody> {
+    respond(status, "application/json", value.to_string())
+}
+
+fn error_response(error: &WorkbenchShellError) -> Response<ShellBody> {
+    respond_json(error.status(), &json!({ "error": error.to_string() }))
+}
+
+/// A verbatim project resource read: the body is the server's text, the
+/// content type its MIME, and the exact resource URI travels as a header so a
+/// browser can name what it displayed without parsing the body.
+fn envelope_result(result: Result<EnvelopeRead, WorkbenchShellError>) -> Response<ShellBody> {
+    match result {
+        Ok(read) => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", read.mime)
+            .header("x-swem-resource-uri", read.uri)
+            .body(
+                Full::new(Bytes::from(read.text))
+                    .map_err(infallible_to_io)
+                    .boxed(),
+            )
+            .expect("static response"),
+        Err(error) => error_response(&error),
+    }
+}
+
+fn json_result<T: serde::Serialize>(result: Result<T, WorkbenchShellError>) -> Response<ShellBody> {
+    match result.and_then(|value| {
+        serde_json::to_value(value).map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }) {
+        Ok(value) => respond_json(StatusCode::OK, &value),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// [`json_result`] for work that computes rather than waits.
+///
+/// A handler that does its work synchronously holds the runtime thread it is
+/// polled on for the whole of it, and nothing can take that task away: it
+/// never yields. On 2026-09-21 `state.packages()` - which loads every package,
+/// and so instantiates every package's WebAssembly component - took 13-22 s on
+/// this machine, and an unrelated `GET /api/projects` measured beside it went
+/// from 39 ms to 21 s. From the page that is every press being ignored for
+/// twenty seconds.
+///
+/// The compiled-code cache took that particular call to under half a second,
+/// but the shape is what allowed it: any handler that thinks instead of
+/// waiting can do this again. So the computing ones are handed to the blocking
+/// pool, where a thread may be occupied without costing the runtime one, and
+/// the waiting ones are left exactly where they are - they already yield, and
+/// moving them would only add a hop.
+async fn blocking_json<T, F>(work: F) -> Response<ShellBody>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce() -> Result<T, WorkbenchShellError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => json_result(result),
+        Err(error) => error_response(&WorkbenchShellError::Failed(error.to_string())),
+    }
+}
+
+/// What a turn said, as one string, for a lane a person reads back.
+///
+/// Text blocks only: an attachment is named by its own event, and a lane that
+/// tried to carry bytes would stop being a record and start being a store.
+fn text_of(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn query_param(query: Option<&str>, name: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
+}
+
+async fn read_json(request: Request<hyper::body::Incoming>) -> Result<Value, WorkbenchShellError> {
+    let body = request
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?
+        .to_bytes();
+    serde_json::from_slice(&body).map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+}
+
+async fn upload_content(
+    state: &WorkbenchShellState,
+    request: Request<hyper::body::Incoming>,
+    query: Option<&str>,
+) -> Result<crate::WorkbenchContentDescriptor, WorkbenchShellError> {
+    let name = query_param(query, "name")
+        .map(|value| percent_decode(&value))
+        .ok_or_else(|| WorkbenchShellError::Invalid("name query parameter is required".into()))?;
+    let media_type = request
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    state
+        .content
+        .ingest_http(name, media_type, request.into_body())
+        .await
+}
+
+#[derive(Clone, Copy)]
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+fn parse_byte_range(value: &str, length: u64) -> Option<ByteRange> {
+    let value = value.strip_prefix("bytes=")?;
+    if value.contains(',') || length == 0 {
+        return None;
+    }
+    let (start, end) = value.split_once('-')?;
+    if start.is_empty() {
+        let suffix: u64 = end.parse().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        return Some(ByteRange {
+            start: length.saturating_sub(suffix),
+            end: length - 1,
+        });
+    }
+    let start: u64 = start.parse().ok()?;
+    if start >= length {
+        return None;
+    }
+    let end = if end.is_empty() {
+        length - 1
+    } else {
+        end.parse::<u64>().ok()?.min(length - 1)
+    };
+    (end >= start).then_some(ByteRange { start, end })
+}
+
+fn disposition_value(name: &str, download: bool) -> String {
+    let fallback = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let encoded = name
+        .as_bytes()
+        .iter()
+        .map(|byte| match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
+                char::from(*byte).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect::<String>();
+    format!(
+        "{}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}",
+        if download { "attachment" } else { "inline" }
+    )
+}
+
+fn representation_digest_header(content_digest: &str) -> Result<String, WorkbenchShellError> {
+    let hex = content_digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| WorkbenchShellError::Failed("unsupported content digest".into()))?;
+    if hex.len() != 64 {
+        return Err(WorkbenchShellError::Failed("invalid content digest".into()));
+    }
+    let mut bytes = Vec::with_capacity(32);
+    for pair in hex.as_bytes().chunks_exact(2) {
+        let pair = std::str::from_utf8(pair)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        bytes.push(
+            u8::from_str_radix(pair, 16)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?,
+        );
+    }
+    Ok(format!(
+        "sha-256=:{}:",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+async fn serve_content(
+    state: &WorkbenchShellState,
+    request: Request<hyper::body::Incoming>,
+    descriptor_id: &str,
+    download: bool,
+) -> Result<Response<ShellBody>, WorkbenchShellError> {
+    let descriptor = state.content.load(descriptor_id).await?;
+    let requested_range = request
+        .headers()
+        .get(hyper::header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let range = match requested_range {
+        Some(value) => match parse_byte_range(value, descriptor.byte_length) {
+            Some(range) => Some(range),
+            None => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(
+                        "content-range",
+                        format!("bytes */{}", descriptor.byte_length),
+                    )
+                    .header("accept-ranges", "bytes")
+                    .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
+                    .map_err(|error| WorkbenchShellError::Failed(error.to_string()));
+            }
+        },
+        None => None,
+    };
+    let (status, start, length, content_range) =
+        range.map_or((StatusCode::OK, 0, descriptor.byte_length, None), |range| {
+            (
+                StatusCode::PARTIAL_CONTENT,
+                range.start,
+                range.end - range.start + 1,
+                Some(format!(
+                    "bytes {}-{}/{}",
+                    range.start, range.end, descriptor.byte_length
+                )),
+            )
+        });
+    let mut builder = Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, &descriptor.media_type)
+        .header(hyper::header::CONTENT_LENGTH, length)
+        .header("accept-ranges", "bytes")
+        .header(
+            "repr-digest",
+            representation_digest_header(&descriptor.content_digest)?,
+        )
+        .header("etag", format!("\"{}\"", descriptor.content_digest))
+        .header(
+            hyper::header::CONTENT_DISPOSITION,
+            disposition_value(&descriptor.name, download),
+        );
+    if let Some(content_range) = content_range {
+        builder = builder.header(hyper::header::CONTENT_RANGE, content_range);
+    }
+    if request.method() == Method::HEAD {
+        return builder
+            .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()));
+    }
+    let mut file = state.content.blob_file(&descriptor).await?;
+    file.seek(SeekFrom::Start(start))
+        .await
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+    let stream = ReaderStream::new(file.take(length)).map_ok(Frame::data);
+    builder
+        .body(StreamBody::new(stream).boxed())
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+}
+
+#[derive(Deserialize)]
+struct OpenConnectionBody {
+    profile_id: String,
+    mode: ShellConnectionMode,
+    #[serde(default)]
+    route_id: Option<String>,
+    #[serde(default)]
+    connection_id: Option<String>,
+    /// The authentication method the person chose in the surface, by the id
+    /// the agent advertised at handshake time.
+    #[serde(default)]
+    auth_method_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProfileSecretBody {
+    type_id: String,
+    #[serde(default)]
+    label: String,
+    /// The variable name; required only for `generic_env_var`, otherwise the
+    /// type's conventional one is used.
+    #[serde(default)]
+    name: Option<String>,
+    value: String,
+}
+
+/// What a surface needs to offer a person a key: the kinds it may be, and
+/// the ones this profile already holds (names, never values).
+#[derive(Serialize)]
+pub struct ProfileSecrets {
+    pub types: &'static [crate::SecretType],
+    pub secrets: Vec<crate::SecretEntry>,
+}
+
+#[derive(Deserialize)]
+struct CreateProjectBody {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct InstallAgentBody {
+    agent_id: String,
+    /// The exact plan the person was shown and clicked.
+    plan_id: String,
+}
+
+#[derive(Deserialize)]
+struct InstallToolBody {
+    /// The exact plan the person was shown and clicked.
+    plan_id: String,
+}
+
+#[derive(Deserialize)]
+struct InstallPackageBody {
+    /// The exact plan the person was shown and clicked.
+    plan_id: String,
+}
+
+#[derive(Deserialize)]
+struct ProjectSecretBody {
+    value: String,
+}
+
+#[derive(Deserialize)]
+struct CreateLocalProfileBody {
+    agent_id: String,
+    /// The name this profile goes by. Absent on first run, where there is only
+    /// one and the agent's own name will do.
+    #[serde(default)]
+    profile_id: Option<String>,
+    /// The model provider, the model, the role and the skills, when the
+    /// person filled them in with the name. Absent means the agent's own
+    /// defaults, which is what one click on an agent gives.
+    #[serde(default)]
+    setup: Option<crate::AgentSetup>,
+}
+
+#[derive(Deserialize)]
+struct PromptBody {
+    #[serde(default)]
+    content: Vec<ContentBlock>,
+    #[serde(default)]
+    content_refs: Vec<String>,
+    /// Who is writing, and from where. Absent while no surface says - which
+    /// is what every caller written before this did.
+    #[serde(default)]
+    correspondent: Option<crate::Correspondent>,
+}
+
+#[derive(Serialize)]
+struct WorkbenchPromptResponse {
+    stop_reason: String,
+    control_outcome: crate::NativeTurnControlOutcome,
+    reply_text: String,
+    artifacts: Vec<crate::WorkbenchContentDescriptor>,
+    artifact_issues: Vec<WorkbenchArtifactIssue>,
+}
+
+#[derive(Clone, Default)]
+struct WorkbenchArtifactCapture {
+    artifacts: Vec<crate::WorkbenchContentDescriptor>,
+    issues: Vec<WorkbenchArtifactIssue>,
+}
+
+type CapturedArtifact = Result<crate::WorkbenchContentDescriptor, WorkbenchArtifactIssue>;
+
+/// A projection failure is deliberately separate from the agent turn result.
+/// It contains no raw bytes or URI and is safe for the durable route.
+#[derive(Clone, Debug, Serialize)]
+struct WorkbenchArtifactIssue {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_type: Option<String>,
+    reason: String,
+}
+
+impl WorkbenchArtifactIssue {
+    fn new(name: String, media_type: Option<String>, reason: impl Into<String>) -> Self {
+        Self {
+            name,
+            media_type,
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SelectPermissionBody {
+    sequence: u64,
+    option_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnswerNativeElicitationBody {
+    sequence: u64,
+    #[serde(flatten)]
+    action: AcpElicitationAction,
+}
+
+#[derive(Deserialize)]
+struct AcknowledgeBody {
+    surface_id: String,
+    cursor: u64,
+}
+
+#[derive(Deserialize)]
+struct StartAppInteractionBody {
+    server_name: String,
+    tool: String,
+    #[serde(default)]
+    arguments: JsonObject,
+}
+
+#[derive(Deserialize)]
+struct AnswerAppInteractionBody {
+    action: ElicitationAction,
+    #[serde(default)]
+    content: Option<Value>,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat routing match keeps the whole HTTP projection auditable in one place"
+)]
+/// A fresh secret for one run of the Workbench.
+///
+/// # Errors
+///
+/// When the operating system will not give this process random bytes.
+pub fn mint_session_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// The cookie this Workbench keeps its secret in, named by the port so two
+/// Workbenches on one machine do not overwrite each other's: cookies are
+/// scoped by host and path, never by port.
+fn session_cookie_name(headers: &hyper::HeaderMap) -> String {
+    let port = headers
+        .get(hyper::header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .and_then(|host| host.rsplit_once(':'))
+        .map_or_else(|| "0".to_owned(), |(_, port)| port.to_owned());
+    format!("swem_session_{port}")
+}
+
+/// Whether this request carries the secret this run asks for.
+///
+/// Refusing a page on another site is not the whole door: every program on
+/// this machine can reach loopback too, and a terminal and a profile's
+/// secrets are behind it. So the product mints a secret per run, hands it to
+/// the person in the address it prints, and asks for it here. A caller may
+/// carry it in the cookie the opened page was given, or state it outright -
+/// a person who wants their own script to work this Workbench has the
+/// address, and the secret is in it.
+fn carries_the_secret(headers: &hyper::HeaderMap, expected: &str) -> bool {
+    if headers
+        .get("x-swem-session")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == expected)
+    {
+        return true;
+    }
+    let name = session_cookie_name(headers);
+    headers
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| key.trim() == name && value.trim() == expected)
+}
+
+/// Whether this request to `/api` came from the Workbench's own page.
+///
+/// The Workbench listens on loopback, and loopback is not a boundary a
+/// browser respects: a page on any site a person visits can call
+/// `http://127.0.0.1:<port>/api/...`, and because the routes parse a body
+/// whatever its content type claims, a plain cross-site form reaches them
+/// with no preflight to stop it. Behind that door are a live terminal and a
+/// profile's secrets.
+///
+/// A browser states where a request came from, and a page cannot lie about
+/// it: `Origin` is set by the browser, so the rule is that a stated origin
+/// must be this server's own. Requests that state none - `curl`, an MCP
+/// client, the product's own tools - are not browser cross-site requests and
+/// are not what this refuses; the lock that answers "which program on this
+/// machine" is a different one.
+///
+/// `Origin: null` - an opaque origin, which is what a sandboxed frame sends -
+/// is stated and is not this page, so it is refused.
+fn from_the_workbenchs_own_page(headers: &hyper::HeaderMap) -> bool {
+    let Some(origin) = headers.get("origin") else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Some(stated) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    // The authority the browser was told to reach, rather than an address
+    // recorded at startup: a person may open `localhost` or `127.0.0.1`, and
+    // either way the page's own requests state the one they opened.
+    headers
+        .get(hyper::header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .is_some_and(|host| host == stated)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match over the shell's whole route table; splitting it would hide which routes exist"
+)]
+async fn route_shell(
+    state: &Arc<WorkbenchShellState>,
+    request: Request<hyper::body::Incoming>,
+) -> Response<ShellBody> {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let query = request.uri().query().map(str::to_owned);
+    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if segments.first() == Some(&"api")
+        && (!from_the_workbenchs_own_page(request.headers())
+            || state
+                .session_token()
+                .is_some_and(|token| !carries_the_secret(request.headers(), token)))
+    {
+        // Nothing about the route: a caller that is not this Workbench's own
+        // learns neither which routes exist nor what they wanted.
+        return respond_json(StatusCode::FORBIDDEN, &json!({"error": "forbidden"}));
+    }
+    match (&method, segments.as_slice()) {
+        (&Method::GET, []) => {
+            // Opening the address the product printed is how a person hands
+            // the page the run's secret: the address carries it once, the
+            // document gives it to the browser to keep, and the page's own
+            // calls carry it from then on without ever reading it.
+            let offered = query.as_deref().and_then(|query| {
+                query_param(Some(query), "token").map(|token| percent_decode(&token))
+            });
+            let handover = match state.session_token() {
+                None => None,
+                Some(token) if offered.as_deref() == Some(token) => Some(format!(
+                    "{}={token}; Path=/; SameSite=Strict; HttpOnly",
+                    session_cookie_name(request.headers())
+                )),
+                Some(token) if carries_the_secret(request.headers(), token) => None,
+                Some(_) => {
+                    return respond(
+                        StatusCode::FORBIDDEN,
+                        "text/plain;charset=utf-8",
+                        "This Workbench is opened at the address it printed when it started, \
+                         which carries this run's secret.\n"
+                            .to_owned(),
+                    );
+                }
+            };
+            // The shell is cross-origin isolated so a View that asked for a
+            // real origin can be: an isolated top-level document is what
+            // lets a frame under it use SharedArrayBuffer. `credentialless`
+            // keeps a foreign App's own no-cors loads working (sent without
+            // credentials) instead of blocking them.
+            let mut response = respond(
+                StatusCode::OK,
+                "text/html;charset=utf-8",
+                SHELL_HTML
+                    .replace("__PALETTE_CSS__", PALETTE_CSS)
+                    .replace("__KIT_CSS__", KIT_CSS),
+            );
+            let headers = response.headers_mut();
+            headers.insert(
+                "cross-origin-opener-policy",
+                hyper::header::HeaderValue::from_static("same-origin"),
+            );
+            headers.insert(
+                "cross-origin-embedder-policy",
+                hyper::header::HeaderValue::from_static("credentialless"),
+            );
+            if let Some(handover) = handover
+                && let Ok(value) = hyper::header::HeaderValue::from_str(&handover)
+            {
+                headers.insert(hyper::header::SET_COOKIE, value);
+            }
+            response
+        }
+        (&Method::GET, ["workbench.js"]) => respond(
+            StatusCode::OK,
+            "application/javascript;charset=utf-8",
+            WORKBENCH_JS.to_owned(),
+        ),
+        (&Method::GET, ["api", "profiles"]) => json_result(state.profiles()),
+        // Configuring the agent: what it reaches, where it works, and a
+        // prompt in its own environment.
+        (&Method::PATCH, ["api", "profiles", profile_id]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AmendProfileBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.amend_profile(profile_id, &body))
+        }
+        (&Method::GET, ["api", "permission-profiles"]) => json_result(Ok(json!({
+            "profiles": crate::permission_profiles(),
+        }))),
+        (&Method::GET, ["api", "environments"]) => json_result(Ok(json!({
+            "environments": crate::environment_profiles(),
+        }))),
+        (&Method::GET, ["api", "mcp-servers"]) => json_result(
+            state
+                .mcp_servers()
+                .map(|servers| json!({ "servers": servers })),
+        ),
+        (&Method::POST, ["api", "mcp-servers"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<DeclareMcpServerBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.declare_mcp_server(&body))
+        }
+        (&Method::DELETE, ["api", "mcp-servers", name]) => {
+            json_result(state.forget_mcp_server(name))
+        }
+        // The places a model is served from, set up once for every profile.
+        (&Method::GET, ["api", "model-providers"]) => json_result(
+            state
+                .model_providers()
+                .map(|providers| json!({ "providers": providers })),
+        ),
+        (&Method::POST, ["api", "model-providers"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<DeclareModelProviderBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.declare_model_provider(&body))
+        }
+        (&Method::DELETE, ["api", "model-providers", id]) => {
+            json_result(state.forget_model_provider(id).map(|()| json!({ "forgotten": id })))
+        }
+        // What the agent offers to configure on a session - its model, its
+        // mode - and choosing among it. A choice the agent refuses is a 409
+        // with the agent's sentence; the connection stays.
+        (&Method::GET, ["api", "connections", cid, "options"]) => {
+            json_result(state.connection_options(cid).await)
+        }
+        (&Method::POST, ["api", "connections", cid, "options"]) => {
+            #[derive(Deserialize)]
+            struct SetOptionBody {
+                config_id: String,
+                value: Value,
+            }
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<SetOptionBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .set_connection_option(cid, &body.config_id, &body.value)
+                    .await
+                    .map(|options| json!({ "config_options": options })),
+            )
+        }
+        (&Method::POST, ["api", "connections", cid, "mode"]) => {
+            #[derive(Deserialize)]
+            struct SetModeBody {
+                mode_id: String,
+            }
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<SetModeBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .set_connection_mode(cid, &body.mode_id)
+                    .await
+                    .map(|modes| json!({ "modes": modes })),
+            )
+        }
+        (&Method::GET, ["api", "terminals"]) => {
+            let terminals = state.terminals().await;
+            json_result(Ok(json!({ "terminals": terminals })))
+        }
+        (&Method::POST, ["api", "terminals"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<OpenTerminalBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.open_terminal(&body).await)
+        }
+        (&Method::GET, ["api", "terminals", terminal_id, "output"]) => {
+            let after = query_param(query.as_deref(), "after")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0_u64);
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(20), Duration::from_millis);
+            json_result(state.terminal_output(terminal_id, after, wait).await)
+        }
+        (&Method::POST, ["api", "terminals", terminal_id, "input"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<TerminalInputBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.terminal_input(terminal_id, &body).await)
+        }
+        (&Method::POST, ["api", "terminals", terminal_id, "size"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<TerminalSizeBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.resize_terminal(terminal_id, body).await)
+        }
+        (&Method::DELETE, ["api", "terminals", terminal_id]) => {
+            json_result(state.close_terminal(terminal_id).await)
+        }
+        (&Method::GET, ["api", "onboarding"]) => json_result(Ok(state.onboarding())),
+        // Project space: connection-independent, resources-only reads of the
+        // declared project servers.
+        (&Method::GET, ["api", "projects"]) => json_result(state.projects()),
+        // A person makes a project here rather than writing an ACP declaration
+        // file by hand and restarting the product.
+        (&Method::POST, ["api", "projects"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<CreateProjectBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.create_project(&body.name).await)
+        }
+        (&Method::GET, ["api", "agents", agent_id, "install-plan"]) => {
+            json_result(state.agent_install_plan(agent_id))
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "sessions"]) => {
+            json_result(state.profile_sessions(profile_id).await)
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "schedules"]) => {
+            json_result(state.profile_schedules(profile_id))
+        }
+        (&Method::POST, ["api", "profiles", profile_id, "schedules"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<SetScheduleBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.set_schedule(profile_id, &body))
+        }
+        (&Method::DELETE, ["api", "schedules", schedule_id]) => json_result(
+            state
+                .forget_schedule(schedule_id)
+                .map(|()| json!({ "forgotten": schedule_id })),
+        ),
+        (&Method::GET, ["api", "profiles", profile_id, "files"]) => {
+            json_result(state.profile_files(profile_id).await)
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "files", area, name]) => {
+            let name = percent_decode(name);
+            match state.profile_file(profile_id, area, &name).await {
+                Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::GET, ["api", "routes", route, "history"]) => {
+            let limit = query_param(query.as_deref(), "limit")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(500_usize)
+                .min(5_000);
+            json_result(
+                state
+                    .route_history(route, limit)
+                    .await
+                    .map(|events| json!({ "events": events })),
+            )
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "handshake"]) => {
+            json_result(state.profile_handshake(profile_id).await)
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "secrets"]) => {
+            json_result(state.profile_secrets(profile_id))
+        }
+        (&Method::PUT, ["api", "profiles", profile_id, "secrets"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<ProfileSecretBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.set_profile_secret(
+                profile_id,
+                &body.type_id,
+                &body.label,
+                body.name.as_deref(),
+                &body.value,
+            ))
+        }
+        (&Method::DELETE, ["api", "profiles", profile_id, "secrets", name]) => {
+            json_result(state.remove_profile_secret(profile_id, name))
+        }
+        // Installing the agent the person already chose, from the product
+        // instead of a second terminal.
+        (&Method::POST, ["api", "agents", "install"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<InstallAgentBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.install_agent(&body.agent_id, &body.plan_id)).await
+        }
+        // What packages bring and projects require: tools installed from
+        // declarations by a plan the person confirms, and a project's vault.
+        // Everything installed here, of every kind, one receipt each.
+        (&Method::GET, ["api", "installs"]) => json_result(state.installs()),
+        // The store: what the indexes offer, the plan for one entry, the
+        // install against it, and the catalogs a person adds by URL.
+        (&Method::GET, ["api", "store"]) => {
+            let state = Arc::clone(state);
+            blocking_json(move || state.store()).await
+        }
+        (&Method::POST, ["api", "store", "plan"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<StorePlanBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.store_plan(&body)).await
+        }
+        (&Method::POST, ["api", "store", "install"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<StoreInstallBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.store_install(&body)).await
+        }
+        (&Method::POST, ["api", "store", "indexes"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AddIndexBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.add_index(&body)).await
+        }
+        (&Method::DELETE, ["api", "store", "indexes", slug]) => json_result(
+            state
+                .forget_index(slug)
+                .map(|()| json!({ "forgotten": slug })),
+        ),
+        // The skills installed here, as a profile takes a copy of one.
+        (&Method::GET, ["api", "skills"]) => json_result(state.installed_skills()),
+        (&Method::GET, ["api", "tools"]) => {
+            let state = Arc::clone(state);
+            blocking_json(move || state.tools()).await
+        }
+        (&Method::POST, ["api", "tools", name, "install"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<InstallToolBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            // `name` is bound by a slice pattern over `Vec<&str>`, so it is a
+            // `&&str`: `to_owned` on that clones the reference rather than the
+            // string, and the closure would then still borrow the path.
+            let name = (*name).to_owned();
+            blocking_json(move || state.install_tool(&name, &body.plan_id)).await
+        }
+        // Packages a person installs beside the binary: the list, the plan a
+        // source answers with, and the install that consents to that plan.
+        (&Method::GET, ["api", "packages"]) => {
+            let state = Arc::clone(state);
+            blocking_json(move || state.packages()).await
+        }
+        (&Method::POST, ["api", "packages", "plan"]) => {
+            let source = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<crate::PackageSource>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(source) => source,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.plan_package(&source)).await
+        }
+        (&Method::POST, ["api", "packages", "install"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<InstallPackageBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.install_package(&body.plan_id)).await
+        }
+        (&Method::GET, ["api", "projects", server, "secrets"]) => {
+            json_result(state.project_secrets(server))
+        }
+        (&Method::PUT, ["api", "projects", server, "secrets", type_id]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<ProjectSecretBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.set_project_secret(server, type_id, &body.value))
+        }
+        (&Method::GET, ["api", "projects", server, "apps"]) => {
+            json_result(state.project_apps_list(server).await)
+        }
+        (&Method::POST, ["api", "projects", server, "apps", "open"]) => {
+            match read_json(request).await {
+                Ok(body) => match body.get("uri").and_then(Value::as_str) {
+                    // The slot is what the person opened the surface from;
+                    // an App opened outside a slot names none.
+                    Some(uri) => {
+                        let slot = body.get("slot").and_then(Value::as_str);
+                        json_result(state.project_app_open(server, uri, slot).await)
+                    }
+                    None => error_response(&WorkbenchShellError::Invalid("App uri required".into())),
+                },
+                Err(error) => error_response(&error),
+            }
+        }
+        // What the packages say to do, and one run of it on one project. The
+        // run is a POST because every step writes.
+        (&Method::GET, ["api", "recipes"]) => json_result(Ok(state.recipes())),
+        (&Method::POST, ["api", "projects", server, "recipes", name, "run"]) => {
+            json_result(state.run_recipe(server, name).await)
+        }
+        (&Method::POST, ["api", "projects", server, "tools", tool]) => {
+            match read_json(request).await {
+                Ok(body) => {
+                    let arguments = body.get("arguments").cloned().unwrap_or(json!({}));
+                    json_result(state.project_tool_call(server, tool, arguments).await)
+                }
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "project-apps", app, "rpc"]) => {
+            match read_json(request).await {
+                Ok(body) => json_result(state.project_app_rpc(app, body).await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "project-apps", app, "close"]) => {
+            json_result(state.project_app_close(app).await)
+        }
+        (&Method::GET, ["api", "projects", server_name, "envelope"]) => {
+            envelope_result(state.project_envelope(server_name).await)
+        }
+        // What makes the human's workbench live: hold the request open until
+        // the project's record set is no longer the one the caller holds. The
+        // sandboxed App cannot poll this itself - only the shell can reach the
+        // host API - so the shell watches and pushes the change into the App
+        // over the bridge.
+        (&Method::GET, ["api", "projects", server_name, "changes", "next"]) => {
+            // The digest arrives percent-encoded (`sha256%3A...`); compared
+            // raw it never equals the one the Cycle holds, every watch
+            // answers at once, and the browser re-reads the envelope in a
+            // tight loop that starves the host.
+            let after = query_param(query.as_deref(), "after")
+                .map(|value| percent_decode(&value))
+                .unwrap_or_default();
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(state.next_project_change(server_name, &after, wait).await)
+        }
+        (&Method::GET, ["api", "projects", server_name, kind @ ("selections" | "revisions"), digest]) => {
+            envelope_result(state.project_view(server_name, kind, digest).await)
+        }
+        (&Method::POST, ["api", "projects", server_name, "artifacts", digest]) => {
+            let server_name = (*server_name).to_owned();
+            let digest = (*digest).to_owned();
+            // An absent or empty body stays valid: only the provenance label
+            // depends on the scope, never the bytes.
+            let body = match read_json(request).await {
+                Ok(value) => match serde_json::from_value::<MaterializeArtifactBody>(value) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        return error_response(&WorkbenchShellError::Invalid(error.to_string()));
+                    }
+                },
+                Err(_) => MaterializeArtifactBody::default(),
+            };
+            match state
+                .project_artifact(&server_name, &digest, body.selection_ref.as_deref())
+                .await
+            {
+                Ok((descriptor, uri)) => {
+                    let body = serde_json::to_value(&descriptor).unwrap_or_default();
+                    let mut response = respond_json(StatusCode::OK, &body);
+                    if let Ok(value) = uri.parse() {
+                        response.headers_mut().insert("x-swem-resource-uri", value);
+                    }
+                    response
+                }
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "connections", connection_id, "context"]) => {
+            let connection_id = (*connection_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<BindAgentContextBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.bind_agent_context(&connection_id, body).await)
+        }
+        (&Method::GET, ["api", "connections", connection_id, "context"]) => {
+            json_result(
+                state
+                    .agent_context(connection_id)
+                    .await
+                    .map(|context| json!({ "context": context })),
+            )
+        }
+        (&Method::DELETE, ["api", "connections", connection_id, "context"]) => {
+            json_result(state.clear_agent_context(connection_id).await)
+        }
+        (&Method::POST, ["api", "content"]) => {
+            json_result(upload_content(state, request, query.as_deref()).await)
+        }
+        (&Method::GET, ["api", "content", descriptor_id, "metadata"]) => {
+            json_result(state.content.load(descriptor_id).await)
+        }
+        (&Method::GET | &Method::HEAD, ["api", "content", descriptor_id]) => {
+            let download = query_param(query.as_deref(), "download").as_deref() == Some("1");
+            match serve_content(state, request, descriptor_id, download).await {
+                Ok(response) => response,
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "profiles", "local"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<CreateLocalProfileBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.create_local_profile(
+                &body.agent_id,
+                body.profile_id.as_deref(),
+                body.setup,
+            ))
+        }
+        (&Method::GET, ["apps-bridge.js"]) => match state.apps_bundle.get() {
+            Some(bundle) => match std::fs::read_to_string(bundle.join("apps-bridge.js")) {
+                Ok(bundled) => respond(StatusCode::OK, "application/javascript", bundled),
+                Err(error) => respond(
+                    StatusCode::NOT_FOUND,
+                    "text/plain",
+                    format!("apps bundle unreadable: {error}"),
+                ),
+            },
+            // The product ships the official AppBridge it was built against,
+            // so a domain App opens without a flag and without a second
+            // install step. `--apps-bundle` still overrides it for development.
+            None if WorkbenchShellState::apps_enabled() => {
+                respond(StatusCode::OK, "application/javascript", APPS_BRIDGE.to_owned())
+            }
+            // No bundle configured: the Apps panel stays disabled - the
+            // honest App-disabled mode, not an error.
+            None => respond(
+                StatusCode::NOT_FOUND,
+                "text/plain",
+                "apps bundle not configured".into(),
+            ),
+        },
+        (&Method::POST, ["api", "connections"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<OpenConnectionBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            match state
+                .open_connection_with_id(
+                    &body.profile_id,
+                    body.mode,
+                    body.route_id,
+                    body.connection_id,
+                    body.auth_method_id,
+                    // The page is a browser tab: it has no files of its own,
+                    // and an agent told otherwise would be lied to.
+                    None,
+                )
+                .await
+            {
+                Ok((connection_id, route_id, _session_id)) => respond_json(
+                    StatusCode::OK,
+                    &json!({ "connection_id": connection_id, "route_id": route_id }),
+                ),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::GET, ["api", "connections", connection_id]) => {
+            json_result(state.connection_status(connection_id).await)
+        }
+        (&Method::GET, ["api", "routes", route_id, "connection"]) => {
+            let Some(profile) = query_param(query.as_deref(), "profile_id") else {
+                return error_response(&WorkbenchShellError::Invalid("profile_id is required".into()));
+            };
+            json_result(state.live_route_connection(&profile, route_id).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "prompt"]) => {
+            let connection_id = (*connection_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<PromptBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .submit_workbench_prompt(
+                        &connection_id,
+                        body.content,
+                        body.content_refs,
+                        body.correspondent,
+                    )
+                    .await,
+            )
+        }
+        (&Method::POST, ["api", "connections", connection_id, "cancel"]) => {
+            json_result(state.cancel(connection_id).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "disconnect"]) => {
+            json_result(state.disconnect(connection_id).await.map(|outcome| {
+                json!({ "termination": outcome.termination, "turns": outcome.turns.len() })
+            }))
+        }
+        (&Method::POST, ["api", "connections", connection_id, "close"]) => {
+            json_result(state.close(connection_id).await.map(|outcome| {
+                json!({ "termination": outcome.termination, "turns": outcome.turns.len() })
+            }))
+        }
+        (&Method::GET, ["api", "connections", connection_id, "apps"]) => {
+            json_result(state.apps_list(connection_id).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "apps", "interactions"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<StartAppInteractionBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .start_app_interaction(
+                        connection_id,
+                        &body.server_name,
+                        &body.tool,
+                        body.arguments,
+                    )
+                    .await,
+            )
+        }
+        (
+            &Method::POST,
+            ["api", "connections", connection_id, "apps", "interactions", interaction_id],
+        ) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AnswerAppInteractionBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .answer_app_interaction(
+                        connection_id,
+                        interaction_id,
+                        body.action,
+                        body.content,
+                    )
+                    .await,
+            )
+        }
+        (&Method::GET, ["api", "connections", connection_id, "elicitations", "next"]) => {
+            let after = query_param(query.as_deref(), "after")
+                .and_then(|value| value.parse().ok()).unwrap_or(0);
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(state.elicitation_after(connection_id, after, wait).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "elicitations", "answer"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AnswerNativeElicitationBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .answer_elicitation(connection_id, body.sequence, body.action)
+                    .await
+                    .map(|()| json!({ "answered": body.sequence })),
+            )
+        }
+        (&Method::GET, ["api", "connections", connection_id, "apps", "observations", "next"]) => {
+            let after = query_param(query.as_deref(), "after")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(state.next_observed_app(connection_id, after, wait).await)
+        }
+        (&Method::GET, ["api", "connections", connection_id, "apps", "observations", observation_id]) => {
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(
+                state
+                    .observed_app_status(connection_id, observation_id, wait)
+                    .await,
+            )
+        }
+        (&Method::POST, ["api", "connections", connection_id, "apps", "open"]) => {
+            let connection_id = (*connection_id).to_owned();
+            let body = match read_json(request).await {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let (Some(server_name), Some(uri)) = (
+                body.get("server_name").and_then(Value::as_str),
+                body.get("uri").and_then(Value::as_str),
+            ) else {
+                return error_response(&WorkbenchShellError::Invalid(
+                    "open needs server_name and uri".into(),
+                ));
+            };
+            json_result(state.app_open(&connection_id, server_name, uri).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "apps", app_id, "rpc"]) => {
+            let connection_id = (*connection_id).to_owned();
+            let app_id = (*app_id).to_owned();
+            let body = match read_json(request).await {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.app_rpc(&connection_id, &app_id, body).await)
+        }
+        (&Method::POST, ["api", "connections", connection_id, "apps", app_id, "close"]) => {
+            json_result(
+                state
+                    .app_close(connection_id, app_id)
+                    .await
+                    .map(|()| json!({ "closed": true })),
+            )
+        }
+        (&Method::GET, ["api", "connections", connection_id, "permissions", "next"]) => {
+            let after = query_param(query.as_deref(), "after")
+                .and_then(|value| value.parse().ok()).unwrap_or(0);
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(state.permission_after(connection_id, after, wait).await)
+        }
+        (
+            &Method::POST,
+            ["api", "connections", connection_id, "permissions", "select"],
+        ) => {
+            let connection_id = (*connection_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<SelectPermissionBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .select_permission(&connection_id, body.sequence, &body.option_id)
+                    .await
+                    .map(|()| json!({ "selected": body.option_id })),
+            )
+        }
+        (&Method::GET, ["api", "routes", route_id, "events"]) => {
+            let Some(surface_id) = query_param(query.as_deref(), "surface_id") else {
+                return error_response(&WorkbenchShellError::Invalid(
+                    "surface_id query parameter is required".into(),
+                ));
+            };
+            let limit = query_param(query.as_deref(), "limit")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(200);
+            let wait = query_param(query.as_deref(), "wait_ms")
+                .and_then(|value| value.parse().ok())
+                .map_or(Duration::from_secs(25), Duration::from_millis);
+            json_result(state.events(route_id, &surface_id, limit, wait).await)
+        }
+        (&Method::POST, ["api", "routes", route_id, "ack"]) => {
+            let route_id = (*route_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AcknowledgeBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .acknowledge(&route_id, &body.surface_id, body.cursor)
+                    .await
+                    .map(|()| json!({ "acknowledged": body.cursor })),
+            )
+        }
+        _ => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+    }
+}
+
+/// The spec-exact sandbox proxy page, served from the SECOND origin only.
+const SANDBOX_HTML: &str = include_str!("../web/apps-host/sandbox.html");
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    decoded.push(byte);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Bytes INTO the server's workspace, the twin of the blob route: an App
+/// records or imports something and hands it to its server as a file under
+/// a host-chosen name, then names that file to the server's own tool. The
+/// View has an opaque origin, so a non-simple request is preflighted and
+/// both need the CORS grant.
+async fn route_upload(
+    state: &WorkbenchShellState,
+    connection_id: &str,
+    app_id: &str,
+    request: Request<hyper::body::Incoming>,
+) -> Response<ShellBody> {
+    match *request.method() {
+        Method::OPTIONS => Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-methods", "POST, DELETE, OPTIONS")
+            .header("access-control-allow-headers", "content-type")
+            .header("access-control-max-age", "600")
+            .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
+            .expect("preflight response"),
+        Method::POST => match state.app_upload_root(connection_id, app_id).await {
+            Ok(root) => match receive_upload(&root, request.into_body()).await {
+                Ok((workspace_path, byte_length)) => cors_json(
+                    StatusCode::OK,
+                    &json!({"workspace_path": workspace_path, "byte_length": byte_length}),
+                ),
+                Err(UploadRefusal::TooLarge) => cors_json(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &json!({"error": format!("an upload is at most {UPLOAD_LIMIT} bytes")}),
+                ),
+                Err(UploadRefusal::Failed(error)) => {
+                    cors_json(StatusCode::INTERNAL_SERVER_ERROR, &json!({"error": error}))
+                }
+            },
+            Err(_) => cors_json(StatusCode::NOT_FOUND, &json!({"error": "not found"})),
+        },
+        Method::DELETE => {
+            let named =
+                query_param(request.uri().query(), "path").map(|value| percent_decode(&value));
+            match (state.app_upload_root(connection_id, app_id).await, named) {
+                (Ok(root), Some(named)) => match remove_upload(&root, &named).await {
+                    Ok(()) => Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .header("access-control-allow-origin", "*")
+                        .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
+                        .expect("delete response"),
+                    Err(error) => cors_json(StatusCode::NOT_FOUND, &json!({"error": error})),
+                },
+                _ => cors_json(StatusCode::NOT_FOUND, &json!({"error": "not found"})),
+            }
+        }
+        _ => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+    }
+}
+
+/// A View served as a document of the sandbox origin, and the files under
+/// its path. The trailing slash is the View's: relative URLs in it resolve
+/// to `view/<file>`.
+async fn route_app_view(
+    state: &WorkbenchShellState,
+    connection_id: &str,
+    app_id: &str,
+    rest: &[&str],
+) -> Response<ShellBody> {
+    if rest.is_empty() || rest == [""] {
+        return match state.app_view(connection_id, app_id).await {
+            Ok((html, csp)) => {
+                let mut builder = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html;charset=utf-8")
+                    .header("cross-origin-embedder-policy", "credentialless")
+                    .header("cross-origin-resource-policy", "cross-origin")
+                    .header("cache-control", "no-store");
+                if !csp.is_empty() {
+                    builder = builder.header("content-security-policy", csp);
+                }
+                builder
+                    .body(
+                        Full::new(Bytes::from(html))
+                            .map_err(infallible_to_io)
+                            .boxed(),
+                    )
+                    .expect("view response")
+            }
+            Err(_) => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+        };
+    }
+    let file = percent_decode(&rest.join("/"));
+    match state.app_file_resource(connection_id, app_id, &file).await {
+        // A dedicated worker's script must carry the embedder policy of the
+        // document that spawns it, or the browser refuses the worker.
+        Ok((bytes, media_type)) => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", media_type)
+            .header("cross-origin-embedder-policy", "credentialless")
+            .header("cache-control", "no-store")
+            .body(
+                Full::new(Bytes::from(bytes))
+                    .map_err(infallible_to_io)
+                    .boxed(),
+            )
+            .expect("view file response"),
+        Err(_) => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+    }
+}
+
+/// The sandbox origin serves the proxy page, with the Rust-resolved per-app
+/// CSP echoed back as a REAL response header (header injection impossible:
+/// control characters are stripped), and the script resources an open App's
+/// server lists (`/apps/{connection}/{app}/resources?uri=ui://...`), so a
+/// worklet module can be loaded from a URL the App CSP's `'self'` covers.
+/// `/api` does not exist on this origin.
+async fn route_sandbox(
+    state: &WorkbenchShellState,
+    request: Request<hyper::body::Incoming>,
+) -> Response<ShellBody> {
+    let path = request.uri().path().to_owned();
+    let segments = path.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    if let ["apps", connection_id, app_id, "upload"] = segments.as_slice() {
+        let (connection_id, app_id) = ((*connection_id).to_owned(), (*app_id).to_owned());
+        return route_upload(state, &connection_id, &app_id, request).await;
+    }
+    if request.method() != Method::GET {
+        return respond(StatusCode::NOT_FOUND, "text/plain", "not found".into());
+    }
+    if let ["apps", connection_id, app_id, "resources"] = segments.as_slice() {
+        let Some(uri) =
+            query_param(request.uri().query(), "uri").map(|value| percent_decode(&value))
+        else {
+            return respond(StatusCode::NOT_FOUND, "text/plain", "not found".into());
+        };
+        return match state.app_script_resource(connection_id, app_id, &uri).await {
+            Ok(text) => Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", workbench_apps::SCRIPT_RESOURCE_MIME)
+                // The App View has an opaque origin: a module-script fetch
+                // arrives with `Origin: null` and needs an explicit grant.
+                .header("access-control-allow-origin", "*")
+                .header("cache-control", "no-store")
+                .body(
+                    Full::new(Bytes::from(text))
+                        .map_err(infallible_to_io)
+                        .boxed(),
+                )
+                .expect("script resource response"),
+            Err(_) => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+        };
+    }
+    if let ["apps", connection_id, app_id, "blob"] = segments.as_slice() {
+        let Some(uri) =
+            query_param(request.uri().query(), "uri").map(|value| percent_decode(&value))
+        else {
+            return respond(StatusCode::NOT_FOUND, "text/plain", "not found".into());
+        };
+        return match state.app_blob_resource(connection_id, app_id, &uri).await {
+            Ok((bytes, media_type)) => Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", media_type)
+                // The View has an opaque origin, so a fetch arrives with
+                // `Origin: null` and needs an explicit grant.
+                .header("access-control-allow-origin", "*")
+                // Content-addressed: these bytes cannot become other bytes.
+                .header("cache-control", "public, max-age=31536000, immutable")
+                .body(
+                    Full::new(Bytes::from(bytes))
+                        .map_err(infallible_to_io)
+                        .boxed(),
+                )
+                .expect("blob resource response"),
+            Err(_) => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),
+        };
+    }
+    if let ["apps", connection_id, app_id, "view", rest @ ..] = segments.as_slice() {
+        return route_app_view(state, connection_id, app_id, rest).await;
+    }
+    if path != "/sandbox" {
+        return respond(StatusCode::NOT_FOUND, "text/plain", "not found".into());
+    }
+    let csp = query_param(request.uri().query(), "csp")
+        .map(|value| percent_decode(&value))
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    // The proxy document is embedded by the isolated shell, so it carries
+    // the embedder policy itself and says it may be embedded cross-origin.
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html;charset=utf-8")
+        .header("cross-origin-embedder-policy", "credentialless")
+        .header("cross-origin-resource-policy", "cross-origin");
+    if !csp.is_empty() {
+        builder = builder.header("content-security-policy", csp);
+    }
+    builder
+        .body(
+            Full::new(Bytes::from(SANDBOX_HTML.to_owned()))
+                .map_err(infallible_to_io)
+                .boxed(),
+        )
+        .expect("static sandbox response")
+}
+
+/// The most an App may upload in one request: the same ceiling the Cycle's
+/// own workspace-path ingest accepts, so a file that lands here can always
+/// be named to the server.
+pub const UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// Where uploads land inside a server's workspace; a name under it is the
+/// only path an App ever learns.
+const UPLOAD_DIRECTORY: &str = "uploads";
+
+enum UploadRefusal {
+    TooLarge,
+    Failed(String),
+}
+
+static UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Stream a request body into a fresh file under the workspace's upload
+/// directory, refusing past the limit. Answers the workspace-relative path
+/// (portable, forward slashes) and the byte count.
+async fn receive_upload(
+    root: &Path,
+    mut body: hyper::body::Incoming,
+) -> Result<(String, u64), UploadRefusal> {
+    let directory = root.join(UPLOAD_DIRECTORY);
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| UploadRefusal::Failed(error.to_string()))?;
+    let name = format!(
+        "u-{}-{:x}",
+        nanos_now() / 1_000_000,
+        UPLOAD_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let target = directory.join(&name);
+    let mut file = tokio::fs::File::create(&target)
+        .await
+        .map_err(|error| UploadRefusal::Failed(error.to_string()))?;
+    let mut received: u64 = 0;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|error| UploadRefusal::Failed(error.to_string()))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        received += data.len() as u64;
+        if received > UPLOAD_LIMIT {
+            drop(file);
+            let _ = tokio::fs::remove_file(&target).await;
+            return Err(UploadRefusal::TooLarge);
+        }
+        file.write_all(&data)
+            .await
+            .map_err(|error| UploadRefusal::Failed(error.to_string()))?;
+    }
+    file.flush()
+        .await
+        .map_err(|error| UploadRefusal::Failed(error.to_string()))?;
+    Ok((format!("{UPLOAD_DIRECTORY}/{name}"), received))
+}
+
+/// Remove one upload by the path the upload route answered - and nothing
+/// else: the path must be a plain name under the upload directory.
+async fn remove_upload(root: &Path, named: &str) -> Result<(), String> {
+    let Some(name) = named.strip_prefix(&format!("{UPLOAD_DIRECTORY}/")) else {
+        return Err("not an upload path".into());
+    };
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || !name.starts_with("u-")
+    {
+        return Err("not an upload path".into());
+    }
+    tokio::fs::remove_file(root.join(UPLOAD_DIRECTORY).join(name))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn cors_json(status: StatusCode, value: &Value) -> Response<ShellBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("access-control-allow-origin", "*")
+        .body(
+            Full::new(Bytes::from(value.to_string()))
+                .map_err(infallible_to_io)
+                .boxed(),
+        )
+        .expect("json response")
+}
+
+/// Serve the generic Workbench shell over HTTP on `bind` (port 0 for an
+/// ephemeral port; the handle carries the real address).
+///
+/// # Errors
+///
+/// Returns an error when the address cannot be bound.
+pub async fn serve_workbench_http(
+    state: Arc<WorkbenchShellState>,
+    bind: SocketAddr,
+) -> Result<WorkbenchShellHandle, String> {
+    serve_workbench_http_with_apps(state, bind, None).await
+}
+
+/// Serve the shell plus the Apps host surfaces: a SECOND ephemeral listener
+/// on 127.0.0.1 is the sandbox origin (origin = scheme+host+port, so two
+/// ports are two origins), and `apps_bundle` names the directory holding the
+/// esbuild output `apps-bridge.js` (absent = the Apps panel stays disabled -
+/// the honest App-disabled mode).
+///
+/// # Errors
+///
+/// Returns an error when an address cannot be bound.
+pub async fn serve_workbench_http_with_apps(
+    state: Arc<WorkbenchShellState>,
+    bind: SocketAddr,
+    apps_bundle: Option<PathBuf>,
+) -> Result<WorkbenchShellHandle, String> {
+    serve_workbench_http_with_apps_at(
+        state,
+        bind,
+        (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+        apps_bundle,
+    )
+    .await
+}
+
+/// As [`serve_workbench_http_with_apps`], with the sandbox origin bound at
+/// `sandbox_bind` (port 0 for an ephemeral port). A fixed port lets an
+/// operator forward both origins to a remote machine; the origin stays a
+/// loopback one.
+///
+/// # Errors
+///
+/// Returns an error when an address cannot be bound.
+pub async fn serve_workbench_http_with_apps_at(
+    state: Arc<WorkbenchShellState>,
+    bind: SocketAddr,
+    sandbox_bind: SocketAddr,
+    apps_bundle: Option<PathBuf>,
+) -> Result<WorkbenchShellHandle, String> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|error| error.to_string())?;
+    let local_addr = listener.local_addr().map_err(|error| error.to_string())?;
+    let sandbox_listener = tokio::net::TcpListener::bind(sandbox_bind)
+        .await
+        .map_err(|error| error.to_string())?;
+    let sandbox_addr = sandbox_listener
+        .local_addr()
+        .map_err(|error| error.to_string())?;
+    state.set_sandbox(
+        format!("http://127.0.0.1:{}/sandbox", sandbox_addr.port()),
+        format!("http://127.0.0.1:{}", sandbox_addr.port()),
+    );
+    if let Some(bundle) = apps_bundle {
+        state.set_apps_bundle(bundle);
+    }
+    let (sandbox_shutdown, mut sandbox_shutdown_rx) = tokio::sync::oneshot::channel();
+    let sandbox_state = Arc::clone(&state);
+    let sandbox_task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = &mut sandbox_shutdown_rx => break,
+                accepted = sandbox_listener.accept() => {
+                    let Ok((stream, _)) = accepted else { continue };
+                    let state = Arc::clone(&sandbox_state);
+                    connections.spawn(async move {
+                        let service = hyper::service::service_fn(move |request| {
+                            let state = Arc::clone(&state);
+                            async move { Ok::<_, Infallible>(route_sandbox(&state, request).await) }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                            .await;
+                    });
+                }
+                completed = connections.join_next(), if !connections.is_empty() => {
+                    let _ = completed;
+                }
+            }
+        }
+        connections.shutdown().await;
+    });
+    let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle_state = Arc::clone(&state);
+    let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                accepted = listener.accept() => {
+                    let Ok((stream, _)) = accepted else { continue };
+                    let state = Arc::clone(&state);
+                    connections.spawn(async move {
+                        let service = hyper::service::service_fn(move |request| {
+                            let state = Arc::clone(&state);
+                            async move { Ok::<_, Infallible>(route_shell(&state, request).await) }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                            .await;
+                    });
+                }
+                completed = connections.join_next(), if !connections.is_empty() => {
+                    let _ = completed;
+                }
+            }
+        }
+        connections.shutdown().await;
+    });
+    Ok(WorkbenchShellHandle {
+        local_addr,
+        sandbox_addr,
+        state: handle_state,
+        task: Some(task),
+        sandbox_task: Some(sandbox_task),
+        shutdown: Some(shutdown),
+        sandbox_shutdown: Some(sandbox_shutdown),
+    })
+}
+
+/// Read a refused handshake out of a lane nothing has projected yet.
+///
+/// The words come from two events the session publishes around `initialize`:
+/// what this host advertised, and what the agent answered. An agent that
+/// refuses because "the client did not advertise X" is contradicting the
+/// first, so both halves belong in the one sentence the person reads.
+fn handshake_refusal(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<crate::NativeSessionEvent>,
+) -> Option<String> {
+    let mut advertised = None;
+    let mut refusal = None;
+    while let Ok(event) = events.try_recv() {
+        match event.kind.as_str() {
+            "acp/initialize_requested" => advertised = Some(event.payload),
+            "acp/initialize_refused" => {
+                refusal = event
+                    .payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+            }
+            _ => {}
+        }
+    }
+    let refusal = refusal?;
+    Some(match advertised {
+        Some(advertised) => format!(
+            "the agent refused the handshake ({refusal}); this host \
+             advertised {advertised}"
+        ),
+        None => format!("the agent refused the handshake ({refusal})"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use hyper::HeaderMap;
+
+    use super::from_the_workbenchs_own_page;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(
+                hyper::header::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                value.parse().expect("a header value"),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn the_workbenchs_own_page_is_let_in_by_whichever_name_it_was_opened_under() {
+        assert!(from_the_workbenchs_own_page(&headers(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080"),
+        ])));
+        assert!(from_the_workbenchs_own_page(&headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "http://localhost:8080"),
+        ])));
+    }
+
+    #[test]
+    fn a_page_on_another_site_is_refused_however_it_states_itself() {
+        for origin in [
+            "http://not-the-workbench.example",
+            // The same name on another port is another origin.
+            "http://127.0.0.1:8081",
+            // An opaque origin: what a sandboxed frame sends. It is stated,
+            // and it is not this page.
+            "null",
+            // A scheme this server does not speak, and a stated origin that
+            // is not an origin at all.
+            "file://",
+            "127.0.0.1:8080",
+        ] {
+            assert!(
+                !from_the_workbenchs_own_page(&headers(&[
+                    ("host", "127.0.0.1:8080"),
+                    ("origin", origin),
+                ])),
+                "{origin} was let in"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_that_states_no_origin_is_not_what_this_refuses() {
+        // `curl`, an MCP client, the product's own tools. They are not
+        // browser cross-site requests; which program on this machine may
+        // call is a different lock.
+        assert!(from_the_workbenchs_own_page(&headers(&[(
+            "host",
+            "127.0.0.1:8080"
+        )])));
+    }
+}

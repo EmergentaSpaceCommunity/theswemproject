@@ -1,0 +1,15 @@
+{
+  "schema": "swem:catalog@0.1",
+  "name": "SWEM",
+  "description": "What this distribution carries.",
+  "entries": [
+    {
+      "kind": "server",
+      "id": "swem-cycle",
+      "name": "SWEM Cycle",
+      "description": "The project server: one Cycle per project, from what was asked to what was delivered, with the domain packages it loads. This product serves it itself (`swem mcp serve`) and creates projects on it; there is nothing to fetch.",
+      "version": "0.1.0-dev",
+      "bundled": true
+    }
+  ]
+}

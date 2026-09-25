@@ -1,0 +1,19 @@
+# The workspace does not build on an older compiler: wasmtime's unwinder
+# (`wasmtime-internal-unwinder` 48) needs 1.95. Without this file a clean
+# checkout fails to build with an error about a dependency rather than about
+# the toolchain, which is the first of four steps once recorded.
+#
+# The wasm targets are here for the same reason the channel is. The music
+# package and the behaviour component are wasm components, and two tests
+# rebuild them from source to prove the committed bytes are current; without
+# the targets those tests fail with "can't find crate for `core`", which reads
+# as a broken component rather than as a missing target. Naming them here
+# means rustup installs them on first use.
+#
+# It only works for whoever lets rustup read this file. `RUSTUP_TOOLCHAIN` in
+# the environment overrides it outright, components and targets included, so
+# `scripts/gate.sh` checks the target itself rather than trusting this.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown", "wasm32-wasip2"]

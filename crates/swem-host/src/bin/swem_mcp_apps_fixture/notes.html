@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notes</title>
+<style>
+  /* Fixed geometry: a real browser driver clicks these by viewport
+     coordinates (the sandboxed frame is an OOPIF and is never scripted). */
+  body { font-family: system-ui, sans-serif; margin: 0; }
+  #app-title { position: absolute; left: 20px; top: 8px; margin: 0; }
+  #note-nonce { position: absolute; left: 20px; top: 60px; width: 300px; height: 30px; }
+  #note-text { position: absolute; left: 20px; top: 110px; width: 300px; height: 30px; }
+  #note-save { position: absolute; left: 20px; top: 160px; width: 160px; height: 36px; }
+  /* Below the save button, not beside it: a surface in a rail is narrow. */
+  #observed-ack { position: absolute; left: 20px; top: 210px; width: 220px; height: 36px; }
+  #note-status { position: absolute; left: 20px; top: 265px; font-weight: bold; }
+</style>
+</head>
+<body>
+<!-- Spec-exact vanilla MCP App (SEP-1865): bare JSON-RPC 2.0 over
+     postMessage to the sandbox proxy (window.parent), integer ids,
+     ui/initialize handshake, then tools/call save_note through the host. -->
+<h3 id="app-title">Note board</h3>
+<input id="note-nonce" placeholder="nonce">
+<input id="note-text" placeholder="text">
+<button id="note-save" disabled>Save note</button>
+<button id="observed-ack" disabled>Acknowledge agent call</button>
+<div id="note-status">initializing…</div>
+<script>
+"use strict";
+let nextId = 1;
+const pending = new Map();
+let observedInput = null;
+let observedResult = null;
+const status = (text) => { document.getElementById("note-status").textContent = text; };
+
+async function acknowledgeTerminal(terminal, reason) {
+  await request("tools/call", {
+    name: "acknowledge_terminal",
+    arguments: {
+      input_nonce: observedInput && typeof observedInput.nonce === "string"
+        ? observedInput.nonce : "",
+      terminal,
+      reason: reason || null,
+    },
+  });
+}
+
+function request(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, {resolve, reject});
+    window.parent.postMessage({jsonrpc: "2.0", id, method, params}, "*");
+  });
+}
+function notify(method, params) {
+  window.parent.postMessage({jsonrpc: "2.0", method, params}, "*");
+}
+
+window.addEventListener("message", (event) => {
+  const message = event.data;
+  if (!message || message.jsonrpc !== "2.0") return;
+  if (message.id !== undefined && message.method === undefined) {
+    const entry = pending.get(message.id);
+    if (!entry) return;
+    pending.delete(message.id);
+    if (message.error) entry.reject(new Error(message.error.message));
+    else entry.resolve(message.result);
+    return;
+  }
+  if (message.method === "ui/resource-teardown") {
+    // A request (it has an id): acknowledge so the host may tear down.
+    window.parent.postMessage({jsonrpc: "2.0", id: message.id, result: {}}, "*");
+    return;
+  }
+  if (message.method === "ui/notifications/tool-input") {
+    observedInput = message.params && message.params.arguments
+      ? message.params.arguments : {};
+    document.getElementById("note-save").disabled = false;
+    if (typeof observedInput.nonce === "string") {
+      document.getElementById("note-nonce").value = observedInput.nonce;
+      document.getElementById("note-text").value = observedInput.text || "";
+      status("agent input received");
+    } else {
+      status("ready");
+    }
+    return;
+  }
+  if (message.method === "ui/notifications/tool-result") {
+    observedResult = message.params || {};
+    if (observedResult.isError === true) {
+      const text = observedResult.content && observedResult.content[0]
+        ? observedResult.content[0].text : null;
+      acknowledgeTerminal("tool_error", text)
+        .then(() => status("agent tool error acknowledged"))
+        .catch((error) => status("terminal acknowledgement failed: " + error.message));
+    } else if (observedInput && typeof observedInput.nonce === "string") {
+      document.getElementById("observed-ack").disabled = false;
+      status("agent result received");
+    }
+    return;
+  }
+  if (message.method === "ui/notifications/tool-cancelled") {
+    const reason = message.params && typeof message.params.reason === "string"
+      ? message.params.reason : "without reason";
+    acknowledgeTerminal("cancelled", reason)
+      .then(() => status("agent cancellation acknowledged"))
+      .catch((error) => status("terminal acknowledgement failed: " + error.message));
+  }
+});
+
+document.getElementById("note-save").addEventListener("click", async () => {
+  const nonce = document.getElementById("note-nonce").value;
+  const text = document.getElementById("note-text").value;
+  status("saving…");
+  try {
+    const result = await request("tools/call", {
+      name: "save_note",
+      arguments: {nonce, text},
+    });
+    const saved = result.structuredContent || {};
+    status("saved note " + saved.note_count + " nonce " + saved.nonce);
+  } catch (error) {
+    status("save failed: " + error.message);
+  }
+});
+
+document.getElementById("observed-ack").addEventListener("click", async () => {
+  const structured = observedResult && observedResult.structuredContent
+    ? observedResult.structuredContent : {};
+  status("acknowledging…");
+  try {
+    await request("tools/call", {
+      name: "acknowledge_observed_call",
+      arguments: {
+        input_nonce: observedInput.nonce,
+        input_text: observedInput.text,
+        result_nonce: structured.nonce,
+        result_count: structured.note_count,
+      },
+    });
+    status("agent call acknowledged");
+  } catch (error) {
+    status("acknowledgement failed: " + error.message);
+  }
+});
+
+(async () => {
+  await request("ui/initialize", {
+    appInfo: {name: "apps-fixture-notes", version: "0.1"},
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  });
+  notify("ui/notifications/initialized", {});
+  status("waiting for tool input…");
+})();
+</script>
+</body>
+</html>
