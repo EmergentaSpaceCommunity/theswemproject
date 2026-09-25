@@ -3,3 +3,4 @@ dist/
 !dist/
 dist/*
 !dist/workbench.js
+!dist/apps-bridge.js
