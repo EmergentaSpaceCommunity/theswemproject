@@ -9,7 +9,7 @@ space (its repository's item Y4).
 `cargo run -p swem-host --example embed` prints a Workbench URL; a person installs an agent from
 the registry and talks to it. The assembly recipe moves from the product binary into the crate as
 a builder; the Podman resolver moves with it; no process-global state remains.
-Related journeys: GJ-01, GJ-07.
+Related journeys: GJ-01, GJ-07. **Done** (2026-09-26, ExecPlan 001).
 
 ## C2 — API clients
 

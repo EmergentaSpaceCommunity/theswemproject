@@ -819,6 +819,9 @@ pub struct WorkbenchShellState {
     /// Where `create_project` puts a new project and which command serves it.
     /// Absent in tests and embedders that declare their projects themselves.
     project_factory: std::sync::OnceLock<ProjectFactory>,
+    /// The ACP registry index this product reads, when its builder named
+    /// one; else the crate's default for this process.
+    acp_registry_index: std::sync::OnceLock<String>,
     /// The project sources this host may dial (resources-only clients), one
     /// slot per declaration, dialled the first time somebody opens that one.
     /// Refreshed from `project_declarations` by name on every use, so a
@@ -995,6 +998,7 @@ impl WorkbenchShellState {
             project_declarations: std::sync::Mutex::new(Vec::new()),
             projects_enabled: std::sync::OnceLock::new(),
             project_factory: std::sync::OnceLock::new(),
+            acp_registry_index: std::sync::OnceLock::new(),
             projects: ProjectSources::new(),
             project_apps: project_apps::ProjectApps::new(),
             mcp_catalogue: std::sync::OnceLock::new(),
@@ -1053,16 +1057,48 @@ impl WorkbenchShellState {
         &self,
         agent_id: &str,
     ) -> Result<crate::InstallPlan, WorkbenchShellError> {
-        crate::install_plan(agent_id).map_err(|error| {
+        crate::install_plan_at(agent_id, &self.acp_registry_index()).map_err(|error| {
             // The registry is a network dependency of this machine, not a
             // fault in the request: say which host, so the person knows
             // whether to fix their network or install the agent themselves.
             WorkbenchShellError::Invalid(format!(
                 "the agent registry ({}) could not be read: {error}. Point {} at one this machine can reach, or install the agent yourself and it appears here.",
-                crate::acp_registry_index(),
+                self.acp_registry_index(),
                 crate::ACP_REGISTRY_INDEX_VAR
             ))
         })
+    }
+
+    /// Name the ACP registry index this product reads. A builder names it;
+    /// a product that was not told one reads the crate's default.
+    ///
+    /// # Errors
+    ///
+    /// Conflict when a different index was already named.
+    pub fn set_acp_registry_index(&self, index: &str) -> Result<(), WorkbenchShellError> {
+        let index = index.trim().to_owned();
+        if index.is_empty() {
+            return Err(WorkbenchShellError::Invalid(
+                "the agent registry index cannot be empty".into(),
+            ));
+        }
+        match self.acp_registry_index.set(index.clone()) {
+            Ok(()) => Ok(()),
+            Err(_) if self.acp_registry_index.get() == Some(&index) => Ok(()),
+            Err(_) => Err(WorkbenchShellError::Conflict(format!(
+                "this product already reads the agent registry at {}",
+                self.acp_registry_index.get().map_or("", String::as_str)
+            ))),
+        }
+    }
+
+    /// The ACP registry index this product reads.
+    #[must_use]
+    pub fn acp_registry_index(&self) -> String {
+        self.acp_registry_index
+            .get()
+            .cloned()
+            .unwrap_or_else(crate::acp_registry_index)
     }
 
     /// Install the agent the person chose, against the exact plan they saw.

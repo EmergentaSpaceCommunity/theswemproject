@@ -9,7 +9,7 @@
 | Agent in a Podman container | proven where Podman exists | GJ-05 |
 | Editor door over ACP: same agent, files, resume, several windows | proven | GJ-06 |
 | MCP Apps hosted in a sandboxed origin, calls relayed through the host | proven | `workbench_shell_apps_browser` |
-| Embedding through a product builder | missing | roadmap C1 |
+| Embedding through a product builder | done | `swem_host::product`, `examples/embed.rs`, `tests/product.rs`; the product binary is the builder's first caller |
 | Client credentials for an embedder's own page | missing | roadmap C2 |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
 | A server's home App as a space; the Project space as the project server's App | missing | roadmap C4 |

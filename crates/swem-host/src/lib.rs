@@ -28,6 +28,7 @@ mod install;
 pub mod mcp_observer;
 mod packages;
 mod permission_profile;
+pub mod product;
 pub mod product_supply;
 mod profile;
 mod routing;
@@ -95,8 +96,8 @@ pub const ACP_REGISTRY_INDEX: &str =
 /// The environment variable that names a different ACP registry index.
 pub const ACP_REGISTRY_INDEX_VAR: &str = "SWEM_ACP_REGISTRY_INDEX";
 
-/// The ACP registry index this SWEM reads: the public CDN, or whatever
-/// [`ACP_REGISTRY_INDEX_VAR`] names.
+/// The ACP registry index a product reads unless its builder named one: the
+/// public CDN, or whatever [`ACP_REGISTRY_INDEX_VAR`] names.
 ///
 /// The index was a constant, which meant a person whose machine cannot reach
 /// that one host could not install an agent at all - behind a corporate proxy,
@@ -109,41 +110,11 @@ pub const ACP_REGISTRY_INDEX_VAR: &str = "SWEM_ACP_REGISTRY_INDEX";
 /// a package mirror to any other package manager.
 #[must_use]
 pub fn acp_registry_index() -> String {
-    if let Some(named) = ACP_REGISTRY_INDEX_SET.get() {
-        return named.clone();
-    }
     std::env::var(ACP_REGISTRY_INDEX_VAR)
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| ACP_REGISTRY_INDEX.to_owned())
-}
-
-/// Set once, before anything reads it, by a host that was told which index to
-/// use on its command line. A command line beats an environment variable
-/// because it is the more deliberate of the two.
-static ACP_REGISTRY_INDEX_SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// Name the ACP registry index for this process.
-///
-/// # Errors
-///
-/// Returns the index already set when this is called twice with different
-/// values, because a process that read one index and then another would
-/// install against a plan nobody saw.
-pub fn set_acp_registry_index(index: &str) -> Result<(), String> {
-    let index = index.trim().to_owned();
-    if index.is_empty() {
-        return Err("the agent registry index cannot be empty".into());
-    }
-    match ACP_REGISTRY_INDEX_SET.set(index.clone()) {
-        Ok(()) => Ok(()),
-        Err(_) if ACP_REGISTRY_INDEX_SET.get() == Some(&index) => Ok(()),
-        Err(_) => Err(format!(
-            "this process already reads the agent registry at {}",
-            ACP_REGISTRY_INDEX_SET.get().map_or("", String::as_str)
-        )),
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -675,6 +646,16 @@ where
 /// registry distribution, or the registry's own refusal when the id is
 /// absent from it.
 pub fn install_plan(agent_id: &str) -> Result<InstallPlan, SupplyError> {
+    install_plan_at(agent_id, &acp_registry_index())
+}
+
+/// The plan installing `agent_id` from the registry at `registry_index`.
+///
+/// # Errors
+///
+/// The agent is not in the catalogue or the registry, has no managed
+/// distribution, or the registry cannot be read.
+pub fn install_plan_at(agent_id: &str, registry_index: &str) -> Result<InstallPlan, SupplyError> {
     let registry_id = match builtin_catalog()
         .into_iter()
         .find(|entry| entry.id == agent_id)
@@ -684,7 +665,7 @@ pub fn install_plan(agent_id: &str) -> Result<InstallPlan, SupplyError> {
             .ok_or_else(|| SupplyError::UnmanagedAgent(agent_id.into()))?,
         None => agent_id.to_owned(),
     };
-    resolve_registry_install_plan(agent_id, &registry_id, &acp_registry_index())
+    resolve_registry_install_plan(agent_id, &registry_id, registry_index)
 }
 
 /// Launch an explicitly selected discovered agent and verify the stable ACP v1

@@ -16,7 +16,7 @@ use std::time::Duration;
 use sha2::Digest as _;
 use swem_host::{
     AddIndexBody, InstallKind, McpServerOrigin, StoreInstallBody, StorePlanBody,
-    WorkbenchShellState, set_acp_registry_index,
+    WorkbenchShellState,
 };
 
 fn fresh_root(label: &str) -> PathBuf {
@@ -84,8 +84,6 @@ fn a_catalog_is_added_its_entries_listed_and_a_server_and_a_skill_install_where_
         .unwrap(),
     )
     .unwrap();
-    set_acp_registry_index(&file_url(&registry)).expect("the registry is named once");
-
     // The catalog: a server that is the MCP fixture, and a skill.
     let echo = PathBuf::from(env!("CARGO_BIN_EXE_swem-mcp-echo"));
     let echo_archive = tar_gz(
@@ -128,6 +126,9 @@ fn a_catalog_is_added_its_entries_listed_and_a_server_and_a_skill_install_where_
         |_| panic!("no agent connection is resolved here"),
     )
     .expect("open shell state");
+    state
+        .set_acp_registry_index(&file_url(&registry))
+        .expect("the registry is named once");
     let installed = root.join("installed");
     state.enable_installs(installed.clone()).unwrap();
     let shipped = swem_host::Catalog::parse(

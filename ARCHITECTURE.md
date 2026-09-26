@@ -11,6 +11,11 @@ Workbench hosts like any other server.
 
 A library plus test fixtures. It owns:
 
+- **The product.** `product.rs`: the data root's layout by name (`DataRoot`), the builder
+  (`Product`) that assembles everything the product is - profiles, ledger, declared servers,
+  discovery, installs, the Store, projects, the catalogue, model providers, the container
+  resolver, project creation - and the doors onto it (`Assembled::serve`, `editor_door`). The
+  product binary and an embedding application are both its callers.
 - **Agents.** Discovery of ACP agents: a built-in catalogue of the ones this build describes, the
   agents a person declares (`<data root>/agents/*.json`), and the receipts under the install root.
   Launch and the ACP v1 handshake (`verify_launch`), sessions over ACP with the host's own
@@ -50,11 +55,10 @@ words and fails when one appears. `cargo tree -p swem-host -e normal` names no o
 
 ### `swem-cli` - the product
 
-The `swem` binary. It assembles the host into what a person runs: the data root, the profiles, the
-route ledger, the MCP catalogue, model providers, the install root, the Store with the catalog the
-distribution ships, the environments (a Podman resolver), and - when a Cycle server is installed
-from the Store or on `PATH` - project creation on it. Subcommands cover the same ground from a
-terminal: `swem agents list|plan-install|install|verify|session`, `swem profiles`,
+The `swem` binary: the crate's product builder over this machine's data root, given what this
+distribution adds - the catalog it ships, the observer command, and the Cycle hub beside it, from
+the Store or on `PATH`, as the server projects are made on. Subcommands cover the same ground from
+a terminal: `swem agents list|plan-install|install|verify|session`, `swem profiles`,
 `swem environments`, `swem acp --profile <id>`, `swem workbench serve`.
 
 The product knows the Cycle only as a server it can be given: its name (`swem-cycle`), the hub's

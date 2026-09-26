@@ -37,6 +37,27 @@ Building the Workbench's page needs Node 22 or newer once:
 (cd crates/swem-host/web/apps-host && npm ci && npm run build)
 ```
 
+## Embed it
+
+The product is the crate's builder plus subcommands. An application starts the same Workbench in a
+page of code:
+
+```rust
+use swem_host::product::{DataRoot, Product};
+
+let served = Product::at(DataRoot::for_this_machine()?)
+    .assemble()?
+    .serve(([127, 0, 0, 1], 0).into(), ([127, 0, 0, 1], 0).into(), None)
+    .await?;
+println!("{}", served.url);
+```
+
+`cargo run -p swem-host --example embed` is exactly that. The builder takes what a distribution
+adds - a shipped catalog, the agent registry to read, declared servers, the container image, the
+observer command, the project server projects are made on - and answers the assembled product,
+which opens the Workbench door or the editor door. Nothing is process-global: two products in one
+process read different roots and registries.
+
 ## Develop
 
 ```text

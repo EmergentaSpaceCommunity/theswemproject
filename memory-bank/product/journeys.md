@@ -45,8 +45,9 @@ closing and reopening the editor returns to the same conversation. Walks:
 ## GJ-07 — Embed the harness in another application
 
 An application starts a Workbench through the crate's product builder in a page of code and, with
-a client credential, drives a session from a page of its own on another origin. Status: planned
-(roadmap C1, C2).
+a client credential, drives a session from a page of its own on another origin. Status: the
+builder and the example are done (roadmap C1; `tests/product::an_embedder_serves_a_workbench_
+from_a_page_of_code`); the client credential is planned (roadmap C2).
 
 ## GJ-08 — A project server's own space
 

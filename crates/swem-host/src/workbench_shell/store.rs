@@ -474,7 +474,7 @@ impl WorkbenchShellState {
     fn registry_bytes(&self) -> Result<(Vec<u8>, String, Option<String>), WorkbenchShellError> {
         let home = self.store_home()?;
         let cache = home.indexes.join(ACP_REGISTRY_CACHE);
-        match fetch_url(&crate::acp_registry_index()) {
+        match fetch_url(&self.acp_registry_index()) {
             Ok(bytes) => {
                 let _ = std::fs::write(&cache, &bytes);
                 Ok((bytes, "live".into(), None))
@@ -584,7 +584,7 @@ impl WorkbenchShellState {
         }
         Ok(StoreView {
             registry: RegistryStatus {
-                url: crate::acp_registry_index(),
+                url: self.acp_registry_index(),
                 agents,
                 read,
                 error,

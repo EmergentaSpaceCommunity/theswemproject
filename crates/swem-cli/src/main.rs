@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::schema::v1::McpServer;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use swem_host::product::{DataRoot, Product, ProjectServer};
 use swem_host::{
     AgentDistributionBuildPlan, AgentDistributionBuildSpec, AgentDistributionInventory,
     BackendProbe, BackendProbeStatus, DistributionBuildAuthorization, ManagedProvisioningPolicy,
@@ -367,28 +368,17 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             acp_registry,
             container_image,
         } => {
-            if let Some(index) = acp_registry.as_deref() {
-                swem_host::set_acp_registry_index(index).map_err(anyhow::Error::msg)?;
-            }
-            let (state, data_root) = assemble_product(
+            let served = product(
                 inventory,
                 ledger,
                 operation_timeout_secs,
                 &mcp_server,
+                acp_registry,
                 container_image,
-            )?;
-            let token = swem_host::mint_session_token().map_err(anyhow::Error::msg)?;
-            state.set_session_token(token.clone());
-            // The clock. A standing instruction runs where the product runs,
-            // so it starts with the product and stops with it, and it holds
-            // the same state the page does - a scheduled turn is a turn like
-            // any other, on the same lanes and in the same record.
-            let state = std::sync::Arc::new(state);
-            state
-                .enable_schedules(&data_root.join("schedules"))
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            let handle = swem_host::serve_workbench_http_with_apps_at(
-                state,
+            )?
+            .assemble()
+            .map_err(anyhow::Error::msg)?
+            .serve(
                 ([127, 0, 0, 1], port).into(),
                 ([127, 0, 0, 1], sandbox_port).into(),
                 apps_bundle,
@@ -399,16 +389,12 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             // boundary: every program on this machine can reach the port, and
             // behind it are a live terminal and a profile's secrets. Whoever
             // can read what this printed is who may work this Workbench.
-            let url = format!(
-                "http://127.0.0.1:{}/?token={token}",
-                handle.local_addr.port()
-            );
-            println!("SWEM Workbench: {url}");
+            println!("SWEM Workbench: {}", served.url);
             println!(
                 "App sandbox origin: http://127.0.0.1:{}",
-                handle.sandbox_addr.port()
+                served.handle.sandbox_addr.port()
             );
-            if !no_open && let Err(error) = open_system_browser(&url) {
+            if !no_open && let Err(error) = open_system_browser(&served.url) {
                 eprintln!("could not open the system browser: {error}");
             }
             std::future::pending::<()>().await;
@@ -417,404 +403,78 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
     }
 }
 
-/// Where the agent is inside the image this product runs it in.
-///
-/// One path, by convention, so a person needs to say only which image. Any
-/// image that puts an ACP agent there can be named with `--container-image`;
-/// `scripts/build-agent-container-image.sh` builds one from what is on this
-/// machine, which is how a machine that cannot reach a registry still has one.
-const AGENT_IN_THE_IMAGE: &str = "/usr/local/bin/swem-agent";
-
-/// The uid:gid that owns `path`, as a container user.
-///
-/// # Errors
-///
-/// Returns a sentence a person can act on when the owner is root: a container
-/// environment exists to keep an agent out of the machine, so running it as
-/// the machine's root would give away the thing it was chosen for.
-#[cfg(unix)]
-fn owner_of(path: &std::path::Path) -> Result<String, String> {
-    use std::os::unix::fs::MetadataExt as _;
-    let owner = std::fs::metadata(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    if owner.uid() == 0 || owner.gid() == 0 {
-        return Err(format!(
-            "this profile runs in a container, and {} belongs to root. A container environment \
-             will not run an agent as the machine's root; run SWEM as the person who owns the \
-             work, or give this profile a directory they own",
-            path.display()
-        ));
-    }
-    Ok(format!("{}:{}", owner.uid(), owner.gid()))
-}
-
-#[cfg(not(unix))]
-fn owner_of(_path: &std::path::Path) -> Result<String, String> {
-    Err("a container environment is a Linux container, and this is not a Linux host".into())
-}
-
-/// The profile's agent, in a container on this machine.
-///
-/// The container is created here rather than when the session starts: the
-/// harness takes a connection that already names one exact lease and the
-/// transport bound to it, so that it can refuse a session whose environment
-/// drifted from the profile instead of discovering the drift halfway through
-/// a turn.
-fn in_a_container(
-    profile: &swem_host::PersonalAgentProfile,
-    image: Option<&str>,
-    mcp_servers: Vec<McpServer>,
-    providers_root: &std::path::Path,
-) -> Result<swem_host::ResolvedAgentConnection, String> {
-    let image = image.ok_or_else(|| {
-        format!(
-            "this profile runs in a container, and this product was not told which image to run \
-             an agent in. Start it with --container-image sha256:<id> (or SWEM_CONTAINER_IMAGE), \
-             naming an image that runs an ACP agent at {AGENT_IN_THE_IMAGE}"
-        )
-    })?;
-    let probe = swem_host::probe_podman_endpoints()
-        .into_iter()
-        .find(|probe| probe.status == swem_host::BackendProbeStatus::Ready)
-        .ok_or_else(|| {
-            let probe = swem_host::probe_podman();
-            let said = probe
-                .diagnostics
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "no Podman endpoint answered".to_owned());
-            format!("this profile runs in a container, and this machine cannot: {said}")
-        })?;
-
-    let mut requirements = swem_host::EnvironmentRequirements::new(&profile.workspace);
-    requirements.cpu_limit = Some(2);
-    requirements.memory_mib = Some(2_048);
-    requirements.required_guarantees.extend([
-        swem_host::EnvironmentGuarantee::AgentProcessIsolation,
-        swem_host::EnvironmentGuarantee::FilesystemIsolation,
-        swem_host::EnvironmentGuarantee::NetworkDenyByDefault,
-        swem_host::EnvironmentGuarantee::ResourceLimits,
-    ]);
-
-    let mut spec = swem_host::PodmanContainerSpec::deny_network(
-        image,
-        swem_host::PodmanWorkspaceBinding {
-            service_source: profile.workspace.display().to_string(),
-            container_target: "/workspace".into(),
-        },
-        AGENT_IN_THE_IMAGE,
-    );
-    // The agent keeps whatever it keeps between sessions, and it keeps it on
-    // the person's disk rather than inside a container that will be removed.
-    spec.agent_home = Some(swem_host::PodmanWorkspaceBinding {
-        service_source: profile.agent_home.display().to_string(),
-        container_target: "/home/swem".into(),
-    });
-    // Who the agent is inside the container: whoever owns the directory it
-    // works in. A container user that is not that owner sees the person's own
-    // workspace as read-only, which surfaces as "Permission denied" on a path
-    // that plainly exists - and a container run as root is refused outright,
-    // because an agent kept out of the machine should not be its root.
-    spec.user = owner_of(&profile.workspace)?;
-    // The model and the provider's address, as plain variables of the agent
-    // process - the same ones a direct launch gets. The files (the role, the
-    // skills) were already written into the workspace, which the container
-    // mounts; only the variables need carrying across. A key never goes this
-    // way: keys are runtime secrets.
-    let provider = match &profile.model_provider {
-        Some(id) => Some(
-            swem_host::workbench_shell::ModelProviderBook::open(providers_root)
-                .and_then(|book| book.get(id))
-                .map_err(|error| error.to_string())?,
-        ),
-        None => None,
-    };
-    spec.environment =
-        swem_host::agent_setup::materialise_profile(profile, provider.as_ref())?.environment;
-
-    let lease_id = format!(
-        "workbench-container-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| error.to_string())?
-            .as_nanos()
-    );
-    let lease = swem_host::prepare_podman_lease(&probe, lease_id, &requirements, &spec)
-        .map_err(|error| format!("this profile's container could not be prepared: {error}"))?;
-    let transport = swem_host::EnvironmentTransport::podman_endpoint(&lease, &probe)
-        .map_err(|error| format!("this profile's container could not be reached: {error}"))?;
-
-    Ok(swem_host::ResolvedAgentConnection {
-        launch: swem_host::LaunchCommand {
-            executable: AGENT_IN_THE_IMAGE.into(),
-            args: Vec::new(),
-            integration: swem_host::IntegrationKind::DirectAcp,
-        },
-        agent_executable: std::path::PathBuf::from(AGENT_IN_THE_IMAGE),
-        mcp_servers,
-        environment: swem_host::ResolvedAgentEnvironment::Prepared {
-            environment_profile_id: profile.environment_profile_id.clone(),
-            lease: Box::new(lease),
-            transport: Box::new(transport),
-        },
-    })
-}
-
-/// Everything the product is, before a door is opened onto it: the data root,
-/// the profiles, the route ledger, the projects and MCP servers this machine
-/// has declared, the agents it can discover, and the resolver that turns a
-/// profile into a running agent.
-///
-/// It is one function because there are now two doors onto the same product -
-/// the Workbench over HTTP and the editor door over stdio - and a second
-/// assembly would be a second product wearing the same name. What differs
-/// between the doors stays with each door: the Workbench mints a session
-/// secret and runs the clock, the editor door does neither.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear product startup keeps paths, discovery, resolver and server ownership auditable"
-)]
-fn assemble_product(
+/// The product this binary is: the harness crate's builder over this
+/// machine's data root, with what this distribution adds - its shipped
+/// catalog, the observer command, and the Cycle hub beside it when there is
+/// one. One function because there are two doors onto the same product - the
+/// Workbench over HTTP and the editor door over stdio - and a second assembly
+/// would be a second product wearing the same name.
+fn product(
     inventory: Option<PathBuf>,
     ledger: Option<PathBuf>,
     operation_timeout_secs: u64,
     mcp_server: &[PathBuf],
+    acp_registry: Option<String>,
     container_image: Option<String>,
-) -> Result<(swem_host::WorkbenchShellState, PathBuf)> {
-    let data_root = workbench_data_root()?;
-    fs::create_dir_all(&data_root)
-        .with_context(|| format!("create Workbench data root {}", data_root.display()))?;
-    let inventory = inventory.unwrap_or_else(|| data_root.join("profiles"));
-    let ledger = ledger.unwrap_or_else(|| data_root.join("routes.jsonl"));
-    // Connection-local MCP declarations, keyed by their ACP names.
-    // Shared with the host so a project created from the product is
-    // attachable by an agent session without a restart.
-    let declarations: std::sync::Arc<
-        std::sync::Mutex<std::collections::BTreeMap<String, McpServer>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-    let projects_root = data_root.join("projects");
-    // Every project this product made before: its declaration lives
-    // beside it, so there is no index to fall out of step.
-    for entry in fs::read_dir(&projects_root).into_iter().flatten().flatten() {
-        let manifest = entry.path().join("project.json");
-        if !manifest.is_file() {
-            continue;
-        }
-        let bytes = fs::read(&manifest).with_context(|| format!("read {}", manifest.display()))?;
-        let server: McpServer = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse {}", manifest.display()))?;
-        let name = match &server {
-            McpServer::Stdio(stdio) => stdio.name.clone(),
-            McpServer::Http(http) => http.name.clone(),
-            McpServer::Sse(sse) => sse.name.clone(),
-            other => bail!(
-                "unsupported MCP transport in {}: {other:?}",
-                manifest.display()
-            ),
-        };
-        declarations
-            .lock()
-            .map_err(|_| anyhow::anyhow!("declaration registry poisoned"))?
-            .insert(name, server);
+) -> Result<Product> {
+    let root = DataRoot::for_this_machine().map_err(anyhow::Error::msg)?;
+    let shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
+        .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
+    let mut product = Product::at(root.clone())
+        .operation_timeout(std::time::Duration::from_secs(operation_timeout_secs))
+        .shipped_catalog(shipped)
+        .container_image(container_image)
+        // The Apps bridge ships inside this binary, so the observer the
+        // App relay needs is always configured.
+        .mcp_observer(
+            std::env::current_exe()?,
+            vec!["mcp".into(), "observe-stdio".into()],
+        )
+        // A project is served by the Cycle, which is not this binary: it is
+        // the `swem-cycle` hub installed from the Store, beside this binary,
+        // or on PATH. Without one, the product runs as an agent harness alone
+        // and says so when a project is asked for.
+        .project_server(cycle_hub(&root));
+    if let Some(inventory) = inventory {
+        product = product.profiles_at(inventory);
+    }
+    if let Some(ledger) = ledger {
+        product = product.routes_at(ledger);
+    }
+    if let Some(index) = acp_registry {
+        product = product.acp_registry(index);
     }
     for path in mcp_server {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let server: McpServer = serde_json::from_slice(&bytes)
             .with_context(|| format!("parse ACP MCP server declaration {}", path.display()))?;
-        let name = match &server {
-            McpServer::Stdio(stdio) => stdio.name.clone(),
-            McpServer::Http(http) => http.name.clone(),
-            McpServer::Sse(sse) => sse.name.clone(),
-            other => bail!("unsupported MCP transport in declaration: {other:?}"),
-        };
-        declarations
-            .lock()
-            .map_err(|_| anyhow::anyhow!("declaration registry poisoned"))?
-            .insert(name, server);
+        product = product.declare(server);
     }
-    let declared_agents = declared_agents()?;
-    let installed_root = installed_root()?;
-    let discovered = swem_host::discover_agents_with(declared_agents.clone(), &installed_root);
-    // The same declarations feed the Project space, which dials them
-    // on its own - no profile, resolver or environment takes part.
-    let project_declarations: Vec<McpServer> = declarations
-        .lock()
-        .map_err(|_| anyhow::anyhow!("declaration registry poisoned"))?
-        .values()
-        .cloned()
-        .collect();
-    let resolver_declarations = std::sync::Arc::clone(&declarations);
-    let resolver_providers = data_root.join("model-providers");
-    // Which image a container environment runs an agent in. A setting rather
-    // than something the product decides, for the same reason the agent
-    // registry is one: a person may have their own, a mirror, or one built on
-    // the machine itself where no registry can be reached.
-    let container_image = container_image.or_else(|| {
-        std::env::var("SWEM_CONTAINER_IMAGE")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-    });
-    let state = swem_host::WorkbenchShellState::open_with_environment(
-        &inventory,
-        &ledger,
-        std::time::Duration::from_secs(operation_timeout_secs),
-        move |profile| {
-            // The profile names where its agent runs, and the catalogue is
-            // asked before anything is built: a profile naming an environment
-            // this product does not have is refused with the name in the
-            // message rather than quietly started here.
-            // Matched exhaustively on purpose: a new row in that catalogue
-            // stops this compiling until the resolver says what it does with
-            // it, instead of running it here by default.
-            let backend = swem_host::environment_backend(&profile.environment_profile_id)?;
-            let discovery =
-                swem_host::discover_agents_with(declared_agents.clone(), &installed_root)
-                    .into_iter()
-                    .find(|agent| agent.id == profile.agent_id)
-                    .ok_or_else(|| format!("unknown agent: {}", profile.agent_id))?;
-            if discovery.readiness == Readiness::Absent {
-                return Err(format!("agent is not installed: {}", profile.agent_id));
-            }
-            let launch = discovery
-                .launch
-                .clone()
-                .ok_or_else(|| "discovered agent has no launch command".to_owned())?;
-            let agent_executable = discovery
-                .executable_path
-                .clone()
-                .ok_or_else(|| "discovered agent has no executable path".to_owned())?;
-            let mut mcp_servers = Vec::new();
-            let declared = resolver_declarations
-                .lock()
-                .map_err(|_| "declaration registry poisoned".to_owned())?;
-            for attachment in &profile.attachments {
-                let server = declared.get(&attachment.server_name).ok_or_else(|| {
-                    format!("no declared project named {}", attachment.server_name)
-                })?;
-                mcp_servers.push(server.clone());
-            }
-            drop(declared);
-            match backend {
-                swem_host::EnvironmentBackend::ThisMachine => {
-                    Ok(swem_host::ResolvedDirectAgentConnection {
-                        launch,
-                        agent_executable,
-                        mcp_servers,
-                    }
-                    .into())
-                }
-                // The container is prepared here, before the session exists,
-                // because that is what the harness validates against: a
-                // connection arrives with one exact lease and one transport
-                // bound to it, or it does not arrive.
-                swem_host::EnvironmentBackend::InAContainer => in_a_container(
-                    profile,
-                    container_image.as_deref(),
-                    mcp_servers,
-                    &resolver_providers,
-                ),
-            }
-        },
-    )
-    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    state
-        .enable_local_onboarding(
-            onboarding_options(discovered),
-            &data_root.join("workspaces"),
-            &data_root.join("agent-homes"),
-        )
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    // Discovery reads the agents directory, so what a person installs
-    // from the product is there the next time it is asked. Without
-    // this the shell answers from the list it was given at startup and
-    // calls a freshly installed agent unavailable until a restart.
-    state.set_agent_discovery(|| {
-        let declared = crate::declared_agents().unwrap_or_default();
-        let installed_root = crate::installed_root().unwrap_or_default();
-        onboarding_options(swem_host::discover_agents_with(declared, &installed_root))
-    });
-    state
-        .enable_installs(data_root.join("installed"))
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    // The store reads the registry and the catalogs a person adds; both
-    // are kept under the data root so a machine that cannot reach them
-    // today still sees what it saw.
-    // The Store lists what this distribution carries before anything added,
-    // the Cycle among them: the one list says what this product is as well
-    // as what it can be given.
-    let shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
-        .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
-    state
-        .enable_store(&data_root.join("indexes"), vec![shipped])
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    state
-        .enable_projects(project_declarations)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    // The MCP servers a person declares from the product. They land in
-    // the same declaration map the projects use, so an agent attaches
-    // either kind by name - but they are not projects, so they are
-    // loaded after the Project space has taken its own list.
-    state
-        .enable_mcp_catalogue(
-            &data_root.join("mcp-servers"),
-            std::sync::Arc::clone(&declarations),
-        )
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    // The places a model is served from, set up once and named by profiles.
-    // The product ships a few; a person's own live beside them as documents.
-    state
-        .enable_model_providers(&data_root.join("model-providers"))
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    // A project is served by the Cycle, which is not this binary: it is the
-    // `swem-cycle` hub installed from the Store, beside this binary, or on
-    // PATH, and it answers `serve --projects … [--plugins …] --packages-home …
-    // --tools … --environment-root …`. Without one, the product runs as an agent
-    // harness alone and says so when a project is asked for.
-    match cycle_server(&data_root) {
-        Some(command) => {
-            // The hub: one server over the projects directory, which every
-            // project's own server is started from. Files, not values, so a
-            // tool installed or a secret added later is read at the next
-            // close without a restart.
-            let hub = agent_client_protocol::schema::v1::McpServerStdio::new("swem-cycle", command)
-                .args(vec![
-                    "serve".to_owned(),
-                    "--projects".to_owned(),
-                    projects_root.display().to_string(),
-                    "--plugins".to_owned(),
-                    data_root.join("plugins").display().to_string(),
-                    "--packages-home".to_owned(),
-                    data_root.join("plugins").display().to_string(),
-                    "--tools".to_owned(),
-                    swem_host::tools_file(&data_root.join("installed"))
-                        .display()
-                        .to_string(),
-                    "--environment-root".to_owned(),
-                    data_root.join("environments").display().to_string(),
-                ]);
-            state
-                .enable_project_creation(swem_host::ProjectFactory {
-                    root: projects_root,
-                    hub,
-                    plugins: vec![data_root.join("plugins")],
-                    packages_home: data_root.join("plugins"),
-                    attachments: std::sync::Arc::clone(&declarations),
-                })
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        }
-        None => eprintln!(
-            "no Cycle server on this machine: projects are not created here until `swem-cycle` \
-             is installed from the Store, put beside this binary, or put on PATH"
-        ),
-    }
-    // The Apps bridge ships inside this binary, so the observer the
-    // App relay needs is always configured.
-    state.set_mcp_observer_command(
-        std::env::current_exe()?,
-        vec!["mcp".into(), "observe-stdio".into()],
-    );
-    Ok((state, data_root))
+    Ok(product)
+}
+
+/// The Cycle hub this product creates projects through, and how it is
+/// started: `swem-cycle serve` over this root's projects, packages, tools
+/// file and environments. Files, not values, so a tool installed or a
+/// secret added later is read at the next close without a restart.
+fn cycle_hub(root: &DataRoot) -> Option<ProjectServer> {
+    let command = cycle_server(root)?;
+    Some(ProjectServer {
+        command,
+        args: vec![
+            "serve".to_owned(),
+            "--projects".to_owned(),
+            root.projects().display().to_string(),
+            "--plugins".to_owned(),
+            root.plugins().display().to_string(),
+            "--packages-home".to_owned(),
+            root.plugins().display().to_string(),
+            "--tools".to_owned(),
+            root.tools_file().display().to_string(),
+            "--environment-root".to_owned(),
+            root.environments().display().to_string(),
+        ],
+    })
 }
 
 /// The editor door. The same product as the Workbench, answered over stdio to
@@ -824,43 +484,35 @@ fn assemble_product(
 /// line of ours would be a protocol error. What a person needs to read goes to
 /// stderr, which is where an editor shows an agent's output.
 async fn run_acp(acp: Acp) -> Result<()> {
-    let (state, _data_root) = assemble_product(
+    let assembled = product(
         acp.inventory,
         acp.ledger,
         acp.operation_timeout_secs,
         &[],
+        None,
         acp.container_image,
-    )?;
+    )?
+    .assemble()
+    .map_err(anyhow::Error::msg)?;
     // No session secret and no clock: this door serves no HTTP for a secret to
     // guard, and a standing instruction belongs to the product a person left
     // running, not to an editor that happens to be open.
-    let state = std::sync::Arc::new(state);
     eprintln!("SWEM is answering as the agent of profile {}", acp.profile);
-    swem_host::serve_editor_door(state, acp.profile)
+    assembled
+        .editor_door(acp.profile)
         .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
+        .map_err(anyhow::Error::msg)
 }
 
 fn workbench_data_root() -> Result<PathBuf> {
-    if let Some(root) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(root).join("SWEM").join("workbench"));
-    }
-    if let Some(root) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(root).join("swem").join("workbench"));
-    }
-    let home = std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .context("LOCALAPPDATA, XDG_DATA_HOME and HOME are unavailable")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("swem")
-        .join("workbench"))
+    DataRoot::for_this_machine()
+        .map(|root| root.path().to_path_buf())
+        .map_err(anyhow::Error::msg)
 }
 
 /// The Cycle server this machine has: the newest one installed from the
 /// Store under `installed/servers/swem-cycle/`, else `swem-cycle` on PATH.
-fn cycle_server(data_root: &Path) -> Option<PathBuf> {
+fn cycle_server(root: &DataRoot) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "swem-cycle.exe"
     } else {
@@ -873,8 +525,7 @@ fn cycle_server(data_root: &Path) -> Option<PathBuf> {
     {
         return Some(beside);
     }
-    let installed =
-        swem_host::load_receipts(&data_root.join("installed"), swem_host::InstallKind::Server);
+    let installed = swem_host::load_receipts(&root.installed(), swem_host::InstallKind::Server);
     if let Some(receipt) = installed.get("swem-cycle")
         && let Some(executable) = &receipt.executable
     {
@@ -1132,26 +783,6 @@ async fn run_mcp(mcp: Mcp) -> Result<()> {
 /// The agents this person declared, on top of the ones this build knows
 /// about: a declaration says where an ACP agent lives, so an agent the
 /// product never heard of is still theirs to use.
-/// What the onboarding surface lists, from what discovery found. An agent is
-/// offered only when it is installed and the host can actually launch it.
-fn onboarding_options(
-    discovered: Vec<swem_host::AgentDiscovery>,
-) -> Vec<swem_host::WorkbenchAgentOption> {
-    discovered
-        .into_iter()
-        .map(|agent| swem_host::WorkbenchAgentOption {
-            agent_id: agent.id,
-            name: agent.name,
-            readiness: agent.readiness,
-            available: matches!(
-                agent.readiness,
-                Readiness::InstalledUnverified | Readiness::HandshakeReady
-            ) && agent.launch.is_some()
-                && agent.executable_path.is_some(),
-        })
-        .collect()
-}
-
 fn declared_agents() -> Result<Vec<swem_host::AgentCatalogEntry>> {
     swem_host::declared_agents(&workbench_data_root()?.join("agents"))
         .map_err(|error| anyhow::anyhow!(error))
