@@ -4,6 +4,15 @@ This file is for anyone changing this repository, people and coding agents alike
 operating contract, not the architecture: read `ARCHITECTURE.md` for what the pieces are and
 `README.md` for how to run and test them.
 
+## Sources of truth
+
+Recover context in this order: `git status` and the code, tests and runtime behaviour (what exists
+now); `memory-bank/product/` (what a person must be able to do); `memory-bank/roadmap/roadmap.md`
+(what comes next); `memory-bank/exec-plans/active/` (what is being built right now, one plan at a
+time, per `memory-bank/exec-plans/PLANS.md`); `ARCHITECTURE.md` and `memory-bank/architecture/`
+(current boundaries); `memory-bank/decisions/` (durable decisions). `memory-bank/README.md` says
+what each holds and when to update it; `scripts/check_memory_bank.py` keeps the shape.
+
 ## What a change is for
 
 SWEM is a product a person uses. A change is finished when a person can do something from a real
