@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::v1::{
     ContentBlock, ElicitationAction as AcpElicitationAction, ElicitationCapabilities,
     ElicitationFormCapabilities, ElicitationUrlCapabilities, EmbeddedResourceResource,
-    FileSystemCapabilities, McpServer,
+    FileSystemCapabilities, McpServer, McpServerStdio,
 };
 use base64::Engine as _;
 use futures_util::TryStreamExt as _;
@@ -721,63 +721,27 @@ type RediscoverAgents = Box<dyn Fn() -> Vec<WorkbenchAgentOption> + Send + Sync>
 /// file the person has to write.
 #[derive(Clone, Debug)]
 pub struct ProjectFactory {
+    /// Where projects live: `<root>/<slug>/{workspace,journal,project.json}`,
+    /// the layout the hub writes and this host reads back at the next start.
     pub root: PathBuf,
-    pub command: PathBuf,
-    /// Plugin package directories every project's Cycle loads beside the
-    /// built-in modules; written into each project's declaration so the
-    /// served Cycle and the product agree on what a project can hold.
+    /// The Cycle hub that makes projects: dialled for `create_project`, which
+    /// answers the declaration that serves the project. What every project's
+    /// server loads - packages, the tools file, the environment root - is the
+    /// hub's to know; it is in this declaration's arguments, not here.
+    pub hub: McpServerStdio,
+    /// The package directories every project's server loads, for the page's
+    /// listing of them: the ones the distribution ships and the ones this
+    /// person installed. Owed to the hub, which will list packages itself.
     pub plugins: Vec<PathBuf>,
     /// Where a package a person installs lands (`<data root>/plugins`). It is
     /// one of `plugins`, named on its own because that list may also hold
     /// directories the command line pointed at, which are not ours to write
     /// into.
     pub packages_home: PathBuf,
-    /// The file the Cycle reads tool paths from at every close
-    /// (`<data root>/installed/tools/tools.json`, [`crate::tools_file`]).
-    pub tools_file: PathBuf,
-    /// Where prepared environments live, shared across projects.
-    pub environment_root: PathBuf,
     /// The declarations a personal agent profile may attach to, by ACP name.
     /// A project created here lands in the same map, so an agent session can
     /// be bound to it without restarting the product.
     pub attachments: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
-}
-
-impl ProjectFactory {
-    /// The declaration that serves the project `slug`: this product's own
-    /// binary over the project's workspace and journal, with the packages,
-    /// the tools file, the project's vault and the environment root. Files,
-    /// not values, so a tool installed or a secret added later is read at
-    /// the next close without a restart.
-    #[must_use]
-    pub fn declaration(&self, slug: &str) -> McpServer {
-        let root = self.root.join(slug);
-        let mut args = vec![
-            "mcp".to_owned(),
-            "serve".to_owned(),
-            "--workspace".to_owned(),
-            root.join("workspace").display().to_string(),
-            "--journal".to_owned(),
-            root.join("journal").display().to_string(),
-        ];
-        for directory in &self.plugins {
-            args.push("--plugins".to_owned());
-            args.push(directory.display().to_string());
-        }
-        args.push("--tools".to_owned());
-        args.push(self.tools_file.display().to_string());
-        args.push("--secrets".to_owned());
-        args.push(root.join(crate::PROJECT_VAULT_FILE).display().to_string());
-        args.push("--environment-root".to_owned());
-        args.push(self.environment_root.display().to_string());
-        McpServer::Stdio(
-            agent_client_protocol::schema::v1::McpServerStdio::new(
-                slug.to_owned(),
-                self.command.clone(),
-            )
-            .args(args),
-        )
-    }
 }
 
 /// The official MCP Apps bridge this product was built against, committed in
@@ -807,34 +771,6 @@ fn declaration_name(declaration: &McpServer) -> Result<String, WorkbenchShellErr
             "unsupported MCP declaration transport: {other:?}"
         ))),
     }
-}
-
-/// A directory- and ACP-safe name for a project the person typed.
-fn project_slug(name: &str) -> Result<String, WorkbenchShellError> {
-    let slug = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    let slug = slug.trim_matches('-').to_owned();
-    let collapsed = slug
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if collapsed.is_empty() {
-        return Err(WorkbenchShellError::Invalid(
-            "a project name needs at least one letter or digit".into(),
-        ));
-    }
-    Ok(collapsed)
 }
 
 /// Requested connection start, before the ledger supplies the session id.
@@ -1452,16 +1388,17 @@ impl WorkbenchShellState {
             .map_err(|_| WorkbenchShellError::Conflict("project creation already enabled".into()))
     }
 
-    /// Create a project the person named: a workspace, a journal and the
-    /// declaration that serves them, added to the Project space at once.
+    /// Create a project the person named, through the Cycle hub: the hub
+    /// makes the workspace, the journal and the declaration that serves them,
+    /// and answers that declaration; it is added to the Project space at once.
     ///
     /// The project is empty on purpose. What fills it is the person and their
     /// agent working through the Cycle, not content the host invented.
     ///
     /// # Errors
     ///
-    /// Refuses an empty or unusable name, a name already taken, a host with no
-    /// project factory configured, or a directory it cannot create.
+    /// Refuses a name the hub refuses (empty, unusable, already taken), a host
+    /// with no project factory configured, or a hub that does not answer.
     pub async fn create_project(
         &self,
         name: &str,
@@ -1469,29 +1406,61 @@ impl WorkbenchShellState {
         let factory = self.project_factory.get().ok_or_else(|| {
             WorkbenchShellError::Invalid("this host does not create projects".into())
         })?;
-        let slug = project_slug(name)?;
-        let root = factory.root.join(&slug);
-        if root.exists() {
-            return Err(WorkbenchShellError::Conflict(format!(
-                "project {slug} already exists"
-            )));
-        }
-        for directory in [root.join("workspace"), root.join("journal")] {
-            std::fs::create_dir_all(&directory).map_err(|error| {
-                WorkbenchShellError::Invalid(format!("create {}: {error}", directory.display()))
+        let (hub, exit) = crate::workbench_apps::spawn_host_client(&factory.hub)
+            .await
+            .ok_or_else(|| {
+                WorkbenchShellError::Invalid(format!(
+                    "the Cycle hub did not answer: {} {}",
+                    factory.hub.command.display(),
+                    factory.hub.args.join(" ")
+                ))
             })?;
-        }
-        let declaration = factory.declaration(&slug);
-        // The declaration lives beside the project it serves, so the next
-        // start finds it without an index the two could disagree about.
-        std::fs::write(
-            root.join("project.json"),
-            serde_json::to_vec_pretty(&declaration)
-                .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?,
-        )
-        .map_err(|error| {
-            WorkbenchShellError::Invalid(format!("write project declaration: {error}"))
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        let answered = hub
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("create_project").with_arguments(arguments),
+            )
+            .await;
+        let _ = hub.cancel().await;
+        let _ = exit.wait().await;
+        let answered = answered.map_err(|error| {
+            WorkbenchShellError::Invalid(format!(
+                "the Cycle hub refused to create a project: {error}"
+            ))
         })?;
+        if answered.is_error.unwrap_or(false) {
+            let sentence = answered
+                .content
+                .iter()
+                .filter_map(|block| block.as_text().map(|text| text.text.clone()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(if sentence.contains("already exists") {
+                WorkbenchShellError::Conflict(sentence)
+            } else {
+                WorkbenchShellError::Invalid(sentence)
+            });
+        }
+        let made = answered.structured_content.ok_or_else(|| {
+            WorkbenchShellError::Invalid("the Cycle hub answered no project".into())
+        })?;
+        let slug = made
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| WorkbenchShellError::Invalid("the Cycle hub named no slug".into()))?
+            .to_owned();
+        let declaration: McpServer = made
+            .get("declaration")
+            .cloned()
+            .ok_or_else(|| {
+                WorkbenchShellError::Invalid("the Cycle hub answered no declaration".into())
+            })
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(|error| {
+                    WorkbenchShellError::Invalid(format!("the Cycle hub's declaration: {error}"))
+                })
+            })?;
         if let Ok(mut attachments) = factory.attachments.lock() {
             attachments.insert(slug.clone(), declaration.clone());
         }

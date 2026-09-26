@@ -767,27 +767,43 @@ fn assemble_product(
         .enable_model_providers(&data_root.join("model-providers"))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     // A project is served by the Cycle, which is not this binary: it is the
-    // `swem-cycle` server installed from the Store or found on PATH, and it
-    // answers `mcp serve --workspace … --journal … [--plugins …] --tools …
-    // --secrets … --environment-root …`. Without one, the product runs as an
-    // agent harness alone and says so when a project is asked for.
+    // `swem-cycle` hub installed from the Store, beside this binary, or on
+    // PATH, and it answers `serve --projects … [--plugins …] --tools …
+    // --environment-root …`. Without one, the product runs as an agent
+    // harness alone and says so when a project is asked for.
     match cycle_server(&data_root) {
         Some(command) => {
+            // The hub: one server over the projects directory, which every
+            // project's own server is started from. Files, not values, so a
+            // tool installed or a secret added later is read at the next
+            // close without a restart.
+            let hub = agent_client_protocol::schema::v1::McpServerStdio::new("swem-cycle", command)
+                .args(vec![
+                    "serve".to_owned(),
+                    "--projects".to_owned(),
+                    projects_root.display().to_string(),
+                    "--plugins".to_owned(),
+                    data_root.join("plugins").display().to_string(),
+                    "--tools".to_owned(),
+                    swem_host::tools_file(&data_root.join("installed"))
+                        .display()
+                        .to_string(),
+                    "--environment-root".to_owned(),
+                    data_root.join("environments").display().to_string(),
+                ]);
             state
                 .enable_project_creation(swem_host::ProjectFactory {
                     root: projects_root,
-                    command,
+                    hub,
                     plugins: vec![data_root.join("plugins")],
                     packages_home: data_root.join("plugins"),
-                    tools_file: swem_host::tools_file(&data_root.join("installed")),
-                    environment_root: data_root.join("environments"),
                     attachments: std::sync::Arc::clone(&declarations),
                 })
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         }
         None => eprintln!(
             "no Cycle server on this machine: projects are not created here until `swem-cycle` \
-             is installed from the Store or put on PATH"
+             is installed from the Store, put beside this binary, or put on PATH"
         ),
     }
     // The Apps bridge ships inside this binary, so the observer the
@@ -843,6 +859,18 @@ fn workbench_data_root() -> Result<PathBuf> {
 /// The Cycle server this machine has: the newest one installed from the
 /// Store under `installed/servers/swem-cycle/`, else `swem-cycle` on PATH.
 fn cycle_server(data_root: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) {
+        "swem-cycle.exe"
+    } else {
+        "swem-cycle"
+    };
+    // A distribution is a directory: the hub beside this binary comes first.
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(beside) = executable.parent().map(|directory| directory.join(name))
+        && beside.is_file()
+    {
+        return Some(beside);
+    }
     let installed =
         swem_host::load_receipts(&data_root.join("installed"), swem_host::InstallKind::Server);
     if let Some(receipt) = installed.get("swem-cycle")
@@ -850,11 +878,6 @@ fn cycle_server(data_root: &Path) -> Option<PathBuf> {
     {
         return Some(executable.clone());
     }
-    let name = if cfg!(windows) {
-        "swem-cycle.exe"
-    } else {
-        "swem-cycle"
-    };
     std::env::var_os("PATH")
         .map(|path| {
             std::env::split_paths(&path)

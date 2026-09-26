@@ -57,9 +57,9 @@ from the Store or on `PATH` - project creation on it. Subcommands cover the same
 terminal: `swem agents list|plan-install|install|verify|session`, `swem profiles`,
 `swem environments`, `swem acp --profile <id>`, `swem workbench serve`.
 
-The product knows the Cycle only as a server it can be given: its name (`swem-cycle`), its
-subcommand (`mcp serve`) and the arguments a project's declaration passes. Nothing of the Cycle is
-compiled in.
+The product knows the Cycle only as a server it can be given: its name (`swem-cycle`), the hub's
+subcommand (`serve --projects …`) it dials to make a project, and the `create_project` tool that
+answers a project's declaration. Nothing of the Cycle is compiled in.
 
 ## Boundaries that hold
 

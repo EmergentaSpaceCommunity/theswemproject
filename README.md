@@ -72,10 +72,11 @@ domain packages that make a piece of music or a software model - is a separate p
 separate repository, `swem-cycle`. It is an MCP server; this Workbench hosts it like any other,
 and the Project space is its surface.
 
-The Store lists it. When `swem-cycle` is installed from there, or is on `PATH`, the product creates
-projects on it: a project's declaration runs
-`swem-cycle mcp serve --workspace … --journal … [--plugins …] --tools … --secrets … --environment-root …`.
-Without it the product is an agent harness alone and says so at start.
+The Store lists it. When `swem-cycle` is installed from there, beside this binary, or on `PATH`,
+the product creates projects through its hub: `swem-cycle serve --projects <data>/projects …` is
+dialled to make a project, and it answers the declaration that serves that project (its own
+`serve-project` over the project's workspace and journal), which the product stores and dials
+like any other server. Without it the product is an agent harness alone and says so at start.
 
 ## Extending it
 

@@ -13,4 +13,4 @@
 | Client credentials for an embedder's own page | missing | roadmap C2 |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
 | A server's home App as a space; the Project space as the project server's App | missing | roadmap C4 |
-| Project creation | partial | only on a `swem-cycle` server installed from the Store or on PATH; the Project space is still drawn by the host until C4 |
+| Project creation | partial | through the hub of a `swem-cycle` installed from the Store, beside the binary or on PATH; the Project space is still drawn by the host until C4 |

@@ -11,7 +11,8 @@ swem (product binary)
         +-- sandbox origin for MCP Apps (127.0.0.1:<sandbox port>)
         +-- editor door: `swem acp --profile <id>` over stdio
         `-- attached servers, one child process each, dialled when needed
-              `-- a project server (swem-cycle), when installed
+              +-- the Cycle hub (swem-cycle serve), dialled to make a project
+              `-- a project's server (swem-cycle serve-project), one per project
 ```
 
 Data lives under `~/.local/share/swem/workbench` (`$XDG_DATA_HOME`, `%LOCALAPPDATA%\SWEM`).
