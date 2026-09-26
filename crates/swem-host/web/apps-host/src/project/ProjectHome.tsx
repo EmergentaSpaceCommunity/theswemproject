@@ -6,7 +6,6 @@ import { ProjectRail, SlotRail } from "./Rail";
 import { RefChip } from "./RefChip";
 import { Assets } from "./Assets";
 import { Slots } from "./Slots.tsx";
-import { Recipes } from "./Recipes";
 import { Secrets, Tools } from "./Supplies";
 import type { ArtifactView, ContentDescriptor, Envelope, LineView, NodeView, RevisionView, SelectionView, ToolView, UnitView, Viewing } from "./types";
 
@@ -453,10 +452,6 @@ export function ProjectHome({ envelope, envelopeError, viewing, tools, onChanged
             onChanged={onChanged}
           />
         ) : null}
-        {/* What the installed packages say to do with a project like this
-            one. A thing to do belongs beside the slots and the assets, not
-            among the records - a recipe is work, not a diagnostic. */}
-        {viewing.server_name ? <Recipes serverName={viewing.server_name} onChanged={onChanged} /> : null}
         {/* The records themselves: what the rails are derived from. A person
             works from the rails; these are for whoever needs the digests. */}
         <details id="developer-diagnostics">

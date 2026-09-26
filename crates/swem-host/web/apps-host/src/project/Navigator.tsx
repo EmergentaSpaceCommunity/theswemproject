@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Packages } from "./Packages";
-import { useRecipes } from "./Recipes";
+import { useRecipes } from "./seeds";
 import { RefChip } from "./RefChip";
 import type { Envelope, ProjectSourceView, Viewing } from "./types";
 
