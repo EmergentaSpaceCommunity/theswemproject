@@ -768,8 +768,8 @@ fn assemble_product(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     // A project is served by the Cycle, which is not this binary: it is the
     // `swem-cycle` hub installed from the Store, beside this binary, or on
-    // PATH, and it answers `serve --projects … [--plugins …] --tools …
-    // --environment-root …`. Without one, the product runs as an agent
+    // PATH, and it answers `serve --projects … [--plugins …] --packages-home …
+    // --tools … --environment-root …`. Without one, the product runs as an agent
     // harness alone and says so when a project is asked for.
     match cycle_server(&data_root) {
         Some(command) => {
@@ -783,6 +783,8 @@ fn assemble_product(
                     "--projects".to_owned(),
                     projects_root.display().to_string(),
                     "--plugins".to_owned(),
+                    data_root.join("plugins").display().to_string(),
+                    "--packages-home".to_owned(),
                     data_root.join("plugins").display().to_string(),
                     "--tools".to_owned(),
                     swem_host::tools_file(&data_root.join("installed"))
