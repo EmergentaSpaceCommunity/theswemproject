@@ -8,6 +8,8 @@ import { AgentSpace } from "./agent/AgentSpace.tsx";
 import { PermissionDialog } from "./agent/PermissionDialog.tsx";
 import { StructuredDialog } from "./agent/StructuredDialog.tsx";
 import { ProjectSpace } from "./project/ProjectSpace";
+import { DomainApp } from "./project/DomainApps";
+import { fetchJson } from "./project/api";
 import { StoreSpace } from "./store/StoreSpace.tsx";
 
 declare global {
@@ -16,8 +18,35 @@ declare global {
   }
 }
 
-type Space = "agent" | "project" | "store";
+/// The three spaces the host draws itself, and one per server that declares
+/// a home App: a surface the server ships and the host shows as a space of
+/// its own (`/api/spaces`), opened without a tool call.
+type Space = "agent" | "project" | "store" | { server: string };
 const SPACE_KEY = "swem.workbench.space";
+interface SpaceView { server: string; uri: string; name: string; description?: string }
+const sameSpace = (left: Space, right: Space): boolean =>
+  typeof left === "string" || typeof right === "string" ? left === right : left.server === right.server;
+/// The spaces declared servers offer. A server installed from the Store
+/// arrives while the page is open, so the list is read again now and then
+/// and whenever the page comes back into view; the host dials each server
+/// once and keeps it, so a re-read costs nothing.
+function useSpaces(): SpaceView[] {
+  const [spaces, setSpaces] = useState<SpaceView[]>([]);
+  useEffect(() => {
+    let disposed = false;
+    const load = () => {
+      fetchJson<SpaceView[]>("/api/spaces")
+        .then((rows) => { if (!disposed) setSpaces(rows); })
+        .catch(() => {});
+    };
+    load();
+    const every = window.setInterval(load, 10000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { disposed = true; window.clearInterval(every); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
+  return spaces;
+}
 type Theme = "dark" | "light";
 const THEME_KEY = "swem.workbench.theme";
 
@@ -46,7 +75,7 @@ function loadTheme(): Theme {
   }
 }
 
-function SpaceSwitcher({ space, onSelect }: { space: Space; onSelect: (space: Space) => void }) {
+function SpaceSwitcher({ space, spaces, onSelect }: { space: Space; spaces: SpaceView[]; onSelect: (space: Space) => void }) {
   const [theme, setTheme] = useState<Theme>(loadTheme);
   const dev = useDev();
   useEffect(() => {
@@ -68,6 +97,19 @@ function SpaceSwitcher({ space, onSelect }: { space: Space; onSelect: (space: Sp
       <button id="space-store" aria-pressed={space === "store"} onClick={() => onSelect("store")}>
         Store
       </button>
+      {spaces.map((offered) => (
+        <button
+          key={offered.server}
+          id={`space-server-${offered.server}`}
+          className="space-server"
+          data-server={offered.server}
+          title={offered.description ?? undefined}
+          aria-pressed={sameSpace(space, { server: offered.server })}
+          onClick={() => onSelect({ server: offered.server })}
+        >
+          {offered.name}
+        </button>
+      ))}
       <label style={{ marginLeft: "auto" }}>
         Theme{" "}
         <select
@@ -91,18 +133,21 @@ function SpaceSwitcher({ space, onSelect }: { space: Space; onSelect: (space: Sp
 
 function Workbench() {
   const [space, setSpace] = useState<Space>(loadSpace);
+  const spaces = useSpaces();
   const choose = (next: Space) => setSpace(next);
   useEffect(() => {
+    if (typeof space !== "string") return;
     try {
       localStorage.setItem(SPACE_KEY, space);
     } catch {
       // Storage is a convenience; the space still switches.
     }
   }, [space]);
+  const opened = typeof space === "string" ? null : spaces.find((offered) => offered.server === space.server) ?? null;
   return (
     <StrictMode>
-      <div className="app-shell" data-active-space={space}>
-        <SpaceSwitcher space={space} onSelect={choose} />
+      <div className="app-shell" data-active-space={typeof space === "string" ? space : `server:${space.server}`}>
+        <SpaceSwitcher space={space} spaces={spaces} onSelect={choose} />
         <Guard what="The Agent space">
           <AgentSpace hidden={space !== "agent"} />
         </Guard>
@@ -112,6 +157,15 @@ function Workbench() {
         <Guard what="The Store">
           <StoreSpace hidden={space !== "store"} />
         </Guard>
+        {/* A server's own space: its home App, filling the main area, opened
+            through the host's door for spaces rather than through a project. */}
+        {opened ? (
+          <Guard what={`The space of ${opened.server}`}>
+            <main id="server-space" className="server-space" data-server={opened.server}>
+              <DomainApp server={opened.server} uri={opened.uri} changed={null} openPath={`/api/spaces/${encodeURIComponent(opened.server)}/open`} />
+            </main>
+          </Guard>
+        ) : null}
         <PermissionDialog />
         <StructuredDialog />
       </div>

@@ -106,6 +106,10 @@ pub struct DiscoveredAppResource {
     pub uri: String,
     pub mime: String,
     pub description: Option<String>,
+    /// The server's home App: the surface the host shows as a space of its
+    /// own, opened without a tool call, marked `_meta["swem/home"]: true`
+    /// on the resource (a vendor key inside the specification's metadata).
+    pub home: bool,
 }
 
 /// Discovery projection of one attachment for the shell page.
@@ -528,6 +532,11 @@ impl ConnectionApps {
     }
 }
 
+/// The vendor marker on an App resource's `_meta` that names it the server's
+/// home App. Inside the specification's own metadata, so a host that does not
+/// know it sees an ordinary App; it goes when app-only hosts are standardised.
+pub const HOME_APP_MARKER: &str = "swem/home";
+
 /// Read the MCP Apps `ui` block from a tool/resource `_meta` value: the
 /// nested `"ui"` object is current; the flat `"ui/resourceUri"` key is the
 /// deprecated pre-GA form and stays readable.
@@ -597,17 +606,25 @@ fn discovered_apps(
             uri: uri.clone(),
             mime: MCP_APP_MIME.to_owned(),
             description: None,
+            home: false,
         });
     }
     for resource in listed {
         if resource.uri.starts_with("ui://") && resource.mime_type.as_deref() == Some(MCP_APP_MIME)
         {
+            let home = resource
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.0.get(HOME_APP_MARKER))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             apps.insert(
                 resource.uri.clone(),
                 DiscoveredAppResource {
                     uri: resource.uri,
                     mime: MCP_APP_MIME.to_owned(),
                     description: resource.description,
+                    home,
                 },
             );
         }

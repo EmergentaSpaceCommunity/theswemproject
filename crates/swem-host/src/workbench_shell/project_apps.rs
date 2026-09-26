@@ -177,7 +177,124 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A server's home App, as the host lists it: a space of its own.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SpaceView {
+    pub server: String,
+    pub uri: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 impl WorkbenchShellState {
+    /// Every server this host declared, projects and the catalogue's alike,
+    /// as one list of declarations.
+    fn every_declaration(&self) -> Vec<McpServer> {
+        let mut declarations: Vec<McpServer> = self
+            .project_declarations
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        if let Some(catalogue) = self.mcp_catalogue.get()
+            && let Ok(declared) = catalogue.declared().lock()
+        {
+            for (name, server) in declared.iter() {
+                if !declarations
+                    .iter()
+                    .any(|held| slot_name(held) == Some(name.as_str()))
+                {
+                    declarations.push(server.clone());
+                }
+            }
+        }
+        declarations
+    }
+
+    /// The Apps client of any declared server, dialled once and kept.
+    pub(super) async fn declared_app_entry(
+        &self,
+        server: &str,
+    ) -> Result<Arc<AppAttachmentEntry>, WorkbenchShellError> {
+        let declarations = self.every_declaration();
+        let factory_root = self
+            .project_factory
+            .get()
+            .map(|factory| factory.root.clone());
+        self.project_apps.refresh(&declarations, |name| {
+            factory_root
+                .as_ref()
+                .map(|root| root.join(name).join("workspace"))
+                .filter(|workspace| workspace.is_dir())
+        });
+        self.project_apps.entry(server).await
+    }
+
+    /// Every space a declared server offers: its home App, read off the
+    /// server's own resource listing. Each server is dialled once per run
+    /// and kept; one that does not answer in time is left out of this
+    /// listing, not waited for by the others.
+    ///
+    /// # Errors
+    ///
+    /// Never fails today; a server that cannot be reached is simply not a
+    /// space.
+    pub async fn spaces(&self) -> Result<Vec<SpaceView>, WorkbenchShellError> {
+        let names: Vec<String> = self
+            .every_declaration()
+            .iter()
+            .filter_map(|declaration| slot_name(declaration).map(str::to_owned))
+            .collect();
+        let mut spaces = Vec::new();
+        for name in names {
+            let dialled = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                self.declared_app_entry(&name),
+            )
+            .await;
+            let Ok(Ok(entry)) = dialled else {
+                continue;
+            };
+            for app in entry.view().apps.into_iter().filter(|app| app.home) {
+                spaces.push(SpaceView {
+                    server: name.clone(),
+                    uri: app.uri,
+                    name: name.clone(),
+                    description: app.description,
+                });
+            }
+        }
+        spaces.sort_by(|left, right| left.server.cmp(&right.server));
+        Ok(spaces)
+    }
+
+    /// Open a declared server's home App as a space: read the App and hand
+    /// it to the page exactly as a project's App is handed, without a tool
+    /// call - the App reads the server through the relay from there.
+    ///
+    /// # Errors
+    ///
+    /// Not found for a server that declares no such home App; the App's own
+    /// refusal otherwise.
+    pub async fn space_open(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<OpenedApp, WorkbenchShellError> {
+        let entry = self.declared_app_entry(server).await?;
+        if !entry
+            .view()
+            .apps
+            .iter()
+            .any(|app| app.uri == uri && app.home)
+        {
+            return Err(WorkbenchShellError::NotFound(format!(
+                "{server} declares no home App at {uri}"
+            )));
+        }
+        self.open_app_of(entry, server, uri, None).await
+    }
+
     /// The dialled Apps attachment of one project, dialling it now if nobody
     /// has. Only this project.
     pub(super) async fn project_app_entry(
@@ -243,6 +360,19 @@ impl WorkbenchShellState {
     ) -> Result<OpenedApp, WorkbenchShellError> {
         self.project_apps_list(server).await?;
         let entry = self.project_app_entry(server).await?;
+        self.open_app_of(entry, server, uri, slot).await
+    }
+
+    /// Open one App of a dialled server and hand it to the page: the View's
+    /// HTML and CSP, its handle for the relay, and its own address when it
+    /// asked for an origin of its own.
+    async fn open_app_of(
+        &self,
+        entry: Arc<AppAttachmentEntry>,
+        server: &str,
+        uri: &str,
+        slot: Option<&str>,
+    ) -> Result<OpenedApp, WorkbenchShellError> {
         let workbench_apps::AppRead {
             html,
             csp,

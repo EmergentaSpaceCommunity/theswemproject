@@ -52,4 +52,5 @@ from_a_page_of_code`); the client credential is planned (roadmap C2).
 ## GJ-08 — A project server's own space
 
 A server installed from the Store that declares a home App appears as a space; opening it shows
-the App. Status: planned (roadmap C4).
+the App. Status: the mechanism is done (roadmap C4a; `workbench_shell_spaces_browser`); the
+Cycle's own Project space App is owed (C4b) before the host's Project space goes (C4c).

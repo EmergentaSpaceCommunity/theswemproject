@@ -1819,3 +1819,95 @@ fn a_person_gives_an_agent_a_role_and_a_model() {
         "{instructions}"
     );
 }
+
+/// A person installs a server from the Store that declares a home App, and
+/// the Workbench offers it as a space beside its own: choosing it mounts the
+/// server's App in the main area. The server is the Apps fixture with
+/// `--home`; the catalog is one this gate writes; nothing of the server is
+/// compiled into the product, and the host keeps no registry of spaces.
+#[test]
+#[ignore = "product gate: needs a browser and node"]
+fn a_person_installs_a_server_with_a_home_app_and_opens_its_space() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let Some(platform) = swem_host::registry_platform() else {
+        eprintln!("skipped: no registry platform for this machine");
+        return;
+    };
+    let data_root = fresh_data_root("space");
+    let registry = fixture_agent_registry(&data_root, "claude-acp", platform);
+    let supply = data_root.join("supply");
+    let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .to_path_buf();
+    let fixture_name = if cfg!(windows) {
+        "swem-mcp-apps-fixture.exe"
+    } else {
+        "swem-mcp-apps-fixture"
+    };
+    assert!(
+        beside.join(fixture_name).is_file(),
+        "build the Apps fixture first: cargo build -p swem-host --bin swem-mcp-apps-fixture"
+    );
+    let archive = supply.join("notes.tar.gz");
+    std::fs::create_dir_all(&supply).expect("create the supply");
+    let tarred = Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&beside)
+        .arg(fixture_name)
+        .status()
+        .expect("run tar");
+    assert!(tarred.success(), "packaging the Apps fixture failed");
+    let catalog = supply.join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "swem:catalog@0.1",
+            "name": "This gate's catalog",
+            "entries": [
+                {"kind": "server", "id": "notes", "name": "Notes", "version": "0.1.0-gate",
+                 "description": "a note board with a home App",
+                 "distribution": {"binary": {platform: {
+                     "archive": format!("file://{}", archive.display()),
+                     "sha256": sha256_of(&archive),
+                     "cmd": fixture_name,
+                     "args": ["--receipt", supply.join("notes-receipt.json").display().to_string(),
+                              "--poison", supply.join("notes-poison.json").display().to_string(),
+                              "--home"]}}}}
+            ]
+        }))
+        .expect("serialize the catalog"),
+    )
+    .expect("write the catalog");
+    let (product, url) = start_product_against(&data_root, Some(&registry.index_url));
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/space_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&url)
+        .arg(format!("file://{}", catalog.display()))
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the space driver");
+    product.stop();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("space OK"),
+        "the walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The server was installed under the install root, once, and declared
+    // from there: nothing beside the product was written by hand.
+    assert!(
+        find_directory(&data_root, "notes").is_some_and(|dir| under_install_root(&dir, &data_root, "servers", "notes")),
+        "the server did not land under the install root"
+    );
+}
+

@@ -1,6 +1,6 @@
 # ADR-0006 — A server that declares a home App gets a space of its own
 
-**Status:** proposed (lands with roadmap item C4).
+**Status:** accepted for the mechanism (2026-09-26, roadmap C4a, ExecPlan 002); the Project space leaves the host with C4c.
 
 ## Context
 
@@ -11,11 +11,13 @@ called.
 
 ## Decision
 
-A convention inside the specification's own metadata: a tool with `_meta.ui` naming a `ui://`
-resource, app-only visibility, and the vendor marker `_meta["swem/home"]: true`. The Workbench
-shows a space for every attached server that declares one; opening the space reads the App and
-calls that tool through the same relay every App call takes, handing the result to the View. The
-host keeps no registry of spaces: the marker is read off discovery, once per run, cached.
+A convention inside the specification's own metadata: an App resource (`ui://…`,
+`text/html;profile=mcp-app`) carrying the vendor marker `_meta["swem/home"]: true`. The Workbench
+shows a space for every declared server that lists one - a project's server, one declared by
+hand, one installed from the Store - and opening the space reads the App and mounts it, with no
+tool call: the App reads its server through the same relay every App call takes, as a project's
+App already does. The host keeps no registry of spaces: the marker is read off discovery, each
+server dialled once per run and kept.
 
 ## Consequences
 

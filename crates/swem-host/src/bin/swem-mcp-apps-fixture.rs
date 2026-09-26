@@ -142,6 +142,10 @@ fn app_only_meta() -> MetaObject {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one fixture mirrors its command line flag by flag"
+)]
 struct NotesServer {
     receipt: PathBuf,
     poison: PathBuf,
@@ -152,6 +156,9 @@ struct NotesServer {
     hostile: bool,
     omit_resource_listing: bool,
     engine_probe: bool,
+    /// `--home`: the notes View is this server's home App, marked on the
+    /// resource so a host shows it as a space of its own.
+    home: bool,
     notes: Mutex<Vec<(String, String)>>,
     tool_router: ToolRouter<Self>,
 }
@@ -170,6 +177,7 @@ impl NotesServer {
         probe_receipt: Option<PathBuf>,
         hostile: bool,
         omit_resource_listing: bool,
+        home: bool,
     ) -> Self {
         Self {
             receipt,
@@ -181,6 +189,7 @@ impl NotesServer {
             probe_receipt,
             hostile,
             omit_resource_listing,
+            home,
             notes: Mutex::new(Vec::new()),
             tool_router: Self::tool_router(),
         }
@@ -424,6 +433,11 @@ impl ServerHandler for NotesServer {
         let mut resource = Resource::new(NOTES_RESOURCE, "notes");
         resource.mime_type = Some(APP_MIME.into());
         resource.description = Some("Note board MCP App view".into());
+        if self.home {
+            let mut meta = JsonObject::new();
+            meta.insert("swem/home".into(), json!(true));
+            resource.meta = Some(MetaObject(meta));
+        }
         let mut resources = vec![resource];
         if self.engine_probe {
             let mut probe = Resource::new(PROBE_RESOURCE, "engine-probe");
@@ -576,6 +590,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("receipt and poison paths must be absolute".into());
     }
     let hostile = arguments.iter().any(|argument| argument == "--hostile");
+    let home = arguments.iter().any(|argument| argument == "--home");
     let omit_resource_listing = arguments
         .iter()
         .any(|argument| argument == "--omit-resource-listing");
@@ -606,6 +621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         probe_receipt,
         hostile,
         omit_resource_listing,
+        home,
     )
     .serve(rmcp::transport::stdio())
     .await?

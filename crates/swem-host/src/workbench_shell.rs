@@ -48,6 +48,7 @@ pub use model_providers::{
 };
 #[path = "workbench_shell/project_apps.rs"]
 mod project_apps;
+pub use project_apps::SpaceView;
 mod project_tools;
 mod recipes;
 pub use recipes::{RecipeRun, RecipeStepRun, RecipeView};
@@ -5165,6 +5166,14 @@ async fn route_shell(
             };
             json_result(state.set_project_secret(server, type_id, &body.value))
         }
+        (&Method::GET, ["api", "spaces"]) => json_result(state.spaces().await),
+        (&Method::POST, ["api", "spaces", server, "open"]) => match read_json(request).await {
+            Ok(body) => match body.get("uri").and_then(Value::as_str) {
+                Some(uri) => json_result(state.space_open(server, uri).await),
+                None => error_response(&WorkbenchShellError::Invalid("App uri required".into())),
+            },
+            Err(error) => error_response(&error),
+        },
         (&Method::GET, ["api", "projects", server, "apps"]) => {
             json_result(state.project_apps_list(server).await)
         }

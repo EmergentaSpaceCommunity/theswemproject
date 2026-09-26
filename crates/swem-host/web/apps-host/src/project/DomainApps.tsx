@@ -45,7 +45,7 @@ export function useDomainApps(server: string | null): Published {
 /// One mounted domain workbench, filling the surface it was given. It is the
 /// main area rather than a panel under the record browser: the timeline, not
 /// the digests around it, is what a person came to work in.
-export function DomainApp({server, uri, slot, changed}: {server: string; uri: string; slot?: string; changed: string | null}) {
+export function DomainApp({server, uri, slot, changed, openPath}: {server: string; uri: string; slot?: string; changed: string | null; openPath?: string}) {
   const container = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("");
   const live = useRef<Mounted | null>(null);
@@ -85,7 +85,9 @@ export function DomainApp({server, uri, slot, changed}: {server: string; uri: st
         // Two slots of the same kind publish the same `ui://` resource, so
         // the App learns which line of work it was opened for from the open
         // itself, and not from the resource, which cannot know.
-        opened = await post<Opened>(`/api/projects/${encodeURIComponent(server)}/apps/open`, {uri, slot});
+        // A project's App opens through its project; a server's home App
+        // opens as a space, through the door the host names for it.
+        opened = await post<Opened>(openPath ?? `/api/projects/${encodeURIComponent(server)}/apps/open`, {uri, slot});
         if (disposed) { await close(); return; }
         mounted = await bridge.mount({container: target, opened, signal: opening.signal, fit: "fill",
           relay: message => post(`/api/project-apps/${opened!.app_id}/rpc`, message),
@@ -104,7 +106,7 @@ export function DomainApp({server, uri, slot, changed}: {server: string; uri: st
       disposed = true; live.current = null; target.hidden = true; opening.abort();
       if (mounted) void close().catch(() => {});
     };
-  }, [server, uri, slot]);
+  }, [server, uri, slot, openPath]);
   return (
     <section className="domain-app" aria-label="Domain workbench">
       {status ? <p className="app-status" role="status">{status}</p> : null}

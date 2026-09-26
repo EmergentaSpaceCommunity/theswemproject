@@ -12,5 +12,5 @@
 | Embedding through a product builder | done | `swem_host::product`, `examples/embed.rs`, `tests/product.rs`; the product binary is the builder's first caller |
 | Client credentials for an embedder's own page | missing | roadmap C2 |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
-| A server's home App as a space; the Project space as the project server's App | missing | roadmap C4 |
+| A server's home App as a space | proven | `workbench_shell_spaces.rs`, `workbench_shell_spaces_browser.rs`; the Project space as the project server's App is owed (roadmap C4b, C4c) |
 | Project creation | partial | through the hub of a `swem-cycle` installed from the Store, beside the binary or on PATH; the Project space is still drawn by the host until C4 |

@@ -28,7 +28,9 @@ Related journeys: GJ-03.
 A server that declares a home App appears as a space; opening it shows the App; installing
 `swem-cycle` from the Store opens its Project space. The host's own Project space is removed only
 after that App renders everything it did. ADR-0006.
-Related journeys: GJ-08.
+Related journeys: GJ-08. **C4a done** (2026-09-26, ExecPlan 002): the mechanism, proved with the
+Apps fixture. **C4b owed** in the Cycle repository: the Project space as the hub's home App.
+**C4c** after it: the host's Project space, ProductSupply and project routes go.
 
 ## Debt
 
