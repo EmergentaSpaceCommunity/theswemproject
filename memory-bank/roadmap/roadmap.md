@@ -1,8 +1,36 @@
 # Roadmap
 
-Each item ends in something a person can do through a real entry point, proved by a named walk.
-Order is by dependency: C1 first; C4's second half only after the project server ships its own
-space (its repository's item Y4).
+Each item ends in something a person can do through a real entry point. Order is by dependency.
+C1 and C4 are done. The Workbench items (A, then B) come next: with the project space gone the
+harness and its Workbench are a product of their own, and as one they are judged by a person
+using them on their own data (`product/agents.md`). C2 and C3 follow them.
+
+## A — Agents and chats
+
+The model is `product/agents.md`. Each item is one ExecPlan.
+
+| Item | A person can | State |
+|---|---|---|
+| A1 | open an existing chat and go on talking after the agent's setup changed; an attached server that is not set up is a notice, not a refusal | |
+| A2 | see who said what; keep two agents working at once; stop from the composer; answer a question after reopening the page | |
+| A3 | read markdown and code; use a rail of agents and chats; switch theme | |
+| A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | |
+| A5 | schedule a message into a chat, pause it, and let the agent make its own | |
+| A6 | put two agents in one chat; a chain of agent replies waits for a person at its limit | |
+
+## B — Hosts
+
+| Item | A person can | State |
+|---|---|---|
+| B1 | run a real engine in a container on this machine, with its key, terminal and files inside | |
+| B2 | limit where a sealed agent connects and allow a refused address from the chat | |
+| B3 | make a new agent in four steps from providers that were looked at | |
+| B4 | add a machine over SSH, install an engine there, chat, open a terminal, read files | |
+| B5 | give a remote agent a server that lives with the Workbench | |
+| B6 | put an agent on a Sprite that sleeps and is woken by a message or a schedule | |
+| B7 | use Docker where Podman is absent | |
+
+After B: a messenger channel linked to a chat.
 
 ## C1 — Embed the harness
 
@@ -30,9 +58,10 @@ A server that declares a home App appears as a space; opening it shows the App; 
 after that App renders everything it did. ADR-0006.
 Related journeys: GJ-08. **C4a done** (2026-09-26, ExecPlan 002): the mechanism, proved with the
 Apps fixture. **C4b done** in the Cycle repository (2026-09-27): the Project space is the hub's
-home App, and its gate walks every journey through that space. **C4c** is next: the host's own
-Project space, ProductSupply and project routes go. Owed with it: `ui/update-model-context`, so
-an App can say what a person is looking at (the agent-context binding the panel had).
+home App, and its gate walks every journey through that space. **C4c done** (2026-09-27,
+ExecPlan 003): the host's own Project space, its routes, `ProductSupply`, the project factory
+and the package and tool routes are gone; an App says what a person is looking at through
+`ui/update-model-context` and the agent is given it.
 
 ## Debt
 
@@ -40,3 +69,5 @@ an App can say what a person is looking at (the agent-context binding the panel 
   `registry_id`); rename with C3.
 - A server's environment values are given in the MCP catalogue, not from the Store row.
 - Two callback-boundary tests assume a Linux filesystem and signal names.
+- The browser drivers that press Load, Resume, Disconnect and End session or read the Dev log
+  describe a page that A2 removes; they are deleted with it, not repaired.

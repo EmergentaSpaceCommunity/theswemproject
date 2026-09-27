@@ -10,9 +10,10 @@ swem (product binary)
         +-- HTTP surface for the page (127.0.0.1:<port>, per-run token)
         +-- sandbox origin for MCP Apps (127.0.0.1:<sandbox port>)
         +-- editor door: `swem acp --profile <id>` over stdio
-        `-- attached servers, one child process each, dialled when needed
-              +-- the Cycle hub (swem-cycle serve), dialled to make a project
-              `-- a project's server (swem-cycle serve-project), one per project
+        `-- declared servers, one child process each, dialled when needed
+              +-- for an agent session that attaches them
+              `-- for a space: a server that offers a home App (the Cycle hub, when the
+                  product declares one, serves its projects behind that one declaration)
 ```
 
 Data lives under `~/.local/share/swem/workbench` (`$XDG_DATA_HOME`, `%LOCALAPPDATA%\SWEM`).

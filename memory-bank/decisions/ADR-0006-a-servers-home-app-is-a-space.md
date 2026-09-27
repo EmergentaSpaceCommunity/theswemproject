@@ -1,6 +1,7 @@
 # ADR-0006 — A server that declares a home App gets a space of its own
 
-**Status:** accepted for the mechanism (2026-09-26, roadmap C4a, ExecPlan 002); the Project space leaves the host with C4c.
+**Status:** accepted (2026-09-26 for the mechanism, roadmap C4a, ExecPlan 002; 2026-09-27 the
+host's own Project space left it, roadmap C4c, ExecPlan 003).
 
 ## Context
 

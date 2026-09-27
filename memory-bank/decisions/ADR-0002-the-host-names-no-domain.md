@@ -13,8 +13,9 @@ makes something else.
 
 The harness crate names no domain and links no domain crate. `cargo tree -p swem-host -e normal`
 names no other SWEM crate, and a structural test (`tests/genericity.rs`) scans the crate's source
-for domain vocabulary and fails when one appears. What a project is, is read from the server that
-serves it, at the revision it names, through resources and tools the server declares.
+for domain vocabulary and fails when one appears - the project server's vocabulary among it
+since 2026-09-27 (`swem://project`, its envelope's media type, its tool names). What a project
+is, the host does not read at all: the server's own App does.
 
 ## Consequences
 
