@@ -179,6 +179,29 @@ function AskForm({ question, name }: { question: Question; name: string }) {
   );
 }
 
+/// Whose words the person is reading. Two questions can carry the same
+/// sentence and mean different things: an agent saying what it intends to do
+/// is a report, and the host saying what it is about to run is a fact about
+/// the next thing that happens. A person answering cannot tell them apart
+/// from the sentence, so the question says which it is.
+function whose(askedBy: string | null | undefined): string {
+  if (askedBy === "host_callback") return "This exact command runs here if you allow it.";
+  if (askedBy === "uncorrelated_agent_report") return "Your agent's own words. It has not reported the step this belongs to.";
+  return "Your agent's own words, for a step it has reported.";
+}
+
+/// What an option does, in the person's words rather than the wire's. The
+/// name on the button is the agent's own text and the kind is what it means,
+/// so both are shown: an option called "Yes" that refuses from now on is
+/// something a person has to be able to see.
+function kindWords(kind: string): string {
+  if (kind === "allow_once") return "allows once";
+  if (kind === "allow_always") return "allows from now on";
+  if (kind === "reject_once") return "refuses once";
+  if (kind === "reject_always") return "refuses from now on";
+  return kind;
+}
+
 /// What an agent asks before it does something. It waits for whoever
 /// answers, here or anywhere else the chat is open.
 function Ask({ question, agent }: { question: Question; agent: Participant | undefined }) {
@@ -204,11 +227,20 @@ function Ask({ question, agent }: { question: Question; agent: Participant | und
       <div className="k-stack w-close">
         <span className="k-title k-is-warning">{name} asks before it goes on</span>
         {question.asked.title ? <code className="k-mono">{question.asked.title}</code> : null}
+        <span className="k-caption">{whose(question.asked.asked_by)}</span>
       </div>
       <div className="k-inline w-tight">
         {options.map((option, index) => (
-          <button type="button" className={`k-btn${index === 0 && option.kind.startsWith("allow") ? " k-primary" : ""}`} disabled={sent} key={option.optionId} onClick={() => choose(option.optionId)}>
-            {option.name}
+          <button
+            type="button"
+            className={`k-btn${index === 0 && option.kind.startsWith("allow") ? " k-primary" : ""}`}
+            title={kindWords(option.kind)}
+            disabled={sent}
+            key={option.optionId}
+            onClick={() => choose(option.optionId)}
+          >
+            <span>{option.name}</span>
+            <span className="w-kind">{kindWords(option.kind)}</span>
           </button>
         ))}
       </div>

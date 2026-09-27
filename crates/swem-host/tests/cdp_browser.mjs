@@ -525,6 +525,107 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
     cleanup(2, message);
     throw new Error(message);
   });
+  // ---- what a person does in the page, in their words -----------------
+  //
+  // A driver goes where a person goes and does what a person does: it goes
+  // to a place by its address, fills in what the page asks for, says
+  // something in a chat and reads what was said. What happened is read
+  // from the product's own record, through the page's own door.
+
+  /// Ask the product something from the page, as the page does.
+  b.ask = async (path, init) => JSON.parse(await b.evaluate(`(async () => {
+    const response = await fetch(${JSON.stringify(path)}, ${JSON.stringify(init ?? {})});
+    return JSON.stringify({status: response.status, body: await response.json().catch(() => null)});
+  })()`));
+  b.goTo = async (hash) => {
+    await b.evaluate(`location.hash = ${JSON.stringify(hash)}`);
+    await sleep(400);
+  };
+  /// Type into a field the page draws, the way typing does: the value and
+  /// the event React listens for.
+  b.fill = async (selector, value) => b.evaluate(`(() => {
+    const field = document.querySelector(${JSON.stringify(selector)});
+    if (!field) return false;
+    const kind = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+    Object.getOwnPropertyDescriptor(kind.prototype, "value").set.call(field, ${JSON.stringify(value)});
+    field.dispatchEvent(new Event("input", {bubbles: true}));
+    return true;
+  })()`);
+  /// Press whatever says these words, among what matches the selector.
+  b.pressText = async (selector, text) => {
+    const at = JSON.parse(await b.evaluate(`(() => {
+      const found = [...document.querySelectorAll(${JSON.stringify(selector)})].find((one) => one.innerText.includes(${JSON.stringify(text)}));
+      if (!found) return "null";
+      found.scrollIntoView({block: "center"});
+      const box = found.getBoundingClientRect();
+      return JSON.stringify({x: box.left + box.width / 2, y: box.top + box.height / 2});
+    })()`));
+    if (!at) return false;
+    await b.clickAt(at.x, at.y);
+    await sleep(300);
+    return true;
+  };
+  /// The participant an agent is, by the name it was given.
+  b.agentOf = async (profile) => {
+    const people = (await b.ask("/api/people")).body;
+    return (people?.participants ?? []).find((one) => one.profile_id === profile)?.participant_id ?? null;
+  };
+  /// Make an agent: a name, and the engine it stands on.
+  b.makeAgent = async (engine, name = engine) => {
+    await b.goTo("#/agents/new");
+    await b.waitFor("the new-agent form", async () => b.exists(".w-form input.k-field"));
+    const offered = (await b.ask("/api/onboarding")).body;
+    const called = (offered?.agents ?? []).find((one) => one.agent_id === engine)?.name;
+    if (!called) cleanup(1, `this computer offers no engine ${engine}: ${JSON.stringify(offered)}`);
+    await b.fill(".w-form input.k-field", name);
+    if (!(await b.pressText(".w-form label", called))) cleanup(1, `the form does not offer ${called}`);
+    if (!(await b.pressText(".w-form button", "Make the agent"))) cleanup(1, "the form has no way to make the agent");
+    await b.waitFor("the agent is made", async () => (await b.agentOf(name)) !== null, 200);
+    await b.waitFor("the page goes to it", async () => b.evaluate(`location.hash.startsWith("#/agents/p_")`), 100);
+    return name;
+  };
+  /// Go to an agent: its chat, its files, its terminal or its settings.
+  b.openAgent = async (profile, tab = "chat") => {
+    const agent = await b.agentOf(profile);
+    if (!agent) cleanup(1, `there is no agent ${profile}`);
+    await b.goTo(`#/agents/${agent}${tab === "chat" ? "" : `/${tab}`}`);
+    await b.waitFor(`the agent's ${tab}`, async () => b.exists(`nav[aria-label] .k-tab.k-active`), 100);
+    return agent;
+  };
+  /// The chat the page is showing, read from the product's record: the one
+  /// its address names, or the agent's latest chat when it names the agent.
+  b.chat = async () => {
+    const hash = await b.evaluate("location.hash");
+    let shown = hash.split("/chats/")[1] ?? "";
+    if (!shown && hash.startsWith("#/agents/")) {
+      const agent = decodeURIComponent(hash.split("/")[2] ?? "");
+      const chats = (await b.ask("/api/chats")).body ?? [];
+      const alone = (chat) => chat.members.filter((member) => member.kind === "agent");
+      shown = chats.find((chat) => alone(chat).length === 1 && alone(chat)[0].participant_id === agent)?.chat_id ?? "";
+    }
+    if (!shown || shown === "new") return null;
+    return (await b.ask(`/api/chats/${encodeURIComponent(shown)}?limit=2000`)).body;
+  };
+  /// What was said in the chat the page is showing, oldest first.
+  b.said = async () => ((await b.chat())?.messages ?? []).map((message) => message.text);
+  /// Say something in the chat the page is showing and wait until it was
+  /// answered. Returns everything said in the chat.
+  b.say = async (text, {files = [], answered = true} = {}) => {
+    const before = (await b.said()).length;
+    await b.waitFor("the composer", async () => b.exists(".w-composer-input"));
+    if (files.length > 0 && !(await b.setFileInputFiles('.w-composer input[type="file"]', files))) {
+      cleanup(2, "the composer takes no files");
+    }
+    await b.fill(".w-composer-input", text);
+    await b.waitFor("Send", async () => b.evaluate(`!document.querySelector('.w-composer button[type="submit"]')?.disabled`));
+    await b.click('.w-composer button[type="submit"]');
+    if (!answered) return b.said();
+    await b.waitFor("the answer", async () => {
+      const chat = await b.chat();
+      return chat !== null && chat.deliveries.length === 0 && chat.messages.length >= before + 2;
+    }, 400);
+    return b.said();
+  };
   b.close = async () => {
     try { ws.close(); } catch {}
     try { child.kill(); } catch {}

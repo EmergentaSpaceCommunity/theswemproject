@@ -19,9 +19,10 @@ const setValue = (id, value) => b.evaluate(`(() => {
   field.dispatchEvent(new Event("input", {bubbles: true}));
 })()`);
 
-await b.waitFor("the shell", async () => b.exists("#space-store"));
-if (await b.exists("#space-server-notes")) cleanup(1, "a space is offered before its server was installed");
-await b.click("#space-store");
+const spaces = async () => ((await b.ask("/api/spaces")).body ?? []).map((space) => space.server);
+if ((await spaces()).includes("notes")) cleanup(1, "an App is offered before its server was installed");
+await b.goTo("#/store");
+await b.waitFor("the Store", async () => b.exists("#index-url"), 100);
 await setValue("index-url", catalogUrl);
 await b.click("#index-add");
 await b.waitFor("the catalog's server", async () => b.exists('.store-entry[data-kind="server"][data-id="notes"]'), 300);
@@ -34,14 +35,19 @@ await b.waitFor("the server installed", async () =>
   b.exists('.store-entry[data-kind="server"][data-id="notes"][data-installed="true"]'), 600, 500);
 step("the server is installed from the Store");
 
-// The switcher learns of the space while the page is open: no reload.
-await b.waitFor("the server's space on the switcher", async () => b.exists("#space-server-notes"), 120, 500);
-step("the installed server is offered as a space");
-await b.click("#space-server-notes");
-await b.waitFor("the space in the main area", async () => b.exists('#server-space[data-server="notes"]'));
-await b.waitFor("the App mounted", async () => b.evaluate(`!!document.querySelector('#server-space .domain-app iframe')`), 300);
+// The rail learns of the App while the page is open: no reload.
+let named = "";
+await b.waitFor("the server's App on the rail", async () => {
+  const space = ((await b.ask("/api/spaces")).body ?? []).find((one) => one.server === "notes");
+  named = space?.name ?? "";
+  return named !== "" && b.evaluate(`[...document.querySelectorAll('nav[aria-label="Workbench"] .k-rail-item')].some((one) => one.innerText.trim() === ${JSON.stringify(named)})`);
+}, 120, 500);
+step(`the installed server is offered on the rail (${named})`);
+if (!(await b.pressText('nav[aria-label="Workbench"] .k-rail-item', named))) cleanup(1, "the rail's row cannot be pressed");
+await b.waitFor("the App in the main area", async () => b.exists('.server-space[data-server="notes"]'));
+await b.waitFor("the App mounted", async () => b.evaluate(`!!document.querySelector('.server-space .domain-app iframe')`), 300);
 await b.waitFor("the App to settle", async () =>
-  (await b.evaluate(`document.querySelector('#server-space .app-status')?.textContent ?? ""`)) === "", 300);
+  (await b.evaluate(`document.querySelector('.server-space .app-status')?.textContent ?? ""`)) === "", 300);
 step("the server's App is open in its space");
 console.log("space OK");
 cleanup(0);

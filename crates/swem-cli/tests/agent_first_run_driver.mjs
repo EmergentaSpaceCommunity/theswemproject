@@ -20,28 +20,33 @@ if (!url || !agentId) {
 const b = await launchBrowser({browser, url, label: "agent-first-run"});
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
 
-// The harness alone: the Agent space and the Store, and no space of a
-// server nobody declared. An agent is had from here, on a first run, with
-// nothing else installed.
-if (await b.exists("#space-project")) cleanup(1, "the harness offers a Project space of its own");
-step("the harness draws Agent and Store, and nothing of a server's");
+// The harness alone: agents, the Store, and no App of a server nobody
+// declared. An agent is had from here, on a first run, with nothing else
+// installed.
+await b.waitFor("the page asks for a first agent", async () => b.exists(".w-form"), 100);
+const groups = await b.evaluate(`[...document.querySelectorAll('nav[aria-label="Workbench"] .k-eyebrow')].map((one) => one.textContent).join("|")`);
+if (groups.split("|").includes("Apps")) cleanup(1, `the harness offers an App of its own: ${groups}`);
+step("the harness draws agents and the Store, and nothing of a server's");
 
-await b.click("#space-agent");
-await b.waitFor("the first-run list of agents", async () => b.exists("#agent-options .agent-option"));
-
-const before = await b.evaluate(`(() => {
-  const row = document.querySelector('[data-agent-id=${JSON.stringify(agentId)}]');
-  return row ? row.textContent : "missing";
-})()`);
-if (before !== "Install") {
-  cleanup(1, `the agent ${agentId} is not offered for installation, the button says ${JSON.stringify(before)}`);
+const offered = async () => (await b.ask("/api/onboarding")).body?.agents?.find((one) => one.agent_id === agentId);
+const before = await offered();
+if (!before || before.available) {
+  cleanup(1, `the agent ${agentId} is not offered for installation: ${JSON.stringify(before)}`);
 }
 step(`${agentId} is offered, not installed`);
 
 step("install");
-await b.click(`[data-agent-id=${JSON.stringify(agentId)}]`);
+const row = JSON.parse(await b.evaluate(`(() => {
+  const label = [...document.querySelectorAll(".w-form label")].find((one) => one.innerText.includes(${JSON.stringify(before.name)}));
+  const button = label?.querySelector("button");
+  if (!button) return "null";
+  button.scrollIntoView({block: "center"});
+  const box = button.getBoundingClientRect();
+  return JSON.stringify({x: box.left + box.width / 2, y: box.top + box.height / 2, says: button.innerText});
+})()`));
+if (!row || !/Install/.test(row.says)) cleanup(1, `the form offers no way to install ${before.name}: ${JSON.stringify(row)}`);
+await b.clickAt(row.x, row.y);
 
 // The consent question is a native dialog. cdp_browser answers it and keeps
 // what it said, so the walk can check the person was told what is fetched.
@@ -52,35 +57,28 @@ if (!/Install/.test(question) || !/registry|described by/i.test(question)) {
 }
 step("consent given to a named distribution");
 
-// The install runs, and the product then creates the local profile itself.
-// The install fetches and unpacks, then the product makes the profile
-// itself. Either it ends with a profile or it says why not; the walk waits
-// for whichever comes, so a refusal is read rather than timed out on.
+// The install fetches and unpacks, then the product makes the agent itself.
+// Either it ends with an agent or it says why not; the walk waits for
+// whichever comes, so a refusal is read rather than timed out on.
+let refused = "";
 await b.waitFor(
   "the install to finish",
-  async () => b.evaluate(`(() => {
-    const status = (document.getElementById("onboarding-status")||{textContent:""}).textContent;
-    const working = /Reading|Installing|Creating/.test(status);
-    return !working && (status.length > 0 || document.querySelectorAll("#profiles option").length > 0);
-  })()`),
+  async () => {
+    if ((await b.agentOf(agentId)) !== null) return true;
+    refused = await b.evaluate(`document.querySelector(".w-form .k-notice")?.textContent ?? ""`);
+    return refused.length > 0 && !/Reading|Installing|Creating/.test(refused);
+  },
   300,
   1000,
 );
-
-const status = await b.evaluate(`(document.getElementById("onboarding-status")||{textContent:""}).textContent`);
-if (status) cleanup(1, `the product refused after installing: ${status}`);
-step("a profile exists");
-
-// Usable, not merely listed: the product offers to start a session with it.
-await b.waitFor("the product offers to start a session", async () =>
-  b.evaluate(`document.querySelector("#open-new")?.disabled === false`));
-step("the agent can be started");
+if ((await b.agentOf(agentId)) === null) cleanup(1, `the product refused after installing: ${refused}`);
+step("an agent exists");
 
 // Having got an agent, the person decides how it asks for permission. The
 // choice is a control with the host's own words under it, not JSON in a box,
 // and what they pick is still there after a reload.
 step("choose how it asks");
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(agentId, "settings");
 await b.waitFor("the permission choice", async () => b.exists("#profile-permissions option"));
 const choices = await b.evaluate(
   `JSON.stringify([...document.querySelectorAll("#profile-permissions option")].map(o => o.value))`,
@@ -102,55 +100,35 @@ if (!boundary || boundary.length < 20) {
 }
 step("the boundary is stated in the page's own words");
 
-await b.click('[data-agent-tab="conversation"]');
-
 // And what all of it was for: a conversation. Still with no project in
-// existence, the person starts a session with the agent they just installed
-// and says something, and the agent's own answer comes back.
-step("start a session");
-await b.click("#open-new");
-await b.waitFor("the session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"
-    && (document.getElementById("connection-id")||{textContent:"-"}).textContent !== "-"`), 300);
-
+// existence, the person says something to the agent they just installed, and
+// the agent's own answer comes back.
+step("say something");
+await b.openAgent(agentId);
 const said = "hello from a person who has no project";
-await b.evaluate(`(() => {
-  const field = document.getElementById("prompt-text");
-  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(said)});
-  field.dispatchEvent(new Event('input', {bubbles: true}));
-})()`);
-await b.click("#send");
-await b.waitFor("the turn ends", async () =>
-  b.evaluate(`(document.getElementById("turn-outcome")||{textContent:""}).textContent.startsWith("turn:")`), 300);
-
-const conversation = await b.evaluate(
-  `JSON.stringify([...document.querySelectorAll("#conversation .message .message-body")].map(node => node.textContent))`,
-).then(JSON.parse);
+const conversation = await b.say(said);
 if (!conversation.some((text) => text.includes(said))) {
-  cleanup(1, `what the person said is not in the conversation: ${JSON.stringify(conversation)}`);
+  cleanup(1, `what the person said is not in the chat: ${JSON.stringify(conversation)}`);
 }
 if (conversation.length < 2) {
   cleanup(1, `the agent said nothing back: ${JSON.stringify(conversation)}`);
 }
-const outcome = await b.evaluate(`(document.getElementById("turn-outcome")||{textContent:""}).textContent`);
-step(`the agent answered (${outcome})`);
+const outcome = "answered";
+step("the agent answered");
 
-// The rail names the conversation they just had. It reads the record, and the
-// record is written by the turn, so a card still saying "Nothing said yet"
-// beside a conversation on the screen is the page telling them about a
-// session that no longer exists.
-await b.waitFor("the rail names what was said", async () =>
-  b.evaluate(`[...document.querySelectorAll("#sessions .session-row .session-name")]
-    .some((row) => row.textContent && row.textContent !== "Nothing said yet")`), 100);
+// The list of chats names the one they just had, by what was said in it.
+await b.waitFor("the list names what was said", async () =>
+  b.evaluate(`[...document.querySelectorAll('aside[aria-label^="Chats with"] .k-rail-item')]
+    .some((row) => row.innerText.includes(${JSON.stringify(said)}))`), 100);
 const named = await b.evaluate(
-  `document.querySelector("#sessions .session-row .session-name")?.textContent ?? ""`);
-step(`the rail calls it: ${named}`);
+  `document.querySelector('aside[aria-label^="Chats with"] .k-rail-item')?.innerText ?? ""`);
+step(`the list calls it: ${named.split("\n")[0]}`);
 
 // The rest of what a harness is for, still with no project anywhere: a
 // terminal in the agent's own environment, and a server of the person's own
 // that the agent attaches. Neither is a project, and neither should need one.
 step("a terminal in the agent's environment");
-await b.click('[data-agent-tab="terminal"]');
+await b.openAgent(agentId, "terminal");
 await b.waitFor("the terminal panel", async () => b.exists('[data-agent-panel="terminal"]:not([hidden])'));
 await b.click("#terminal-open");
 await b.waitFor("a terminal running", async () =>
@@ -171,7 +149,7 @@ const terminalId = await b.evaluate(`(document.getElementById("terminal-id")||{t
 step("a command ran in it and answered");
 
 step("a server of the person's own");
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(agentId, "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.click("#declare-server-open");
 await b.waitFor("the declaration form", async () => b.exists("#declare-server"));
@@ -192,37 +170,20 @@ step("declared and attached, with no project in existence");
 // profile of the same agent from the rail, names it, and gets their own
 // working directory and their own sessions - without installing anything
 // again and without touching the first person's conversation.
-step("a second person's profile of the same agent");
-await b.click('[data-agent-tab="conversation"]');
-await b.click("#add-profile-open");
-await b.waitFor("the form for a second profile", async () => b.exists("#new-profile-id"));
-await b.evaluate(`(() => {
-  const field = document.getElementById("new-profile-id");
-  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(field, "ada");
-  field.dispatchEvent(new Event('input', {bubbles: true}));
-})()`);
-// Which agent this profile is of. The form has always offered the choice and
-// no walk had ever made it, so nothing said the chosen one is the one the
-// profile ends up being. Where this machine has more than one agent the
-// choice is a different one than the form opened on, which is the only way
-// to tell a working chooser from one that is ignored.
-const agentChoice = await b.evaluate(`(() => {
-  const field = document.getElementById("new-profile-agent");
-  const offered = [...field.options].map((option) => option.value);
-  const other = offered.find((value) => value !== field.value) ?? field.value;
-  Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(field, other);
-  field.dispatchEvent(new Event('change', {bubbles: true}));
-  return JSON.stringify({offered, chosen: other, opened_on: offered[0] ?? ""});
-})()`).then(JSON.parse);
+step("a second agent on an engine this computer has");
+// Which engine the second agent stands on is chosen in the form. Where this
+// machine has more than one, the choice is another one than the first
+// agent's, which is the only way to tell a working chooser from one that is
+// ignored.
+const engines = ((await b.ask("/api/onboarding")).body?.agents ?? []).filter((one) => one.available).map((one) => one.agent_id);
+const agentChoice = {offered: engines, chosen: engines.find((one) => one !== agentId) ?? agentId};
 if (agentChoice.offered.length === 0) {
-  cleanup(1, "the form offers no agent to make a profile of");
+  cleanup(1, "the form offers no engine to make an agent of");
 }
-await b.click("#add-profile");
-await b.waitFor("the second profile listed", async () =>
-  b.evaluate(`[...document.querySelectorAll("#profiles option")].some(o => o.value === "ada")`), 300);
-const selected = await b.evaluate(`document.getElementById("profiles")?.value`);
-if (selected !== "ada") cleanup(1, `adding a profile did not select it, the rail shows ${JSON.stringify(selected)}`);
-// And it is a profile of the agent that was chosen, read from the product
+await b.makeAgent(agentChoice.chosen, "ada");
+const selected = await b.evaluate(`document.querySelector(".w-h1")?.textContent ?? ""`);
+if (selected !== "ada") cleanup(1, `making an agent did not go to it, the page shows ${JSON.stringify(selected)}`);
+// And it stands on the engine that was chosen, read from the product
 // rather than from the form that asked.
 const madeOf = await b.evaluate(`(async () => {
   const profiles = await (await fetch("/api/profiles")).json();
@@ -230,24 +191,22 @@ const madeOf = await b.evaluate(`(async () => {
   return JSON.stringify({agent: mine?.agent_id ?? "", chosen: ${JSON.stringify(agentChoice.chosen)}});
 })()`).then(JSON.parse);
 if (madeOf.agent !== madeOf.chosen) {
-  cleanup(1, `the profile was made of another agent than the one chosen: ${JSON.stringify(madeOf)}`);
+  cleanup(1, `the agent stands on another engine than the one chosen: ${JSON.stringify(madeOf)}`);
 }
-step(`made of the agent chosen: ${madeOf.chosen}, one of ${agentChoice.offered.length} offered`);
-// The proof that it is a second person and not a second name for the same
-// one: the first profile held the conversation above, so it has a session;
-// this one starts with none.
-await b.waitFor("the new profile has its own, empty session list", async () =>
-  b.exists("#sessions-empty"), 300);
-const mine = await b.evaluate(
-  `JSON.stringify([...document.querySelectorAll("#sessions .session-row")].map(row => row.dataset.routeId))`,
-).then(JSON.parse);
-if (mine.length !== 0) cleanup(1, `the second profile inherited sessions: ${JSON.stringify(mine)}`);
-step("it has its own, empty session list");
+step(`made of the engine chosen: ${madeOf.chosen}, one of ${agentChoice.offered.length} offered`);
+// The proof that it is a second agent and not a second name for the same
+// one: the first held the chat above; this one starts with none.
+const ada = await b.agentOf("ada");
+const mine = ((await b.ask("/api/chats")).body ?? []).filter((chat) => chat.members.some((member) => member.participant_id === ada));
+if (mine.length !== 0) cleanup(1, `the second agent inherited chats: ${JSON.stringify(mine)}`);
+await b.waitFor("the page offers to start its first chat", async () =>
+  b.evaluate(`(document.querySelector(".k-empty")?.innerText ?? "").includes("Start a chat with ada")`), 100);
+step("it has its own, empty list of chats");
 
 // Where this profile's agent runs. The page reads it from the product's own
 // list of environments rather than naming one, so what is shown here is what
 // the product would actually use.
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent("ada", "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.waitFor("the page says where the agent runs", async () =>
   b.evaluate(`(document.getElementById("profile-environment")?.textContent || "").length > 0`), 200);
@@ -258,8 +217,9 @@ const runsIn = await b.evaluate(`JSON.stringify({
 if (!runsIn.named) cleanup(1, `the page does not say where the agent runs: ${JSON.stringify(runsIn)}`);
 step(`it runs ${runsIn.shown} (${runsIn.named})`);
 
+const profiles = ((await b.ask("/api/profiles")).body ?? []).map((profile) => profile.profile_id);
 const report = await b.evaluate(`JSON.stringify({
-  profiles: [...document.querySelectorAll("#profiles option")].map(option => option.value),
+  profiles: ${JSON.stringify(profiles)},
   runs_in: ${JSON.stringify(runsIn.named)},
   runs_in_shown: ${JSON.stringify(runsIn.shown)},
   terminal: ${JSON.stringify(terminalId)},

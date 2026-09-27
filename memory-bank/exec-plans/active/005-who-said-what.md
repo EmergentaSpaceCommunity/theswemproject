@@ -103,8 +103,13 @@ turn's ten-minute deadline.
     `/api/profiles/{id}/sessions`), `Correspondent` and the line it appended, the
     connection's own context. The content tests drive their turns through chats
   - [x] 6c the host's browser suites that drove the old page's lifecycle, with their drivers
-  - [ ] 6d the gate's drivers go to places by their address and talk through the new
-    composer; the Apps suites of the host are walked on the new page
+  - [x] 6d the gate's drivers go to places by their address, make an agent in the form and
+    talk through the composer (`cdp_browser.mjs` gained a person's vocabulary: `makeAgent`,
+    `openAgent`, `say`, `said`); what they read of the record is read from `/api/chats`
+  - [ ] 6e the host's Apps suites (`workbench_shell_apps_browser`,
+    `workbench_apps_engine_probe_browser`) still drive the old page and are red until their
+    drivers are moved; what they cover on the new page - an App opened from the panel, an App
+    a tool brought, a form an agent asks for - was not yet seen in a browser
 
 ## Discoveries
 
@@ -138,6 +143,12 @@ turn's ten-minute deadline.
   driver goes to a place by its address (`#/apps/<server>`, `#/agents/<id>`), as a person
   with a link does.
 
+- A session is opened with the agent's setup as it was then and was kept open after the turn,
+  so a change of how the agent asks took effect only after the session went idle. A live
+  session remembers the revision it was opened with and is opened again when it differs.
+- The old dialog said whose words a question is and what each option does; the first card on
+  the new page did not. It does now, in the same words.
+
 ## Decision log
 
 - 2026-09-27: a form's fields and a link's address are not written into the ledger, as they
@@ -146,6 +157,9 @@ turn's ten-minute deadline.
 - 2026-09-27: agents answering each other are counted per chat and held at the chat's limit
   from this slice on, so a chat of two agents cannot run away before A6 draws the limit.
 - 2026-09-27: stopping a chat ends what waits behind the running turn as well.
+- 2026-09-27: an agent is put to sleep from its header, as the accepted design draws it: the
+  sessions held open for it are let go of. It is how a person ends what the old page ended
+  with Disconnect.
 - 2026-09-27: A2 and A3 of the roadmap land together. The page is built once, on the
   libraries, rather than once on the old parts and again on the new.
 
@@ -158,6 +172,11 @@ turn's ten-minute deadline.
   one waits for an answer; the question is read and answered after nobody looked; a turn is
   stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
   deleted the chat goes on in a fresh one that is given what was said and the transcript.
+- 2026-09-27, step 6d: the product gate, every walk alone against the real binary in Chrome:
+  thirteen green (first run with an install, the Store, a server's App on the rail, files
+  both ways, a command run and asked about, a standing instruction, a role and a model, an
+  engine the product never heard of, the four walks of the editor door, a page of another
+  site refused); the container walk skipped, this machine has no image to run an agent in.
 - 2026-09-27, the acceptance scenario, by hand on the same copy with the real engine, the
   product restarted in between: a second agent was made from the page on the same engine; the
   first was asked to write a file and asked before it did; the page was closed and a new

@@ -83,6 +83,9 @@ pub(super) struct ChatRuntime {
     editor: std::sync::OnceLock<Editor>,
     /// Held while a session is being opened.
     opening: tokio::sync::Mutex<()>,
+    /// Which revision of the agent's setup each live session was opened
+    /// with, by connection.
+    set_up_as: tokio::sync::Mutex<BTreeMap<String, u64>>,
 }
 
 /// An editor's door: what it says is carried out here, with the files the
@@ -520,6 +523,11 @@ impl WorkbenchShellState {
         // session and a worker about to give it a message open one between
         // them, not one each.
         let _opening = self.chat_runtime.opening.lock().await;
+        let revision = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?
+            .revision;
         let key = (chat_id.to_owned(), agent_id.to_owned());
         let known = self.chat_runtime.live.lock().await.get(&key).cloned();
         if let Some(connection_id) = known {
@@ -529,10 +537,28 @@ impl WorkbenchShellState {
                 .is_ok_and(|connection| {
                     !matches!(connection.control.phase(), NativeSessionPhase::Finished)
                 });
-            if alive {
+            // A session is opened with the agent's setup as it was then.
+            // Set up differently since, the agent goes on with what it is
+            // set up with now: the session is let go of and opened again.
+            let as_opened = self
+                .chat_runtime
+                .set_up_as
+                .lock()
+                .await
+                .get(&connection_id)
+                .copied();
+            if alive && as_opened == Some(revision) {
                 return Ok((connection_id, false));
             }
             self.chat_runtime.live.lock().await.remove(&key);
+            self.chat_runtime
+                .set_up_as
+                .lock()
+                .await
+                .remove(&connection_id);
+            if alive {
+                let _ = self.disconnect(&connection_id).await;
+            }
         }
         // An editor has the files the person is looking at; a page has none.
         let files = self
@@ -588,6 +614,11 @@ impl WorkbenchShellState {
             .lock()
             .await
             .insert(key, connection_id.clone());
+        self.chat_runtime
+            .set_up_as
+            .lock()
+            .await
+            .insert(connection_id.clone(), revision);
         Ok((connection_id, fresh))
     }
 

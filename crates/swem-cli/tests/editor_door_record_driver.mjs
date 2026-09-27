@@ -18,15 +18,6 @@ if (!url || !profile || !wrote || !editor) {
 const b = await launchBrowser({browser, url, label: "editor-record"});
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
-await b.click("#space-agent");
-await b.waitFor("the profiles", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0`), 300);
-await b.evaluate(`(() => {
-  const picker = document.getElementById("profiles");
-  picker.value = ${JSON.stringify(profile)};
-  picker.dispatchEvent(new Event("change", {bubbles: true}));
-})()`);
 
 // The conversation the editor held is this person's chat, and the record
 // says who said what in it and through what: the person, from their editor,
@@ -52,7 +43,7 @@ step(`the chat says who said what (${editor} through ${said.channel}, answered b
 
 // The file that turn produced is in the person's own Files, because the agent
 // worked in the profile's directory and not in the one the editor claimed.
-await b.click('[data-agent-tab="files"]');
+await b.openAgent(profile, "files");
 await b.waitFor("the Files panel", async () => b.exists('[data-agent-panel="files"]:not([hidden])'));
 await b.waitFor("the editor's file is listed", async () => {
   await b.click("#files-refresh");

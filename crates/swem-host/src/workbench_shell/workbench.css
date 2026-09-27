@@ -98,3 +98,4 @@ html, body, #workbench-root { height: 100%; }
 .w-composer > .k-spread { flex-wrap: wrap; row-gap: 8px; }
 .w-composer > .k-spread > .k-inline { flex-wrap: wrap; }
 .w-thread .w-stream, .w-thread .w-composer { --w-gutter: max(24px, calc((100% - 860px) / 2)); }
+.w-kind { font-weight: var(--font-weight-normal); font-size: var(--font-text-sm-size); opacity: .7; }

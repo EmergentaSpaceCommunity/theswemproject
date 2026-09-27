@@ -25,8 +25,7 @@ const setValue = (id, value, proto = "HTMLInputElement") => b.evaluate(`(() => {
 const text = (id) => b.evaluate(`(document.getElementById(${JSON.stringify(id)})||{textContent:""}).textContent`);
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-store"));
-await b.click("#space-store");
+await b.goTo("#/store");
 await b.waitFor("the registry's agents", async () =>
   b.exists(`.store-entry[data-kind="agent"][data-id="${registryId}"]`), 300);
 step("the Store lists the registry's agents");
@@ -64,19 +63,13 @@ await install("server", "echo");
 await install("skill", "shout");
 
 // The agent is offered as this computer's, under the catalogue's own name.
-step("make the agent mine");
-await b.click("#space-agent");
-await b.waitFor("the agent offered as installed", async () =>
-  b.evaluate(`document.querySelector('[data-agent-id=${JSON.stringify(agentId)}]')?.textContent === "Make it mine"`), 300);
-await b.click(`[data-agent-id=${JSON.stringify(agentId)}]`);
-await b.waitFor("a profile of it", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0
-    && !/Reading|Installing|Creating/.test((document.getElementById("onboarding-status")||{textContent:""}).textContent)`), 300, 500);
-const refused = await text("onboarding-status");
-if (refused) cleanup(1, `the product refused to make a profile: ${refused}`);
+step("make an agent of it");
+await b.waitFor("the engine offered as this computer's", async () =>
+  ((await b.ask("/api/onboarding")).body?.agents ?? []).some((one) => one.agent_id === agentId && one.available), 300);
+const profile = await b.makeAgent(agentId);
 
 step("give it the server and the skill");
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(profile, "settings");
 await b.waitFor("the server declared from the Store", async () =>
   b.exists('#mcp-servers .server-row[data-server="echo"][data-origin="catalogue"]'), 300);
 await b.click('.server-attach[data-server="echo"]');
@@ -88,22 +81,9 @@ await b.click("#skill-attach");
 await b.waitFor("the skill on the profile", async () => b.exists('.skill-row[data-skill="shout"]'), 300);
 step("attached: echo, and the skill shout");
 
-step("a session that uses both");
-await b.click('[data-agent-tab="conversation"]');
-await b.click("#open-new");
-await b.waitFor("the session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"
-    && (document.getElementById("connection-id")||{textContent:"-"}).textContent !== "-"`), 300);
-
-const say = async (message) => {
-  const turns = await b.evaluate(`document.querySelectorAll("#conversation .message").length`);
-  await setValue("prompt-text", message, "HTMLTextAreaElement");
-  await b.click("#send");
-  await b.waitFor("the turn ends", async () =>
-    b.evaluate(`document.querySelectorAll("#conversation .message").length >= ${turns} + 2
-      && (document.getElementById("turn-outcome")||{textContent:""}).textContent.startsWith("turn:")`), 300);
-  return b.evaluate(`[...document.querySelectorAll("#conversation .message .message-body")].map(n => n.textContent).at(-1)`);
-};
+step("a chat that uses both");
+await b.openAgent(profile);
+const say = async (message) => (await b.say(message)).at(-1);
 const echoed = await say(JSON.stringify({tool: "echo", arguments: {nonce}, server: "echo"}));
 if (!echoed.includes(nonce)) cleanup(1, `the server installed from the Store did not answer: ${JSON.stringify(echoed)}`);
 step("the installed server answered the agent's call");

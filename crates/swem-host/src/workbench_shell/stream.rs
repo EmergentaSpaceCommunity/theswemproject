@@ -233,6 +233,12 @@ pub(super) async fn route_chats(
             state.stream_from(place).await
         }
         (&Method::GET, ["api", "people"]) => json_result(state.chat_people().await),
+        // Put an agent to sleep: the sessions held open for it are let go
+        // of. The engines keep them; it wakes with the next thing said.
+        (&Method::POST, ["api", "people", agent_id, "sleep"]) => {
+            state.let_go_of(Some(agent_id)).await;
+            json_result(Ok(json!({ "asleep": true })))
+        }
         (&Method::GET, ["api", "chats"]) => json_result(state.chats().await),
         (&Method::POST, ["api", "chats"]) => match body_of::<StartChatBody>(request).await {
             Ok(body) => json_result(state.start_chat(body).await),

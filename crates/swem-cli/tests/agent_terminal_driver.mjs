@@ -18,41 +18,17 @@ if (!url || !marker) {
 
 const b = await launchBrowser({browser, url, label: "agent-terminal"});
 
-const setValue = async (id, value, kind = "HTMLInputElement") =>
-  b.evaluate(`(() => {
-    const field = document.getElementById(${JSON.stringify(id)});
-    Object.getOwnPropertyDescriptor(window.${kind}.prototype, 'value').set.call(field, ${JSON.stringify(value)});
-    field.dispatchEvent(new Event('input', {bubbles: true}));
-  })()`);
-
-// `until` is what this turn is being asked for: the outcome and the messages
-// it produced arrive on different lanes, so a read taken the moment the turn
-// ends can find a conversation the page has not projected yet.
-const say = async (text, until = (messages) => messages.length > 0) => {
-  await setValue("prompt-text", text, "HTMLTextAreaElement");
-  await b.click("#send");
-  await b.waitFor("the turn ends", async () =>
-    b.evaluate(`(document.getElementById("turn-outcome")||{textContent:""}).textContent.startsWith("turn:")`), 300);
-  return b.bodiesUntil(until);
-};
-
 const screenText = async () =>
   b.evaluate(`[...document.querySelectorAll("#terminal-screen .xterm-rows div")].map((row) => row.textContent).join("\\n")`);
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
-await b.click("#space-agent");
-
-await b.waitFor("the agent offered", async () => b.exists("#agent-options .agent-option"));
-await b.click('[data-agent-id="hands"]');
-await b.waitFor("a profile exists", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0`), 200);
+const profile = await b.makeAgent("hands");
 step("the agent is theirs");
 
 // Whether this agent may run a command on its own is the person's choice,
 // and it is the same one as whether it may edit a file on its own. Made
 // before the session opens, because that is when it is read.
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(profile, "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.waitFor("the permission choices", async () =>
   b.evaluate(`document.querySelectorAll("#profile-permissions option").length > 1`), 300);
@@ -73,20 +49,11 @@ await b.waitFor("the choice saved", async () =>
   b.evaluate(`document.getElementById("profile-permissions")?.value === "workspace-permissions"`), 300);
 step("the person lets it work alone inside its workspace");
 
-await b.click("#open-new");
-await b.waitFor("the session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"`), 300);
-step("a session is open");
-
-await b.click('[data-agent-tab="conversation"]');
-await b.waitFor("the composer", async () => b.exists("#prompt-text"));
+await b.openAgent(profile);
 
 // The command itself: it writes a file where the agent works and says where
 // that is, so both halves of "in the profile's environment" are checked.
-const ran = await say(
-  JSON.stringify({run: `echo ${marker} > ran.txt; pwd`}),
-  (messages) => messages.some((text) => text.startsWith("ran ")),
-);
+const ran = await b.say(JSON.stringify({run: `echo ${marker} > ran.txt; pwd`}));
 if (!ran.some((text) => text.startsWith("ran ") && text.includes("/"))) {
   cleanup(1, `the agent could not run a command: ${JSON.stringify(ran)}`);
 }
@@ -94,14 +61,11 @@ step("the agent ran a command and read what it said");
 
 // And now the part a person can see: a command left running, found in their
 // own terminal panel and watched from there.
-const kept = await say(
-  JSON.stringify({run: `echo ${marker}-watched; sleep 20`, keep: true}),
-  (messages) => messages.some((text) => text.includes("running ")),
-);
+const kept = await b.say(JSON.stringify({run: `echo ${marker}-watched; sleep 20`, keep: true}));
 if (!kept.some((text) => text.includes("running "))) {
   cleanup(1, `the agent could not leave a command running: ${JSON.stringify(kept)}`);
 }
-await b.click('[data-agent-tab="terminal"]');
+await b.openAgent(profile, "terminal");
 await b.waitFor("the terminal panel", async () => b.exists('[data-agent-panel="terminal"]:not([hidden])'));
 await b.waitFor("the agent's terminal is listed", async () =>
   b.exists('.terminal-list li[data-opened-by="agent"]'), 300);
@@ -140,7 +104,7 @@ step("the person stepped away, the agent's command kept running, and their own t
 // This is the mode a person picks when they want to be asked, so a command
 // has to reach them as a question with the command line in it, and run only
 // on a yes.
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(profile, "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.evaluate(`(() => {
   const field = document.getElementById("profile-permissions");
@@ -149,32 +113,29 @@ await b.evaluate(`(() => {
 })()`);
 await b.waitFor("the choice saved", async () =>
   b.evaluate(`document.getElementById("profile-permissions")?.value === "surface-permissions"`), 300);
-await b.click("#open-new");
-await b.waitFor("a second session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"`), 300);
-await b.click('[data-agent-tab="conversation"]');
-await b.waitFor("the composer", async () => b.exists("#prompt-text"));
+// The chat goes on with what the agent is set up with now.
+await b.openAgent(profile);
 
 // Ask, wait for the question, answer it. `say` cannot be used here: the turn
 // does not end until somebody answers.
 const askAndAnswer = async (text, optionId) => {
-  await setValue("prompt-text", text, "HTMLTextAreaElement");
-  await b.click("#send");
-  await b.waitFor("the question", async () =>
-    b.evaluate(`(document.getElementById("permission")||{style:{}}).style.display === "grid"`), 200);
-  const question = await b.textOf("permission-title");
+  const before = (await b.said()).length;
+  await b.say(text, {answered: false});
+  await b.waitFor("the question", async () => b.exists(".w-ask button"), 200);
+  const waiting = (await b.chat()).questions[0];
+  const question = await b.evaluate(`document.querySelector(".w-ask code")?.textContent ?? ""`);
   // Whose words the person is reading. An agent's report and the host's own
   // statement carry the same kind of sentence and do not mean the same
-  // thing, so the dialog has to say which one this is.
-  const whose = await b.textOf("permission-whose");
-  const provenance = await b.evaluate(
-    `(document.getElementById("permission")||{dataset:{}}).dataset.provenance || ""`,
-  );
-  await b.click(`.permission-option[data-option-id=${JSON.stringify(optionId)}]`);
-  await b.waitFor("the turn ends", async () =>
-    b.evaluate(`(document.getElementById("turn-outcome")||{textContent:""}).textContent.startsWith("turn:")`), 300);
-  const said = await b.bodiesUntil((messages) => messages.length > 0);
-  return {question, said, whose, provenance};
+  // thing, so the question has to say which one this is.
+  const whose = await b.evaluate(`document.querySelector(".w-ask .k-caption")?.textContent ?? ""`);
+  const provenance = waiting?.asked?.asked_by ?? "";
+  const name = (waiting?.asked?.options ?? []).find((option) => option.optionId === optionId)?.name;
+  if (!name || !(await b.pressText(".w-ask button", name))) cleanup(1, `the question does not offer ${optionId}: ${JSON.stringify(waiting)}`);
+  await b.waitFor("the turn ends", async () => {
+    const chat = await b.chat();
+    return chat.deliveries.length === 0 && chat.messages.length >= before + 2;
+  }, 300);
+  return {question, said: await b.said(), whose, provenance};
 };
 
 const no = await askAndAnswer(JSON.stringify({run: `echo ${marker} > refused.txt`}), "do-not-run");

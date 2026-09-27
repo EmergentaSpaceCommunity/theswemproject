@@ -20,21 +20,10 @@ if (!url || !profileId || !environmentId) {
 const b = await launchBrowser({browser, url, label: "unknown-environment"});
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
-await b.click("#space-agent");
-await b.waitFor("the profiles", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0`), 300);
-await b.evaluate(`(() => {
-  const picker = document.getElementById("profiles");
-  picker.value = ${JSON.stringify(profileId)};
-  picker.dispatchEvent(new Event("change", {bubbles: true}));
-})()`);
-await b.waitFor("the profile is the one in question", async () =>
-  (await b.evaluate(`document.getElementById("profiles")?.value`)) === profileId, 200);
-step(`the profile that says it runs in ${environmentId}`);
+await b.openAgent(profileId, "settings");
+step(`the agent that says it runs in ${environmentId}`);
 
 // Half one: the page says it, and says it about this exact environment.
-await b.click('[data-agent-tab="environment"]');
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.waitFor("the page names the environment", async () =>
   (await b.evaluate(`document.getElementById("profile-environment")?.dataset.environment || ""`)) === environmentId,
@@ -48,23 +37,26 @@ if (!said.where.includes(environmentId)) {
 }
 step("the page says this product does not have that environment");
 
-// Half two, and the one that matters: the session is refused, not started on
-// this machine instead.
-await b.click('[data-agent-tab="conversation"]');
-await b.click("#open-new");
+// Half two, and the one that matters: what is said to it is not answered from
+// this machine instead. The chat says why, and the reason names the
+// environment.
+await b.openAgent(profileId);
+await b.say("are you there?", {answered: false});
+let refusal = "";
 await b.waitFor(
-  "the product refuses the session",
+  "the product refuses to start it",
   async () => {
-    const opened = await b.evaluate(
-      `(document.getElementById("route")||{textContent:"-"}).textContent !== "-" ? "opened" : null`);
-    if (opened === "opened") cleanup(1, "the session opened despite an environment this product does not have");
-    // `close-error` is this page's one problem line, whatever raised it.
-    const status = await b.evaluate(`document.getElementById("close-error")?.textContent || ""`);
-    return status.includes(environmentId) ? status : null;
+    const chat = await b.chat();
+    if (!chat || chat.deliveries.length > 0) return null;
+    if (chat.messages.length > 1) cleanup(1, "the agent answered despite an environment this product does not have");
+    const ended = chat.events.filter((event) => event.kind === "chat/delivery").pop();
+    refusal = ended?.payload?.outcome ?? "";
+    return ended?.payload?.state === "failed" && refusal.includes(environmentId) ? refusal : null;
   },
   120,
 );
-const refusal = await b.evaluate(`document.getElementById("close-error")?.textContent || ""`);
+await b.waitFor("the page says why", async () =>
+  b.evaluate(`[...document.querySelectorAll(".k-notice.k-danger")].some((one) => one.textContent.includes(${JSON.stringify(environmentId)}))`), 50);
 step(`refused, and the refusal names it (${refusal})`);
 
 console.log("unknown environment OK");

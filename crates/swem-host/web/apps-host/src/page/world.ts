@@ -232,6 +232,9 @@ export const act = {
   async answer(questionId: string, answer: unknown): Promise<void> {
     await fetchJson(`/api/questions/${encodeURIComponent(questionId)}/answer`, json(answer));
   },
+  async sleep(agentId: string): Promise<void> {
+    await fetchJson(`/api/people/${encodeURIComponent(agentId)}/sleep`, json({}));
+  },
   async rename(chatId: string, title: string): Promise<void> {
     await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`, { ...json({ title }), method: "PATCH" });
   },

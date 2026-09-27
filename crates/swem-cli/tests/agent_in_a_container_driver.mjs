@@ -26,17 +26,12 @@ const setValue = async (id, value, kind = "HTMLInputElement") =>
   })()`);
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
-await b.click("#space-agent");
-await b.waitFor("the agent offered", async () => b.exists("#agent-options .agent-option"));
-await b.click('[data-agent-id="hands"]');
-await b.waitFor("a profile exists", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0`), 200);
+const profile = await b.makeAgent("hands");
 step("the agent is theirs");
 
 // The choice itself: a row in the list of places this product can run an
 // agent, picked the way the permission choice beside it is picked.
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(profile, "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 // The list comes from the product, so it is not there the instant the panel
 // is: a value set on a picker that is still empty or still disabled changes
@@ -62,20 +57,11 @@ step(`the agent runs ${says}`);
 
 // Everything after this is the ordinary page: nothing about holding a
 // conversation changes because the agent is somewhere else.
-await b.click('[data-agent-tab="conversation"]');
-await b.click("#open-new");
-await b.waitFor("the session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"`), 600);
-step("a session is open");
-
-await setValue("prompt-text", JSON.stringify({write: `outbox/${wrote}`, text}), "HTMLTextAreaElement");
-await b.click("#send");
-await b.waitFor("the turn ends", async () =>
-  b.evaluate(`(document.getElementById("turn-outcome")||{textContent:""}).textContent.startsWith("turn:")`), 600);
+await b.openAgent(profile);
 // The path the agent reports is the one it sees, which is the container's -
 // not the person's. That is the whole point of the row it is running in.
 const inside = (message) => message.includes(`/workspace/outbox/${wrote}`);
-const said = await b.bodiesUntil((messages) => messages.some(inside));
+const said = await b.say(JSON.stringify({write: `outbox/${wrote}`, text}));
 if (!said.some(inside)) {
   cleanup(1, `the agent did not write inside the container: ${JSON.stringify(said)}`);
 }
@@ -83,7 +69,7 @@ step("the agent wrote a file from inside the container");
 
 // And the person finds it where their own files are, without knowing any of
 // that: the Files panel reads the same directory the container was given.
-await b.click('[data-agent-tab="files"]');
+await b.openAgent(profile, "files");
 await b.waitFor("the Files panel", async () => b.exists('[data-agent-panel="files"]:not([hidden])'));
 await b.waitFor("the file is listed", async () => {
   await b.click("#files-refresh");
@@ -91,18 +77,14 @@ await b.waitFor("the file is listed", async () => {
 }, 30, 500);
 step("the person's Files show what the container wrote");
 
-// Ending the session is the other half of the claim: the container exists
-// while the agent does and not a moment longer, and a person ends it the way
-// they end any session.
-// Disconnect rather than Close: closing is an ACP capability an agent has to
-// advertise, and this one does not. Either way the person is finished with
-// the session, which is what the container's life is tied to.
-await b.click("#disconnect");
-// The rail's own buttons say whether anything is connected, which is the
-// page's answer to "is this session still open".
-await b.waitFor("the session ends", async () =>
-  b.evaluate(`document.getElementById("disconnect")?.disabled === true`), 60, 500);
-step("the session is closed");
+// Putting the agent to sleep is the other half of the claim: the container
+// exists while the agent is awake and not a moment longer.
+const agent = await b.openAgent(profile);
+if (!(await b.pressText(".w-head button", "Put to sleep"))) cleanup(1, "the agent's header has no way to put it to sleep");
+const chat = await b.chat();
+await b.waitFor("the agent sleeps", async () =>
+  (await b.ask(`/api/chats/${chat.chat.chat_id}/agents/${agent}/session`)).body?.connection_id === null, 60, 500);
+step("the agent is asleep");
 
 console.log("in a container OK");
 console.log(JSON.stringify({says, said}));

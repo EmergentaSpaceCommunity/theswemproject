@@ -10,11 +10,11 @@ import { sessionStore } from "../agent/store.ts";
 import { TerminalPanel } from "../agent/TerminalPanel.tsx";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
-import { ChatSign, Folder, Gear, People, Plus, Prompt } from "./icons.tsx";
+import { ChatSign, Folder, Gear, Moon, People, Plus, Prompt } from "./icons.tsx";
 import { go, type AgentTab } from "./place.ts";
 import type { Chat, Participant } from "./types.ts";
 import { Avatar, names, StateWord, useDoing, useStanding, when } from "./who.tsx";
-import { chatsOf, doing, world } from "./world.ts";
+import { act, chatsOf, doing, world } from "./world.ts";
 
 const TABS: { tab: AgentTab; label: string; sign: typeof ChatSign }[] = [
   { tab: "chat", label: "Chat", sign: ChatSign },
@@ -45,6 +45,16 @@ function Header({ agent, tab }: { agent: Participant; tab: AgentTab }) {
           {engine ? <span className="k-chip">{engine}</span> : null}
           {profile?.model ? <span className="k-chip">{profile.model}</span> : null}
           {host ? <span className="k-chip">{host}</span> : null}
+          <button
+            type="button"
+            className="k-btn k-quiet"
+            disabled={what !== "ready"}
+            title="Its sessions are let go of; it wakes with the next thing said"
+            onClick={() => void act.sleep(agent.participant_id)}
+          >
+            <Moon />
+            <span>Put to sleep</span>
+          </button>
         </div>
       </div>
       <nav className="k-tabs" aria-label={agent.name}>

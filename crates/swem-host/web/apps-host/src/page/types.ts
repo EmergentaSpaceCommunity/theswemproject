@@ -73,7 +73,13 @@ export interface Question {
   delivery_id?: string | null;
   /// `permission`, `form` or `link`.
   kind: string;
-  asked: { title?: string | null; tool_kind?: string | null; options?: PermissionOption[] };
+  asked: {
+    title?: string | null;
+    tool_kind?: string | null;
+    /// Whose words the question is: the agent's report, or the host's own.
+    asked_by?: string | null;
+    options?: PermissionOption[];
+  };
   state: "waiting" | "answered" | "lapsed";
   answer?: { option?: string; name?: string | null; action?: string } | null;
 }

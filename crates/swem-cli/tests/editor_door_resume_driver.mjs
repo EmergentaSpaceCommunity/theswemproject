@@ -20,7 +20,6 @@ if (!url || !profile || !kept || wanted.length === 0) {
 const b = await launchBrowser({browser, url, label: "editor-resume"});
 
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
 
 // One conversation. Before the editor could hand an id back, each launch
 // opened a conversation of its own and the record grew one per launch.

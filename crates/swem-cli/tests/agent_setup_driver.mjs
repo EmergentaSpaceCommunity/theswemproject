@@ -35,33 +35,12 @@ const choose = async (selector, value) =>
 const valueOf = (selector) => b.evaluate(`document.querySelector(${JSON.stringify(selector)})?.value ?? ""`);
 const saved = (what) => b.waitFor(`${what} saved`, async () => (await b.textOf("environment-status")) === "Saved.", 150);
 
-const said = () => b.evaluate(
-  `JSON.stringify([...document.querySelectorAll("#conversation .message .message-body")].map(node => node.textContent))`,
-).then(JSON.parse);
-const say = async (text) => {
-  const before = (await said()).length;
-  await setValue("#prompt-text", text);
-  await b.click("#send");
-  await b.waitFor("the turn ends", async () =>
-    b.evaluate(`(() => {
-      const outcome = (document.getElementById("turn-outcome")||{textContent:""}).textContent;
-      const messages = document.querySelectorAll("#conversation .message .message-body").length;
-      return outcome.startsWith("turn:") && messages >= ${before} + 2;
-    })()`), 300);
-  return said();
-};
-
 step("the product opens");
-await b.waitFor("the shell", async () => b.exists("#space-agent"));
-await b.click("#space-agent");
-await b.waitFor("the agent offered", async () => b.exists("#agent-options .agent-option"));
-await b.click('[data-agent-id="hands"]');
-await b.waitFor("a profile exists", async () =>
-  b.evaluate(`document.querySelectorAll("#profiles option").length > 0`), 200);
+const profile = await b.makeAgent("hands");
 step("the agent is theirs");
 
 // --- Setup: a provider, the model, the role ------------------------------
-await b.click('[data-agent-tab="environment"]');
+await b.openAgent(profile, "settings");
 await b.waitFor("the setup panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.waitFor("the shipped providers listed", async () => b.exists('.provider-row[data-provider="anthropic"][data-origin="built_in"]'));
 await b.click("#add-model-provider-open");
@@ -89,22 +68,19 @@ await saved("the role");
 step("the role is written");
 
 // --- The agent reads it back ------------------------------------------------
-await b.click('[data-agent-tab="conversation"]');
-await b.click("#open-new");
-await b.waitFor("the session opens", async () =>
-  b.evaluate(`(document.getElementById("route")||{textContent:"-"}).textContent !== "-"`), 300);
-step("a session is open");
-const answered = await say(JSON.stringify({read: "AGENTS.md"}));
+await b.openAgent(profile);
+const answered = await b.say(JSON.stringify({read: "AGENTS.md"}));
 const instructions = answered[answered.length - 1] ?? "";
 if (!instructions.includes(role)) cleanup(1, `the agent did not get its role: ${instructions}`);
 if (!instructions.includes("<!-- swem:system -->")) cleanup(1, `the role is not in SWEM's span: ${instructions}`);
+if (!instructions.includes("## Who is speaking")) cleanup(1, `the agent was not told how it is told who speaks: ${instructions}`);
 step("the agent read its role from its own directory");
 
-// The rail's card says what this profile asks for.
-const chip = await b.evaluate(`document.querySelector("#profile-card .k-chip")?.textContent ?? ""`);
-if (chip !== "quality") cleanup(1, `the profile card does not name the model: ${JSON.stringify(chip)}`);
+// The agent's header says what it stands on and which model it asks for.
+const chip = await b.evaluate(`[...document.querySelectorAll(".w-head .k-chip")].map((one) => one.textContent).join("|")`);
+if (!chip.split("|").includes("quality")) cleanup(1, `the agent's header does not name the model: ${JSON.stringify(chip)}`);
 
-console.log(JSON.stringify({model: await valueOf("#session-model"), chip, instructions_length: instructions.length}));
+console.log(JSON.stringify({chip, instructions_length: instructions.length}));
 console.log("setup OK");
 await sleep(200);
 await b.close();
