@@ -86,3 +86,15 @@ html, body, #workbench-root { height: 100%; }
 /* What an agent is set up with reads as a column, not across the screen. */
 .w-panel > .environment, .w-panel > .files-panel { width: min(100%, 880px); margin: 0 auto; flex: none; overflow: visible; }
 .w-panel .environment textarea { min-height: 120px; }
+
+.w-side.w-right { border-right: 0; border-left: var(--border-width-regular) solid var(--color-border-secondary); width: 320px; }
+.w-side.w-right.w-wide { width: min(50%, 760px); }
+.w-apps[hidden] { display: none; }
+.w-app { flex: 1 1 auto; min-height: 0; display: flex; }
+.w-app > iframe { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; border-radius: var(--border-radius-lg); background: var(--color-background-primary); }
+.w-over { z-index: 40; }
+.w-ask input, .w-ask select, .w-ask textarea { width: 100%; min-width: 0; font: inherit; color: var(--color-text-primary); background: var(--color-background-primary);
+  border: var(--border-width-regular) solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 6px 10px; }
+.w-composer > .k-spread { flex-wrap: wrap; row-gap: 8px; }
+.w-composer > .k-spread > .k-inline { flex-wrap: wrap; }
+.w-thread .w-stream, .w-thread .w-composer { --w-gutter: max(24px, calc((100% - 860px) / 2)); }

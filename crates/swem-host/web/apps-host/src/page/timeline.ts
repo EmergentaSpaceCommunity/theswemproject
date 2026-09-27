@@ -32,9 +32,14 @@ export interface Timeline {
   commands: Record<string, AgentCommand[]>;
   /// Per agent, how much of its memory it has used, when it says.
   usage: Record<string, Usage>;
+  /// Per agent, the place at which what its session lets a person choose
+  /// last changed; what it offers is read from the session again then.
+  offers: Record<string, number>;
+  /// Per agent, the place at which a tool of its last brought an App.
+  brought: Record<string, number>;
 }
 
-export const emptyTimeline = (): Timeline => ({ items: [], through: 0, open: {}, commands: {}, usage: {} });
+export const emptyTimeline = (): Timeline => ({ items: [], through: 0, open: {}, commands: {}, usage: {}, offers: {}, brought: {} });
 
 function replaced(items: Item[], key: string, make: (old: Item) => Item): Item[] {
   const at = items.findIndex((item) => item.key === key);
@@ -200,6 +205,9 @@ function withUpdate(timeline: Timeline, agent: string, happened: Happened, updat
             .map((command) => ({ name: command.name ?? "", description: command.description ?? "" })),
         },
       };
+    case "config_option_update":
+    case "current_mode_update":
+      return { ...timeline, offers: { ...timeline.offers, [agent]: happened.sequence } };
     case "usage_update":
       return {
         ...timeline,
@@ -273,6 +281,12 @@ function taken(timeline: Timeline, happened: Happened): Timeline {
     }
     case "acp/prompt_response":
       return agent ? closed(timeline, agent) : timeline;
+    case "acp/session_new":
+    case "acp/session_load":
+    case "acp/session_resume":
+      return agent ? { ...timeline, offers: { ...timeline.offers, [agent]: happened.sequence } } : timeline;
+    case "host/app_tool_observed":
+      return agent ? { ...timeline, brought: { ...timeline.brought, [agent]: happened.sequence } } : timeline;
     case "host/artifact_available":
       return {
         ...timeline,

@@ -14,12 +14,19 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { useMemo, useRef, useState } from "react";
+import { Select } from "@base-ui/react/select";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 
 import type { AgentCommand, PlanEntry, ToolCard, Usage } from "../agent/events.ts";
+import { FieldInput, readRaw } from "../agent/FlatFormFields.tsx";
+import { fieldsOf, valueOf } from "../agent/flatForm.ts";
+import type { ConfigChoice } from "../agent/session.ts";
+import { fetchJson } from "../http.ts";
+import { ChatApps } from "./ChatApps.tsx";
+import { useOffers } from "./session.ts";
 import { sessionStore, useSession } from "../agent/store.ts";
-import { Arrow, Check, Chevron, Clip, Clock, Cross, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
+import { Arrow, Check, Chevron, Clip, Clock, Cross, Down, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
 import { Prose } from "./Prose.tsx";
 import { grouped, type Group, type Item } from "./timeline.ts";
 import type { Chat, Message, Participant, Question } from "./types.ts";
@@ -82,6 +89,96 @@ function Plan({ entries }: { entries: PlanEntry[] }) {
   );
 }
 
+/// A form an agent asks to be filled in, or a link it asks to be opened.
+/// What it asks is read from its session, where it waits; what is typed
+/// goes to the engine and is written down nowhere.
+function AskForm({ question, name }: { question: Question; name: string }) {
+  const [asked, setAsked] = useState<{ mode?: string; message?: string; url?: string; requestedSchema?: unknown } | null>(null);
+  const [problem, setProblem] = useState("");
+  const [sent, setSent] = useState(false);
+  const form = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    let left = false;
+    fetchJson<typeof asked>(`/api/questions/${encodeURIComponent(question.question_id)}`)
+      .then((read) => {
+        if (!left) setAsked(read);
+      })
+      .catch((error: Error) => {
+        if (!left) setProblem(error.message);
+      });
+    return () => {
+      left = true;
+    };
+  }, [question.question_id]);
+  const fields = useMemo(() => {
+    try {
+      return asked?.mode === "form" ? fieldsOf(asked.requestedSchema ?? {}) : [];
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }, [asked]);
+  const answer = (action: "accept" | "decline" | "cancel") => {
+    let body: Record<string, unknown> = { action };
+    if (action === "accept" && Array.isArray(fields) && asked?.mode === "form") {
+      try {
+        body = { action, content: valueOf(fields, readRaw(form.current)) };
+      } catch (error) {
+        setProblem((error as Error).message);
+        return;
+      }
+    }
+    setSent(true);
+    setProblem("");
+    act.answer(question.question_id, body).catch((error: Error) => {
+      setSent(false);
+      setProblem(error.message);
+    });
+  };
+  return (
+    <form
+      className="k-card k-asking w-ask"
+      aria-label={`${name} asks`}
+      ref={form}
+      onSubmit={(event) => {
+        event.preventDefault();
+        answer("accept");
+      }}
+    >
+      <div className="k-stack w-close">
+        <span className="k-title k-is-warning">{name} asks for something it needs from you</span>
+        {asked?.message ? <span>{asked.message}</span> : null}
+        {asked?.mode === "url" && asked.url ? (
+          <a href={asked.url} target="_blank" rel="noopener noreferrer" className="k-mono">
+            {asked.url}
+          </a>
+        ) : null}
+      </div>
+      {typeof fields === "string" ? <span className="k-caption k-is-danger">{fields}</span> : null}
+      {Array.isArray(fields)
+        ? fields.map((field) => (
+            <label className="k-stack w-close elicitation-field" key={field.name}>
+              <span className="k-caption">
+                {field.label}
+                {field.required ? "" : " (if you like)"}
+              </span>
+              <FieldInput field={field} />
+              {field.description ? <span className="k-caption">{field.description}</span> : null}
+            </label>
+          ))
+        : null}
+      <div className="k-inline w-tight">
+        <button type="submit" className="k-btn k-primary" disabled={sent || asked === null}>
+          {asked?.mode === "url" ? "I opened it" : "Answer"}
+        </button>
+        <button type="button" className="k-btn" disabled={sent} onClick={() => answer("decline")}>
+          Not this
+        </button>
+      </div>
+      {problem ? <span className="k-caption k-is-danger">{problem}</span> : null}
+    </form>
+  );
+}
+
 /// What an agent asks before it does something. It waits for whoever
 /// answers, here or anywhere else the chat is open.
 function Ask({ question, agent }: { question: Question; agent: Participant | undefined }) {
@@ -92,14 +189,7 @@ function Ask({ question, agent }: { question: Question; agent: Participant | und
     const said = question.state === "lapsed" ? "Nobody answered before the turn ended." : `You answered: ${question.answer?.name || question.answer?.action || "yes"}.`;
     return <div className="k-notice">{said}</div>;
   }
-  if (question.kind !== "permission") {
-    return (
-      <div className="k-card k-asking w-ask" role="group" aria-label={`${name} asks`}>
-        <span className="k-title k-is-warning">{name} asks for something it needs from you</span>
-        <span className="k-caption">{question.kind === "link" ? "It is a link to open." : "It is a short form."}</span>
-      </div>
-    );
-  }
+  if (question.kind !== "permission") return <AskForm question={question} name={name} />;
   const options = question.asked.options ?? [];
   const choose = (option: string) => {
     setSent(true);
@@ -248,11 +338,40 @@ async function handOver(file: File): Promise<string> {
   return value.descriptor_id;
 }
 
+/// One thing the session lets a person choose: its model, its mode.
+function Offer({ label, value, choices, onChoose }: { label: string; value: string; choices: ConfigChoice[]; onChoose: (value: string) => void }) {
+  if (choices.length === 0) return null;
+  const shown = choices.find((choice) => choice.value === value)?.name ?? value;
+  return (
+    <Select.Root value={value} onValueChange={(next) => (typeof next === "string" ? onChoose(next) : undefined)}>
+      <Select.Trigger className="k-btn k-quiet" aria-label={label} title={label}>
+        <Select.Value>{shown}</Select.Value>
+        <Select.Icon>
+          <Down size={13} />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Positioner sideOffset={6} className="w-over">
+          <Select.Popup className="k-menu">
+            {choices.map((choice) => (
+              <Select.Item className="k-menu-item" value={choice.value} key={choice.value}>
+                <Select.ItemText>{choice.name}</Select.ItemText>
+              </Select.Item>
+            ))}
+          </Select.Popup>
+        </Select.Positioner>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
 function Composer({
   to,
   running,
   commands,
   usage,
+  offers,
+  apps,
   onSay,
   onStop,
 }: {
@@ -260,6 +379,8 @@ function Composer({
   running: boolean;
   commands: AgentCommand[];
   usage: string;
+  offers?: ReturnType<typeof useOffers>;
+  apps?: { shown: boolean; toggle: () => void };
   onSay: (saying: Saying) => Promise<void>;
   onStop: () => void;
 }) {
@@ -271,6 +392,16 @@ function Composer({
   const [sending, setSending] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const nothing = text.trim() === "" && files.length === 0;
+  // What the session lets a person choose, in the engine's own words: an
+  // engine that offers no choice shows none.
+  const options = offers?.offers?.options ?? [];
+  const model = options.find((option) => option.category === "model" && option.kind === "select") ?? null;
+  const modeOption = options.find((option) => option.category === "mode" && option.kind === "select") ?? null;
+  const modeChoices = modeOption?.choices ?? offers?.offers?.modes?.available ?? [];
+  const currentMode = modeOption ? String(modeOption.currentValue) : (offers?.offers?.modes?.current ?? "");
+  const refused = (error: Error) => setProblem(`It did not take that: ${error.message}`);
+  const choose = (option: string, value: string) => offers?.choose(option, value).catch(refused);
+  const chooseMode = (value: string) => (modeOption ? offers?.choose(modeOption.id, value).catch(refused) : offers?.mode(value).catch(refused));
   // What the agent offers to be asked with a slash, while a slash is all
   // that has been typed.
   const asked = /^\/(\S*)$/.exec(text)?.[1];
@@ -359,6 +490,14 @@ function Composer({
             <Clip />
             <span>Attach</span>
           </button>
+          {model ? <Offer label="Model" value={String(model.currentValue)} choices={model.choices} onChoose={(value) => void choose(model.id, value)} /> : null}
+          {modeChoices.length > 1 ? <Offer label="How it works" value={currentMode} choices={modeChoices} onChoose={(value) => void chooseMode(value)} /> : null}
+          {apps ? (
+            <button type="button" className="k-btn k-quiet" aria-pressed={apps.shown} onClick={apps.toggle}>
+              <Tiles />
+              <span>Apps</span>
+            </button>
+          ) : null}
           {problem ? <span className="k-caption k-is-danger">{problem}</span> : null}
         </div>
         <div className="k-inline w-tight">
@@ -385,6 +524,8 @@ function Thread({
   running,
   commands = [],
   usage = "",
+  offers,
+  apps,
   more,
   onEarlier,
   onSay,
@@ -396,6 +537,8 @@ function Thread({
   running: boolean;
   commands?: AgentCommand[];
   usage?: string;
+  offers?: ReturnType<typeof useOffers>;
+  apps?: { shown: boolean; toggle: () => void };
   more: boolean;
   onEarlier: () => void;
   onSay: (saying: Saying) => Promise<void>;
@@ -438,7 +581,7 @@ function Thread({
           {children}
           <ThreadPrimitive.Messages components={{ Message: Said }} />
         </ThreadPrimitive.Viewport>
-        <Composer to={to} running={running} commands={commands} usage={usage} onSay={onSay} onStop={onStop} />
+        <Composer to={to} running={running} commands={commands} usage={usage} offers={offers} apps={apps} onSay={onSay} onStop={onStop} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );
@@ -456,28 +599,45 @@ export function ChatView({ chat }: { chat: Chat }) {
   const several = agents.length > 1;
   // What one agent offers and has used is said in its own chat; in a chat
   // of several it would be one agent's among others.
-  const only = several ? undefined : agents[0]?.participant_id;
+  const only = several ? undefined : agents[0];
+  const offers = useOffers(chat.chat_id, only?.participant_id, only ? (state.timeline.offers[only.participant_id] ?? 0) : 0);
+  const [appsShown, setAppsShown] = useState(false);
   return (
-    <Thread
-      groups={groups}
-      commands={only ? (state.timeline.commands[only] ?? []) : []}
-      usage={only ? used(state.timeline.usage[only]) : ""}
-      to={several ? `${to}. Name who it is for with @` : to}
-      running={busy}
-      more={state.more}
-      onEarlier={() => void readEarlier(chat.chat_id)}
-      onSay={(saying) => act.say(chat.chat_id, saying)}
-      onStop={() => void act.stop(chat.chat_id)}
-    >
-      {state.status === "loading" ? <div className="k-caption">Reading the chat…</div> : null}
-      {state.status === "failed" ? <div className="k-notice k-danger">The chat could not be read: {state.problem}</div> : null}
-      {state.status === "ready" && groups.length === 0 ? (
-        <div className="k-empty">
-          <span className="k-title">Nothing has been said here yet.</span>
-          <span>Write to {to} below.</span>
-        </div>
+    <>
+      <Thread
+        groups={groups}
+        commands={only ? (state.timeline.commands[only.participant_id] ?? []) : []}
+        usage={only ? used(state.timeline.usage[only.participant_id]) : ""}
+        offers={only ? offers : undefined}
+        apps={only ? { shown: appsShown, toggle: () => setAppsShown(!appsShown) } : undefined}
+        to={several ? `${to}. Name who it is for with @` : to}
+        running={busy}
+        more={state.more}
+        onEarlier={() => void readEarlier(chat.chat_id)}
+        onSay={(saying) => act.say(chat.chat_id, saying)}
+        onStop={() => void act.stop(chat.chat_id)}
+      >
+        {state.status === "loading" ? <div className="k-caption">Reading the chat…</div> : null}
+        {state.status === "failed" ? <div className="k-notice k-danger">The chat could not be read: {state.problem}</div> : null}
+        {state.status === "ready" && groups.length === 0 ? (
+          <div className="k-empty">
+            <span className="k-title">Nothing has been said here yet.</span>
+            <span>Write to {to} below.</span>
+          </div>
+        ) : null}
+      </Thread>
+      {only ? (
+        <ChatApps
+          chat={chat.chat_id}
+          agent={only.participant_id}
+          name={only.name}
+          brought={state.timeline.brought[only.participant_id] ?? 0}
+          shown={appsShown}
+          onShow={() => setAppsShown(true)}
+          onHide={() => setAppsShown(false)}
+        />
       ) : null}
-    </Thread>
+    </>
   );
 }
 

@@ -269,6 +269,14 @@ pub(super) async fn route_chats(
                 Err(error) => error_response(&error),
             }
         }
+        (
+            &Method::GET | &Method::POST,
+            ["api", "chats", chat_id, "agents", agent_id, "session"],
+        ) => json_result(
+            state
+                .session_in_chat(chat_id, agent_id, method == Method::POST)
+                .await,
+        ),
         (&Method::GET, ["api", "questions", question_id]) => {
             json_result(state.question_in_full(question_id).await)
         }

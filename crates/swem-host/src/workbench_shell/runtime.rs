@@ -83,6 +83,8 @@ pub(super) struct ChatRuntime {
     asked: tokio::sync::Mutex<BTreeMap<String, Asked>>,
     /// The editor this process is the door of, when it is one.
     editor: std::sync::OnceLock<Editor>,
+    /// Held while a session is being opened.
+    opening: tokio::sync::Mutex<()>,
 }
 
 /// An editor's door: what it says is carried out here, with the files the
@@ -427,6 +429,72 @@ impl WorkbenchShellState {
         .map_err(ledger_refusal)
     }
 
+    /// The session an agent has in a chat, for a page that wants what only
+    /// a live session has: what the engine lets a person choose, and the
+    /// Apps its servers bring. With `open`, a session that is not live is
+    /// opened - the engine starts; without, nothing is started and a
+    /// session that is not live is said not to be.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a chat or an agent that does not exist, an agent that is
+    /// not in the chat, and whatever refuses the session when it is opened.
+    pub async fn session_in_chat(
+        self: &Arc<Self>,
+        chat_id: &str,
+        agent_id: &str,
+        open: bool,
+    ) -> Result<Value, WorkbenchShellError> {
+        let key = (chat_id.to_owned(), agent_id.to_owned());
+        let live = self.chat_runtime.live.lock().await.get(&key).cloned();
+        if let Some(connection_id) = live
+            && let Ok(connection) = self.connection(&connection_id).await
+            && !matches!(connection.control.phase(), NativeSessionPhase::Finished)
+        {
+            return Ok(json!({ "connection_id": connection_id }));
+        }
+        if !open {
+            return Ok(json!({ "connection_id": null }));
+        }
+        let (chat, agent) = key.clone();
+        let (chat, agent, session) = self
+            .with_ledger(move |ledger| {
+                let found = ledger.chat(&chat)?;
+                let who = ledger.participant(&agent)?;
+                let session = ledger.current_session(&chat, &agent)?;
+                Ok((found, who, session))
+            })
+            .await
+            .map_err(ledger_refusal)?;
+        if !chat
+            .members
+            .iter()
+            .any(|member| member.participant_id == agent.participant_id)
+        {
+            return Err(WorkbenchShellError::Invalid(format!(
+                "@{} is not in this chat",
+                agent.handle
+            )));
+        }
+        let profile_id = agent.profile_id.clone().ok_or_else(|| {
+            WorkbenchShellError::Conflict(format!(
+                "@{} has no agent behind it any more",
+                agent.handle
+            ))
+        })?;
+        let (connection_id, _fresh) = self
+            .connection_of_session(
+                &chat.chat_id,
+                &agent.participant_id,
+                session.as_ref(),
+                &profile_id,
+            )
+            .await?;
+        // Somebody lets go of it when the agent has been idle.
+        self.set_to_work(&agent.participant_id);
+        Ok(json!({ "connection_id": connection_id }))
+    }
+
     /// The connection the agent is live on in the chat, opened when it has
     /// none, and whether its session there is a fresh one.
     async fn connection_in_chat(
@@ -434,10 +502,27 @@ impl WorkbenchShellState {
         prepared: &Prepared,
         profile_id: &str,
     ) -> Result<(String, bool), WorkbenchShellError> {
-        let key = (
-            prepared.chat.chat_id.clone(),
-            prepared.agent.participant_id.clone(),
-        );
+        self.connection_of_session(
+            &prepared.chat.chat_id,
+            &prepared.agent.participant_id,
+            prepared.session.as_ref(),
+            profile_id,
+        )
+        .await
+    }
+
+    async fn connection_of_session(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        session: Option<&ChatSession>,
+        profile_id: &str,
+    ) -> Result<(String, bool), WorkbenchShellError> {
+        // One session is opened at a time, so a page asking for an agent's
+        // session and a worker about to give it a message open one between
+        // them, not one each.
+        let _opening = self.chat_runtime.opening.lock().await;
+        let key = (chat_id.to_owned(), agent_id.to_owned());
         let known = self.chat_runtime.live.lock().await.get(&key).cloned();
         if let Some(connection_id) = known {
             let alive = self
@@ -465,11 +550,11 @@ impl WorkbenchShellState {
             auth_method_id: None,
             file_callbacks: files.clone(),
             place: Some(ChatPlace {
-                chat_id: prepared.chat.chat_id.clone(),
+                chat_id: chat_id.to_owned(),
                 why_the_last_ended: why.to_owned(),
             }),
         };
-        let continued = match &prepared.session {
+        let continued = match session {
             Some(session) => Some(
                 self.open_as(opening(
                     ShellConnectionMode::Resume,

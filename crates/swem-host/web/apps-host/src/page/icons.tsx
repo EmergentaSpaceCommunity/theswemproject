@@ -88,3 +88,4 @@ export const Copy = (props: Sized) => (
     <path d="M5 15V5a1 1 0 011-1h10" />
   </Sign>
 );
+export const Down = (props: Sized) => <Sign {...props}><path d="M6 9l6 6 6-6" /></Sign>;

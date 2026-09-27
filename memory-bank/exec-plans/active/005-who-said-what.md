@@ -72,7 +72,7 @@ turn's ten-minute deadline.
     id an editor keeps is the chat's; a delivery is claimed by the door whose name begins the
     message's; the editor is asked what the agent asks, and the answer is kept in the chat
 - [x] 4 stream and routes: `GET /api/stream` (server-sent events, `Last-Event-ID` or `?cursor=`, `state` whole for a page with no place, `reset` for a place the record never reached); `/api/people`, `/api/chats`, `/api/chats/{id}` (read, rename), `.../messages`, `.../stop`, `/api/questions/{id}` and `.../answer` (`stream.rs`). The old page's routes stand until step 6
-- [ ] 5 page
+- [x] 5 page
   - [x] 5a the spike: the chat library's primitives with an external store render several
     senders by name with no Tailwind; unfinished marks are closed while an agent writes; one
     file, built as before
@@ -87,9 +87,13 @@ turn's ten-minute deadline.
   - [x] 5c in the composer: what the agent offers with a slash, how much of its memory it
     has used, and what an App said the person is looking at, which goes with their words as
     part of the message and is given to an agent that attaches the App's server
-  - [ ] 5d what needs the engine's live session from the page: the model and the mode the
-    session offers, the Apps an agent's servers bring into its chat, a form or a link an
-    agent asks for
+  - [x] 5d what needs the engine's live session from the page: the model and the way of
+    working the session offers, chosen in the composer; the Apps an agent's servers bring, in
+    a panel beside its chat, and the App a tool of the agent brought, shown as it arrives; a
+    form or a link an agent asks for, answered in the chat. The page asks the host for the
+    agent's session in the chat; the engine is started only for what a person asked to see
+  - [ ] an App's tool that is only for a person, offered as a form when the App cannot be
+    drawn (the old page's "structured fallback"), is not on the new page yet
 - [ ] 6 removal
 
 ## Discoveries
