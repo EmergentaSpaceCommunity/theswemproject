@@ -14,8 +14,8 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::chat_ledger::{new_id, now_ms};
-use crate::{RoutingError, RoutingLedger, SurfaceEventSource};
+use crate::chat_ledger::{chat_event_in, new_id, now_ms};
+use crate::{RoutingError, RoutingLedger};
 
 /// Where a delivery is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -141,29 +141,6 @@ pub struct Question {
 
 fn ms(value: Option<i64>) -> Option<u64> {
     value.and_then(|value| u64::try_from(value).ok())
-}
-
-/// An event of a chat that belongs to no route: the host's own record of
-/// what the chat owes and waits for.
-fn chat_event_in(
-    transaction: &Transaction<'_>,
-    chat_id: &str,
-    kind: &str,
-    payload: &Value,
-) -> Result<i64, RoutingError> {
-    transaction.execute(
-        "INSERT INTO events(route_id, chat_id, event_id, kind, source, payload_json, at_ms)
-         VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            chat_id,
-            new_id("e")?,
-            kind,
-            serde_json::to_string(&SurfaceEventSource::Host)?,
-            serde_json::to_string(payload)?,
-            now_ms()
-        ],
-    )?;
-    Ok(transaction.last_insert_rowid())
 }
 
 const DELIVERY_COLUMNS: &str = "delivery_id, chat_id, agent_id, message_id, state, outcome, \

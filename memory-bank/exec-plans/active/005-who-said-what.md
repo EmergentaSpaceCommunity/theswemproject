@@ -67,7 +67,7 @@ turn's ten-minute deadline.
     (`session.rs`), what was left running settled when the product starts
   - [ ] 3b the clock says its message into a chat as a schedule
   - [ ] 3c the editor door says its message into a chat and carries out its own delivery
-- [ ] 4 stream and routes
+- [x] 4 stream and routes: `GET /api/stream` (server-sent events, `Last-Event-ID` or `?cursor=`, `state` whole for a page with no place, `reset` for a place the record never reached); `/api/people`, `/api/chats`, `/api/chats/{id}` (read, rename), `.../messages`, `.../stop`, `/api/questions/{id}` and `.../answer` (`stream.rs`). The old page's routes stand until step 6
 - [ ] 5 page
 - [ ] 6 removal
 
@@ -108,6 +108,9 @@ turn's ten-minute deadline.
   one waits for an answer; the question is read and answered after nobody looked; a turn is
   stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
   deleted the chat goes on in a fresh one that is given what was said and the transcript.
+- 2026-09-27, step 4: `chat_runtime` gains the page's walk over HTTP: the state whole, a chat
+  started, a message said, every event on the one stream in order with each message's sender,
+  the chat read and renamed beside it, a page coming back to its place, a lost place reset.
 
 ## Outcome / remaining gaps
 

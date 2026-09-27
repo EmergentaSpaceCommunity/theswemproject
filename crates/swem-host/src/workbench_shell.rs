@@ -56,6 +56,8 @@ pub use model_context::{BindModelContextBody, ModelContext, ModelContextBlock};
 mod chats;
 #[path = "workbench_shell/runtime.rs"]
 mod runtime;
+#[path = "workbench_shell/stream.rs"]
+mod stream;
 pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
 #[path = "workbench_shell/schedules.rs"]
 mod schedules;
@@ -4123,6 +4125,11 @@ async fn route_shell(
         // learns neither which routes exist nor what they wanted.
         return respond_json(StatusCode::FORBIDDEN, &json!({"error": "forbidden"}));
     }
+    let request =
+        match stream::route_chats(state, &method, &segments, query.as_deref(), request).await {
+            Ok(response) => return response,
+            Err(request) => request,
+        };
     match (&method, segments.as_slice()) {
         (&Method::GET, []) => {
             // Opening the address the product printed is how a person hands

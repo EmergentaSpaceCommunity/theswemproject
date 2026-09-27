@@ -419,6 +419,7 @@ fn what_an_engine_says_in_a_session_is_the_chats() {
             .map(|event| event.kind.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "chat/started",
             "chat/message",
             "host/prompt_submitted",
             "acp/session_update",
@@ -426,9 +427,9 @@ fn what_an_engine_says_in_a_session_is_the_chats() {
             "acp/prompt_response"
         ]
     );
-    assert!(happened[0].agent_id.is_none());
+    assert!(happened[..2].iter().all(|event| event.agent_id.is_none()));
     assert!(
-        happened[1..]
+        happened[2..]
             .iter()
             .all(|event| event.agent_id.as_deref() == Some(ada.participant_id.as_str()))
     );

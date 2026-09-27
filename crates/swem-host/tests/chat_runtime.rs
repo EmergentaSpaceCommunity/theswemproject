@@ -584,3 +584,233 @@ async fn a_chat_goes_on_when_the_engine_no_longer_has_its_session() {
     state.let_go_of(None).await;
     fs::remove_dir_all(root).expect("remove fixture root");
 }
+
+/// A short request of a page, answered in JSON.
+async fn ask(
+    address: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: &Value,
+) -> (u16, Value) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let body = if body.is_null() {
+        String::new()
+    } else {
+        body.to_string()
+    };
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("connect");
+    stream
+        .write_all(
+            format!(
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("ask");
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.expect("answer");
+    let status = answer
+        .split_whitespace()
+        .nth(1)
+        .expect("a status")
+        .parse()
+        .expect("a number");
+    let (_, said) = answer.split_once("\r\n\r\n").expect("a body");
+    (status, serde_json::from_str(said).expect("JSON"))
+}
+
+/// The stream a page follows, read frame by frame.
+struct Following {
+    stream: tokio::net::TcpStream,
+    read: String,
+}
+
+impl Following {
+    async fn from(address: std::net::SocketAddr, place: Option<u64>) -> Self {
+        use tokio::io::AsyncWriteExt as _;
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        let place = place.map_or_else(String::new, |place| format!("Last-Event-ID: {place}\r\n"));
+        stream
+            .write_all(
+                format!("GET /api/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n{place}\r\n").as_bytes(),
+            )
+            .await
+            .expect("ask for the stream");
+        Self {
+            stream,
+            read: String::new(),
+        }
+    }
+
+    /// The next frame: its name, its place and what it says.
+    async fn next(&mut self) -> (String, u64, Value) {
+        use tokio::io::AsyncReadExt as _;
+        loop {
+            // A frame is `id`, `event` and `data`, each on a line of its own.
+            if let Some(at) = self.read.find("data: ")
+                && let Some(end) = self.read[at..].find('\n')
+            {
+                let before = self.read[..at].to_owned();
+                let data = self.read[at + 6..at + end].to_owned();
+                self.read.drain(..at + end);
+                let line = |name: &str| {
+                    before
+                        .lines()
+                        .rev()
+                        .find_map(|line| line.strip_prefix(name))
+                        .unwrap_or("")
+                        .to_owned()
+                };
+                return (
+                    line("event: "),
+                    line("id: ").parse().expect("a place"),
+                    serde_json::from_str(&data).expect("JSON"),
+                );
+            }
+            let mut bytes = [0_u8; 8192];
+            let count = tokio::time::timeout(Duration::from_secs(20), self.stream.read(&mut bytes))
+                .await
+                .expect("the stream went quiet for twenty seconds")
+                .expect("read the stream");
+            assert!(count > 0, "the stream ended");
+            self.read
+                .push_str(&String::from_utf8_lossy(&bytes[..count]));
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one page from opening to coming back, in the order a person does it"
+)]
+async fn a_page_follows_every_chat_by_one_stream_and_comes_back_to_its_place() {
+    let root = fixture_root("stream");
+    let (state, _ledger) = shell_of_two(&root);
+    let handle = swem_host::serve_workbench_http(Arc::clone(&state), ([127, 0, 0, 1], 0).into())
+        .await
+        .expect("serve");
+    let address = handle.local_addr;
+
+    // A page that comes with no place is given the state whole.
+    let mut page = Following::from(address, None).await;
+    let (name, began, now) = page.next().await;
+    assert_eq!(name, "state");
+    assert_eq!(now["head"], began);
+    assert_eq!(now["owner"]["kind"], "person");
+    assert_eq!(now["participants"].as_array().expect("everybody").len(), 3);
+    assert_eq!(now["chats"], json!([]));
+
+    let (status, chat) = ask(
+        address,
+        "POST",
+        "/api/chats",
+        &json!({ "agents": ["coder"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{chat}");
+    let chat_id = chat["chat_id"].as_str().expect("a chat").to_owned();
+    let (status, refused) = ask(address, "POST", "/api/chats", &json!({ "agents": [] })).await;
+    assert_eq!(status, 400, "{refused}");
+    let (status, said) = ask(
+        address,
+        "POST",
+        &format!("/api/chats/{chat_id}/messages"),
+        &json!({ "text": "hello", "client_ref": "m-1" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{said}");
+    assert_eq!(said["deliveries"][0]["state"], "queued");
+
+    // Everything arrives on the one stream, in the one order, the messages
+    // with who sent them.
+    let mut kinds = Vec::new();
+    let mut messages = Vec::new();
+    let mut place = began;
+    loop {
+        let (name, at, event) = page.next().await;
+        assert_eq!(name, "event");
+        assert!(at > place, "places only grow");
+        place = at;
+        assert_eq!(event["chat_id"], chat_id.as_str());
+        let kind = event["kind"].as_str().expect("a kind").to_owned();
+        if let Some(message) = event.get("message") {
+            messages.push((
+                message["sender_id"].as_str().expect("a sender").to_owned(),
+                message["channel"].as_str().expect("a channel").to_owned(),
+            ));
+        }
+        let done = kind == "chat/delivery" && event["payload"]["state"] == "done";
+        kinds.push(kind);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(
+        kinds[..3],
+        ["chat/started", "chat/message", "chat/delivery"]
+    );
+    assert!(kinds.iter().any(|kind| kind == "acp/session_update"));
+    let owner = now["owner"]["participant_id"].as_str().expect("owner");
+    let coder = chat["members"][1]["participant_id"]
+        .as_str()
+        .expect("agent");
+    assert_eq!(
+        messages,
+        vec![
+            (owner.to_owned(), "workbench".to_owned()),
+            (coder.to_owned(), "agent".to_owned())
+        ]
+    );
+
+    // The chat is read whole by a short request beside the stream.
+    let (status, read) = ask(
+        address,
+        "GET",
+        &format!("/api/chats/{chat_id}"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(read["chat"]["title"], "hello");
+    assert_eq!(read["messages"].as_array().expect("messages").len(), 2);
+    assert_eq!(read["deliveries"], json!([]));
+    let (status, renamed) = ask(
+        address,
+        "PATCH",
+        &format!("/api/chats/{chat_id}"),
+        &json!({ "title": "Greetings" }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(renamed["title"], "Greetings");
+    let (status, missing) = ask(address, "GET", "/api/chats/c_none", &Value::Null).await;
+    assert_eq!(status, 404, "{missing}");
+
+    // A page that comes back with its place is given what it missed and
+    // nothing it has.
+    drop(page);
+    let mut back = Following::from(address, Some(place)).await;
+    let (name, at, event) = back.next().await;
+    assert_eq!(name, "event");
+    assert!(at > place);
+    assert_eq!(event["kind"], "chat/renamed");
+    assert_eq!(event["payload"]["title"], "Greetings");
+
+    // A place the record never reached is a place in another record.
+    let mut lost = Following::from(address, Some(place + 1_000_000)).await;
+    let (name, _, now) = lost.next().await;
+    assert_eq!(name, "reset");
+    assert_eq!(now["chats"][0]["title"], "Greetings");
+
+    state.let_go_of(None).await;
+    drop(handle);
+    fs::remove_dir_all(root).expect("remove fixture root");
+}

@@ -373,6 +373,29 @@ pub(crate) fn keep_a_copy(connection: &Connection, path: &Path) -> Result<(), Ro
     Ok(())
 }
 
+/// An event of a chat that belongs to no route: the host's own record of
+/// what happened to the chat.
+pub(crate) fn chat_event_in(
+    transaction: &Transaction<'_>,
+    chat_id: &str,
+    kind: &str,
+    payload: &Value,
+) -> Result<i64, RoutingError> {
+    transaction.execute(
+        "INSERT INTO events(route_id, chat_id, event_id, kind, source, payload_json, at_ms)
+         VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            chat_id,
+            new_id("e")?,
+            kind,
+            serde_json::to_string(&SurfaceEventSource::Host)?,
+            serde_json::to_string(payload)?,
+            now_ms()
+        ],
+    )?;
+    Ok(transaction.last_insert_rowid())
+}
+
 fn text_of_blocks(content: &Value) -> String {
     content
         .as_array()
@@ -972,8 +995,50 @@ impl RoutingLedger {
             &everyone,
             Some(now_ms()),
         )?;
+        chat_event_in(
+            &transaction,
+            &chat,
+            "chat/started",
+            &json!({ "created_by": created_by, "members": everyone }),
+        )?;
         transaction.commit()?;
         self.chat(&chat)
+    }
+
+    /// Call a chat something else. Called nothing, it is known by its first
+    /// words again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError::InvalidBinding`] for a chat that does not
+    /// exist and for a name that is not one line.
+    pub fn rename_chat(&mut self, chat_id: &str, title: &str) -> Result<Chat, RoutingError> {
+        let title = title.trim();
+        if title.chars().count() > 160 || title.chars().any(char::is_control) {
+            return Err(RoutingError::InvalidBinding(
+                "a chat's name is one line of at most a hundred and sixty characters".into(),
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let renamed = transaction.execute(
+            "UPDATE chats SET title = ?2 WHERE chat_id = ?1",
+            params![chat_id, title],
+        )?;
+        if renamed == 0 {
+            return Err(RoutingError::InvalidBinding(format!(
+                "there is no chat {chat_id}"
+            )));
+        }
+        chat_event_in(
+            &transaction,
+            chat_id,
+            "chat/renamed",
+            &json!({ "title": title }),
+        )?;
+        transaction.commit()?;
+        self.chat(chat_id)
     }
 
     /// The chat a route belongs to; a route that has none gets one, of the
@@ -1391,6 +1456,38 @@ impl RoutingLedger {
             "WHERE e.sequence > ?1 ORDER BY e.sequence ASC LIMIT ?2",
             &[&after, &limit],
         )
+    }
+
+    /// Everything that happened after a place, each with the message it
+    /// is the place of, when it is the place of one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] when the ledger cannot be read.
+    pub fn happened_with_what_was_said(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<(ChatEvent, Option<Message>)>, RoutingError> {
+        let events = self.happened_after(after, limit)?;
+        let Some(last) = events.last() else {
+            return Ok(Vec::new());
+        };
+        let from = i64::try_from(after).map_err(|_| RoutingError::CursorOverflow(after))?;
+        let through = i64::try_from(last.sequence)
+            .map_err(|_| RoutingError::CursorOverflow(last.sequence))?;
+        let mut said: BTreeMap<u64, Message> = self
+            .messages_where("WHERE sequence > ?1 AND sequence <= ?2", &[&from, &through])?
+            .into_iter()
+            .map(|message| (message.sequence, message))
+            .collect();
+        Ok(events
+            .into_iter()
+            .map(|event| {
+                let message = said.remove(&event.sequence);
+                (event, message)
+            })
+            .collect())
     }
 
     /// Where the record ends.
