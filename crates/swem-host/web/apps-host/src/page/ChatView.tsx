@@ -88,12 +88,8 @@ function Ask({ question, agent }: { question: Question; agent: Participant | und
   const [sent, setSent] = useState(false);
   const name = agent?.name ?? "The agent";
   if (question.state !== "waiting") {
-    const said = question.state === "lapsed" ? "Nobody answered before the turn ended." : question.answer?.name || question.answer?.action || "Answered.";
-    return (
-      <div className="k-notice">
-        <span>{question.asked.title ? `${question.asked.title}: ` : ""}{said}</span>
-      </div>
-    );
+    const said = question.state === "lapsed" ? "Nobody answered before the turn ended." : `You answered: ${question.answer?.name || question.answer?.action || "yes"}.`;
+    return <div className="k-notice">{said}</div>;
   }
   if (question.kind !== "permission") {
     return (

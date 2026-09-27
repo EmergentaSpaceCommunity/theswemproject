@@ -82,6 +82,8 @@ turn's ten-minute deadline.
     theme switch; Files, Terminal and Settings of the agent as tabs. Kit gained `.k-caption`,
     `.k-avatar`, `.k-status`, `.k-badge`, `.k-rail`, `.k-rail-item`, `.k-segmented`,
     `.k-switch`, `.k-notice`, `.k-bubble`, `.k-toolcall`, `.k-prose`, `.k-code`, `.k-menu`
+  - [x] the new-agent form: a name and the engine it stands on, so a second agent of one
+    engine is made from the page
   - [ ] 5c in the composer: the model and the mode the session offers, what the agent offers
     with a slash, what an App said the person is looking at; Apps an agent's servers bring,
     in its chat; a form or a link an agent asks for; how much of its memory it has used
@@ -139,6 +141,12 @@ turn's ten-minute deadline.
   one waits for an answer; the question is read and answered after nobody looked; a turn is
   stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
   deleted the chat goes on in a fresh one that is given what was said and the transcript.
+- 2026-09-27, the acceptance scenario, by hand on the same copy with the real engine, the
+  product restarted in between: a second agent was made from the page on the same engine; the
+  first was asked to write a file and asked before it did; the page was closed and a new
+  window showed the question still waiting; while it waited the second agent was asked
+  something in its own chat and answered; the question was answered and the turn finished
+  with the file written. The options of a question are the engine's own words.
 - 2026-09-27, step 5b, by hand on a copy of the owner's data root with the real engine: the
   ledger was copied to `routes.jsonl.v1` and became chats; the earlier chat is read with each
   message under its sender; a message was sent from the page, the agent was shown working

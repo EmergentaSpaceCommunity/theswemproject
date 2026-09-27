@@ -3,16 +3,16 @@
 import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
-import { Onboarding } from "../agent/Onboarding.tsx";
-import { sessionStore, useSession } from "../agent/store.ts";
+import { sessionStore } from "../agent/store.ts";
 import { Guard } from "../Guard.tsx";
 import { ServerApp } from "../spaces/ServerApp.tsx";
 import { StoreSpace } from "../store/StoreSpace.tsx";
 import { AgentView, GroupView } from "./AgentView.tsx";
+import { NewAgent } from "./NewAgent.tsx";
 import { NewChat } from "./NewChat.tsx";
 import { go, usePlace } from "./place.ts";
 import { Rail, useSpaces } from "./Rail.tsx";
-import { act, follow, world } from "./world.ts";
+import { follow, world } from "./world.ts";
 
 function Home() {
   const participants = useStore(world, (state) => state.participants);
@@ -27,25 +27,6 @@ function Home() {
     else go({ at: "new-agent" });
   }, [ready, first]);
   return <main className="w-main" />;
-}
-
-function NewAgent() {
-  const { profiles } = useSession();
-  const participants = useStore(world, (state) => state.participants);
-  const [before] = useState(() => new Set(profiles.map((profile) => profile.profile_id)));
-  // Made: the product goes to it as soon as the host says who it is.
-  useEffect(() => {
-    const made = profiles.find((profile) => !before.has(profile.profile_id));
-    if (!made) return;
-    const agent = Object.values(participants).find((one) => one.profile_id === made.profile_id);
-    if (agent) go({ at: "agent", agent: agent.participant_id, tab: "settings" });
-    else void act.people();
-  }, [profiles, participants, before]);
-  return (
-    <main className="w-main w-scroll">
-      <Onboarding />
-    </main>
-  );
 }
 
 export function Workbench() {

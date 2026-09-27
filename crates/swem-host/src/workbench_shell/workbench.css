@@ -77,3 +77,5 @@ html, body, #workbench-root { height: 100%; }
   .w-rail { width: 220px; }
   .w-side { display: none; }
 }
+
+.w-form { width: min(560px, calc(100% - 48px)); margin: 48px auto; display: flex; flex-direction: column; gap: 18px; }
