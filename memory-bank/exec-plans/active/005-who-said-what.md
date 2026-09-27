@@ -95,6 +95,16 @@ turn's ten-minute deadline.
   - [ ] an App's tool that is only for a person, offered as a form when the App cannot be
     drawn (the old page's "structured fallback"), is not on the new page yet
 - [ ] 6 removal
+  - [x] 6a the old page's modules: the space bar, the rail of lanes, the conversation, its
+    header and composer, the Dev drawer, the permission and form dialogs, the surfaces rail,
+    first run; the old store is cut down to what an agent is set up with
+  - [x] 6b the addresses only the old page used (`/api/connections` to open, prompt, cancel,
+    disconnect, close, its questions and its context; `/api/routes/*`;
+    `/api/profiles/{id}/sessions`), `Correspondent` and the line it appended, the
+    connection's own context. The content tests drive their turns through chats
+  - [x] 6c the host's browser suites that drove the old page's lifecycle, with their drivers
+  - [ ] 6d the gate's drivers go to places by their address and talk through the new
+    composer; the Apps suites of the host are walked on the new page
 
 ## Discoveries
 

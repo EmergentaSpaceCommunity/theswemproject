@@ -1,19 +1,18 @@
-//! What an App said a person is looking at, given to the agent with the
-//! next turn.
+//! What an App said a person is looking at, given to the agent with what
+//! the person says.
 //!
 //! An MCP App may tell its host what the model should know
 //! (`ui/update-model-context`): content blocks, each update replacing the
-//! one before, sent with the next turn a person writes. The host interprets
-//! none of it. It keeps the last update per connection, refuses context
-//! from a server the session does not attach - the agent could not follow a
-//! link into it - and hands the blocks to the agent as baseline content, so
-//! no capability has to be negotiated and the route keeps them verbatim.
+//! one before. The page keeps the last one and sends it with the person's
+//! next message; it is part of that message in the chat's record. The host
+//! interprets none of it. An agent is given it when it attaches the App's
+//! server - otherwise it could not follow a link into it - as baseline
+//! content, so no capability has to be negotiated.
 
 use agent_client_protocol::schema::v1::{ContentBlock, ResourceLink, TextContent};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-use super::{Ordering, WorkbenchShellError, WorkbenchShellState};
+use super::WorkbenchShellError;
 
 /// How many blocks one update may carry.
 const MAX_BLOCKS: usize = 16;
@@ -116,92 +115,10 @@ pub(super) fn validate(body: &BindModelContextBody) -> Result<(), WorkbenchShell
     Ok(())
 }
 
-impl WorkbenchShellState {
-    /// Keep what an App of `server_name` said as the context of this
-    /// connection's next turns. Requires an open connection whose profile
-    /// attaches the same server, so the agent can follow what it is given.
-    /// Nothing is sent to the agent here; the next prompt carries it.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection; conflict for a server the
-    /// connection does not attach; invalid for an empty or oversized context.
-    pub async fn bind_model_context(
-        &self,
-        connection_id: &str,
-        body: BindModelContextBody,
-    ) -> Result<ModelContext, WorkbenchShellError> {
-        validate(&body)?;
-        let connection = self.connection(connection_id).await?;
-        if !connection
-            .attachments
-            .iter()
-            .any(|attachment| attachment.binding.server_name == body.server_name)
-        {
-            return Err(WorkbenchShellError::Conflict(format!(
-                "connection {connection_id} does not attach {}; the agent could not follow what \
-                 it is given",
-                body.server_name
-            )));
-        }
-        let context = ModelContext {
-            server_name: body.server_name,
-            content: body.content,
-        };
-        *connection.model_context.lock().await = Some(context.clone());
-        let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
-        self.append_context_event(
-            &connection,
-            event,
-            "host/agent_context_bound",
-            serde_json::to_value(&context)
-                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?,
-        )
-        .await?;
-        Ok(context)
-    }
-
-    /// Let go of the context; later prompts carry none.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection.
-    pub async fn clear_model_context(
-        &self,
-        connection_id: &str,
-    ) -> Result<serde_json::Value, WorkbenchShellError> {
-        let connection = self.connection(connection_id).await?;
-        let previous = connection.model_context.lock().await.take();
-        if let Some(previous) = previous {
-            let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
-            self.append_context_event(
-                &connection,
-                event,
-                "host/agent_context_cleared",
-                json!({ "server_name": previous.server_name }),
-            )
-            .await?;
-        }
-        Ok(json!({ "cleared": true }))
-    }
-
-    /// The context of one open connection, if any.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection.
-    pub async fn model_context(
-        &self,
-        connection_id: &str,
-    ) -> Result<Option<ModelContext>, WorkbenchShellError> {
-        let connection = self.connection(connection_id).await?;
-        let context = connection.model_context.lock().await.clone();
-        Ok(context)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]

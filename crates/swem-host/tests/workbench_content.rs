@@ -119,6 +119,116 @@ fn json_body(response: &HttpResponse) -> Value {
     serde_json::from_slice(&response.body).expect("JSON response")
 }
 
+/// Start a chat with an agent, as a page does.
+async fn chat_with(address: SocketAddr, profile: &str) -> Value {
+    let started = request(
+        address,
+        "POST",
+        "/api/chats",
+        &[("Content-Type", "application/json")],
+        json!({ "agents": [profile] }).to_string().as_bytes(),
+    )
+    .await;
+    assert_eq!(
+        started.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&started.body)
+    );
+    json_body(&started)
+}
+
+/// Say something in a chat and read the chat until the turn it began has
+/// ended: how it ended, what the agent said, and what it handed back.
+async fn say(address: SocketAddr, chat: &Value, saying: &Value) -> Value {
+    let chat_id = chat["chat_id"].as_str().expect("chat id");
+    let said = request(
+        address,
+        "POST",
+        &format!("/api/chats/{chat_id}/messages"),
+        &[("Content-Type", "application/json")],
+        saying.to_string().as_bytes(),
+    )
+    .await;
+    assert_eq!(said.status, 200, "{}", String::from_utf8_lossy(&said.body));
+    let said = json_body(&said);
+    let message = said["message"]["message_id"].as_str().expect("message id");
+    let after = said["message"]["sequence"].as_u64().expect("a place");
+    let began = std::time::Instant::now();
+    loop {
+        let page = json_body(
+            &request(
+                address,
+                "GET",
+                &format!("/api/chats/{chat_id}?limit=2000"),
+                &[],
+                &[],
+            )
+            .await,
+        );
+        let events = page["events"].as_array().expect("events");
+        let ended = events.iter().find(|event| {
+            event["kind"] == "chat/delivery"
+                && event["payload"]["message_id"] == message
+                && !matches!(
+                    event["payload"]["state"].as_str(),
+                    Some("queued" | "running")
+                )
+        });
+        if let Some(ended) = ended {
+            let since = |kind: &str| -> Vec<Value> {
+                events
+                    .iter()
+                    .filter(|event| {
+                        event["kind"] == kind && event["sequence"].as_u64() > Some(after)
+                    })
+                    .map(|event| event["payload"].clone())
+                    .collect()
+            };
+            let reply = page["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .rev()
+                .find(|said| said["channel"] == "agent" && said["sequence"].as_u64() > Some(after))
+                .map_or(Value::Null, |said| said["text"].clone());
+            return json!({
+                "state": ended["payload"]["state"],
+                "outcome": ended["payload"]["outcome"],
+                "reply_text": reply,
+                "artifacts": since("host/artifact_available"),
+                "artifact_issues": since("host/artifact_unavailable"),
+                "events": events,
+            });
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "the turn did not end in a minute"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The session of the engine a chat is in, for an oracle that reads the
+/// session's own events.
+fn route_of(root: &Path, chat: &Value) -> String {
+    let agent = chat["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .find(|member| member["kind"] == "agent")
+        .expect("an agent")["participant_id"]
+        .as_str()
+        .expect("agent id")
+        .to_owned();
+    RoutingLedger::open(&root.join("routes.sqlite3"))
+        .expect("open ledger")
+        .current_session(chat["chat_id"].as_str().expect("chat id"), &agent)
+        .expect("read session")
+        .expect("the chat holds a session")
+        .route_id
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -173,44 +283,19 @@ async fn bytes_survive_http_acp_output_range_disconnect_and_restart() {
         .as_str()
         .expect("uploaded descriptor id");
 
-    let opened = request(
+    let chat = chat_with(address, "content-agent").await;
+    let prompt = say(
         address,
-        "POST",
-        "/api/connections",
-        &[("Content-Type", "application/json")],
-        serde_json::to_string(&json!({
-            "profile_id": "content-agent",
-            "mode": "new",
-        }))
-        .expect("encode open")
-        .as_bytes(),
+        &chat,
+        &json!({ "text": "SWEM_CONTENT_MATRIX", "content_refs": [descriptor_id] }),
     )
     .await;
-    assert_eq!(opened.status, 200);
-    let opened = json_body(&opened);
-    let connection = opened["connection_id"].as_str().expect("connection id");
-    let route = opened["route_id"].as_str().expect("route id");
-    let prompt_json = serde_json::to_vec(&json!({
-        "content": [{"type": "text", "text": "SWEM_CONTENT_MATRIX"}],
-        "content_refs": [descriptor_id],
-    }))
-    .expect("encode prompt");
-    let prompt = request(
-        address,
-        "POST",
-        &format!("/api/connections/{connection}/prompt"),
-        &[("Content-Type", "application/json")],
-        &prompt_json,
-    )
-    .await;
-    assert_eq!(prompt.status, 200);
-    let prompt_text = String::from_utf8_lossy(&prompt.body);
+    assert_eq!(prompt["state"], "done", "{prompt}");
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     assert!(
-        !prompt_text.contains(&encoded),
-        "HTTP result leaked the blob body"
+        !prompt.to_string().contains(&encoded),
+        "the chat leaked the blob body"
     );
-    let prompt = json_body(&prompt);
     let artifact = prompt["artifacts"]
         .as_array()
         .and_then(|artifacts| artifacts.first())
@@ -238,17 +323,8 @@ async fn bytes_survive_http_acp_output_range_disconnect_and_restart() {
         .expect("agent byte oracle");
     assert_eq!(fs::read(&oracle).expect("read the byte oracle"), bytes);
 
-    let linked_prompt = request(
-        address,
-        "POST",
-        &format!("/api/connections/{connection}/prompt"),
-        &[("Content-Type", "application/json")],
-        br#"{"content":[{"type":"text","text":"SWEM_WORKSPACE_LINK"}]}"#,
-    )
-    .await;
-    assert_eq!(linked_prompt.status, 200);
-    let linked_prompt = json_body(&linked_prompt);
-    assert_eq!(linked_prompt["stop_reason"], "end_turn");
+    let linked_prompt = say(address, &chat, &json!({ "text": "SWEM_WORKSPACE_LINK" })).await;
+    assert_eq!(linked_prompt["state"], "done", "{linked_prompt}");
     assert_eq!(linked_prompt["reply_text"], "SWEM_WORKSPACE_LINK");
     let linked_artifacts = linked_prompt["artifacts"]
         .as_array()
@@ -307,18 +383,11 @@ async fn bytes_survive_http_acp_output_range_disconnect_and_restart() {
     );
     assert_eq!(partial.headers["repr-digest"], expected_digest);
 
-    let disconnected = request(
-        address,
-        "POST",
-        &format!("/api/connections/{connection}/disconnect"),
-        &[("Content-Type", "application/json")],
-        b"{}",
-    )
-    .await;
-    assert_eq!(disconnected.status, 200);
+    state.let_go_of(None).await;
+    let route = route_of(&root, &chat);
     let events = RoutingLedger::open(&root.join("routes.sqlite3"))
         .expect("reopen ledger")
-        .events_for_surface(route, "content-oracle", 1000)
+        .events_for_surface(&route, "content-oracle", 1000)
         .expect("read route events")
         .events;
     assert!(events.iter().any(|event| {
@@ -490,38 +559,14 @@ async fn prepared_podman_workbench_maps_only_its_bound_workspace_links() {
     let handle = serve_workbench_http(Arc::clone(&state), ([127, 0, 0, 1], 0).into())
         .await
         .expect("serve prepared Workbench");
-    let opened = request(
+    let chat = chat_with(handle.local_addr, "podman-content-agent").await;
+    let prompt = say(
         handle.local_addr,
-        "POST",
-        "/api/connections",
-        &[("Content-Type", "application/json")],
-        br#"{"profile_id":"podman-content-agent","mode":"new"}"#,
+        &chat,
+        &json!({ "text": "SWEM_PODMAN_WORKSPACE_LINK" }),
     )
     .await;
-    assert_eq!(
-        opened.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&opened.body)
-    );
-    let opened = json_body(&opened);
-    let connection = opened["connection_id"].as_str().expect("connection id");
-    let route = opened["route_id"].as_str().expect("route id");
-    let prompt = request(
-        handle.local_addr,
-        "POST",
-        &format!("/api/connections/{connection}/prompt"),
-        &[("Content-Type", "application/json")],
-        br#"{"content":[{"type":"text","text":"SWEM_PODMAN_WORKSPACE_LINK"}]}"#,
-    )
-    .await;
-    assert_eq!(
-        prompt.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&prompt.body)
-    );
-    let prompt = json_body(&prompt);
+    assert_eq!(prompt["state"], "done", "{prompt}");
     let artifacts = prompt["artifacts"].as_array().expect("artifact list");
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0]["name"], "podman-linked-output.bin");
@@ -541,15 +586,7 @@ async fn prepared_podman_workbench_maps_only_its_bound_workspace_links() {
         fs::read(workspace.join("podman-linked-output.bin")).expect("host bind output"),
         OUTPUT_BYTES
     );
-    let disconnected = request(
-        handle.local_addr,
-        "POST",
-        &format!("/api/connections/{connection}/disconnect"),
-        &[("Content-Type", "application/json")],
-        b"{}",
-    )
-    .await;
-    assert_eq!(disconnected.status, 200);
+    state.let_go_of(None).await;
     let exists = std::process::Command::new(&podman)
         .args(["container", "exists", &instance_id])
         .status()
@@ -561,7 +598,7 @@ async fn prepared_podman_workbench_maps_only_its_bound_workspace_links() {
     );
     let events = RoutingLedger::open(&root.join("routes.sqlite3"))
         .expect("open route ledger")
-        .events_for_surface(route, "podman-content-oracle", 1000)
+        .events_for_surface(&route_of(&root, &chat), "podman-content-oracle", 1000)
         .expect("read route events")
         .events;
     assert!(events.iter().any(|event| {
@@ -684,32 +721,19 @@ async fn partial_rich_output_survives_a_failed_prompt_turn() {
     let handle = serve_workbench_http(Arc::clone(&state), ([127, 0, 0, 1], 0).into())
         .await
         .expect("serve Workbench");
-    let opened = request(
+    let chat = chat_with(handle.local_addr, "partial-agent").await;
+    let failed = say(
         handle.local_addr,
-        "POST",
-        "/api/connections",
-        &[("Content-Type", "application/json")],
-        br#"{"profile_id":"partial-agent","mode":"new"}"#,
+        &chat,
+        &json!({ "text": "SWEM_PARTIAL_ARTIFACT_FAILURE" }),
     )
     .await;
-    assert_eq!(opened.status, 200);
-    let opened = json_body(&opened);
-    let connection = opened["connection_id"].as_str().expect("connection id");
-    let route = opened["route_id"].as_str().expect("route id");
-
-    let failed = request(
-        handle.local_addr,
-        "POST",
-        &format!("/api/connections/{connection}/prompt"),
-        &[("Content-Type", "application/json")],
-        br#"{"content":[{"type":"text","text":"SWEM_PARTIAL_ARTIFACT_FAILURE"}]}"#,
-    )
-    .await;
-    assert_eq!(failed.status, 502);
+    assert_eq!(failed["state"], "failed", "{failed}");
+    let route = route_of(&root, &chat);
 
     let events = RoutingLedger::open(&root.join("routes.sqlite3"))
         .expect("reopen ledger")
-        .events_for_surface(route, "partial-oracle", 1000)
+        .events_for_surface(&route, "partial-oracle", 1000)
         .expect("read partial route")
         .events;
     let message_update = events
@@ -774,17 +798,8 @@ async fn partial_rich_output_survives_a_failed_prompt_turn() {
             .contains(&base64::engine::general_purpose::STANDARD.encode(MESSAGE_BYTES)),
         "durable route retained a raw artifact body"
     );
-    assert_eq!(
-        request(
-            handle.local_addr,
-            "POST",
-            &format!("/api/connections/{connection}/disconnect"),
-            &[("Content-Type", "application/json")],
-            b"{}",
-        )
-        .await
-        .status,
-        404,
+    assert!(
+        state.active_connections().await.is_empty(),
         "failed runner was removed from the active connection registry"
     );
 

@@ -58,7 +58,7 @@ pub use routing::*;
 pub use session::agent_takes;
 pub use session::*;
 pub(crate) use surface::NativeOutputProjection;
-pub use surface::{Correspondent, NativeSessionEvent, SurfaceEventSource};
+pub use surface::{NativeSessionEvent, SurfaceEventSource};
 pub use workbench_apps::{
     AppAttachmentView, DiscoveredAppResource, DiscoveredAppTool, MCP_APP_MIME, OpenedApp,
     RelayRefusal,

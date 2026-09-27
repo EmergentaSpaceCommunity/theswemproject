@@ -24,6 +24,8 @@ export interface World {
   deliveries: Record<string, Delivery>;
   /// What waits for an answer, by question.
   questions: Record<string, Question>;
+  /// Per agent, why it last could not answer; nothing once it has.
+  failed: Record<string, string>;
 }
 
 export interface ChatState {
@@ -46,6 +48,7 @@ export const world = createStore<World>(() => ({
   chats: {},
   deliveries: {},
   questions: {},
+  failed: {},
 }));
 
 const opened = new Map<string, StoreApi<ChatState>>();
@@ -102,6 +105,11 @@ function happened(event: Happened): void {
     const delivery = { ...(payload as unknown as Delivery), chat_id: chatId };
     const { [delivery.delivery_id]: _was, ...rest } = state.deliveries;
     patch.deliveries = delivery.state === "queued" || delivery.state === "running" ? { ...rest, [delivery.delivery_id]: delivery } : rest;
+    if (delivery.state === "failed") patch.failed = { ...state.failed, [delivery.agent_id]: delivery.outcome ?? "" };
+    if (delivery.state === "done") {
+      const { [delivery.agent_id]: _mended, ...others } = state.failed;
+      patch.failed = others;
+    }
   }
   if (event.kind === "chat/question") {
     const question = { ...(payload as unknown as Question), chat_id: chatId };

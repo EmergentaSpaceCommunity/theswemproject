@@ -1,10 +1,6 @@
-// The Agent space's state machine, driven by a fake host.
-//
-// The scenario is the one the owner could not get past: an agent that needs
-// a key. The store must learn that BEFORE offering to start, take the key,
-// send it to the host under the variable the agent named, start with that
-// method, and report the session in words - and when a session does fail,
-// say why in a sentence while keeping the exact reason.
+// What an agent is set up with, driven by a fake host: an agent that needs
+// a key says so before anything is started, and the key a person types goes
+// to the host under the variable the agent named.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -128,101 +124,24 @@ test("the store learns what the agent will ask for before offering to start", as
   assert.deepEqual(methods[0].vars.map((v) => v.name), ["FIXTURE_KEY"]);
 });
 
-test("a session that fails for want of a key says so in a sentence, and keeps the reason", async () => {
+test("the key a person types reaches the host under the variable the agent named", async () => {
   const host = fakeHost();
   const store = new SessionStore(host.fetch);
   await store.loadProfiles();
-  await store.open("new", "api-key");
-  const state = store.getSnapshot();
-  assert.equal(state.connectionId, null);
-  assert.ok(state.problem.startsWith("The session could not start:"), state.problem);
-  assert.ok(state.problem.includes("Authentication required"), "the exact reason is kept");
-  assert.ok(!state.problem.includes("{"), "no JSON reached the person");
-});
-
-test("the key a person types reaches the host under the variable the agent named, and then the session starts", async () => {
-  const host = fakeHost();
-  const store = new SessionStore(host.fetch);
-  await store.loadProfiles();
-  await store.saveSecret("p1", { type_id: "generic_env_var", label: "Fixture key", name: "FIXTURE_KEY", value: "s3cr3t" });
-  assert.deepEqual(host.secrets.map((s) => s.name), ["FIXTURE_KEY"]);
-  assert.ok(!JSON.stringify(store.getSnapshot()).includes("s3cr3t"), "the value is not kept in the store");
-
-  await store.open("new", "api-key");
-  assert.ok(host.opened(), "the connection did not open");
-  const openCall = host.seen.find((call) => call.startsWith("POST /api/connections"));
-  assert.ok(openCall);
   await settle();
-  assert.equal(store.getSnapshot().phase?.phase, "idle");
-
-  await store.sendPrompt({ text: "Привет", files: [] });
-  await settle();
-  const conversation = store.getSnapshot().conversation;
-  const messages = conversation.items.filter((item) => item.kind === "message").map((item) => item.message.text);
-  assert.deepEqual(messages, ["Привет", "Hello"]);
-  assert.equal(conversation.turnOutcome, "turn: end_turn / completed");
-
-  await store.close();
-  const ended = store.getSnapshot();
-  assert.equal(ended.problem, "");
-  assert.equal(ended.connectionId, null);
-  assert.equal(ended.conversation.terminal?.summary, "Session ended (closed).");
+  await store.saveSecret("p1", { name: "FIXTURE_KEY", type_id: "generic_env_var", label: "API key", value: "typed" });
+  assert.deepEqual(host.secrets.map((secret) => secret.name), ["FIXTURE_KEY"]);
+  assert.ok(host.seen.includes("PUT /api/profiles/p1/secrets"));
+  assert.ok(!JSON.stringify(store.getSnapshot()).includes("typed"), "the page keeps no key");
 });
 
-test("a turn that dies without ending refreshes the record the rail's card is a read of", async () => {
-  const host = fakeHost({ turnDies: true });
-  const store = new SessionStore(host.fetch);
-  await store.loadProfiles();
-  await store.saveSecret("p1", { type_id: "generic_env_var", label: "Fixture key", name: "FIXTURE_KEY", value: "s3cr3t" });
-  await store.open("new", "api-key");
-  // Whatever this test finds, the session's loops have to stop, or the run
-  // never ends: a failed assertion would otherwise leave them polling.
-  try {
-    await settle();
-    assert.equal(store.getSnapshot().phase?.phase, "idle");
-    assert.deepEqual(store.getSnapshot().sessions.map((s) => s.events), [0], "the card as the session opened");
-
-    await assert.rejects(store.sendPrompt({ text: "Привет", files: [] }));
-    await settle();
-    // The turn never ended: there is no `acp/prompt_response` to end it, which
-    // is exactly what used to leave the card saying nothing had been said.
-    assert.equal(store.getSnapshot().conversation.turnEnded, false, "the turn did not end");
-
-    // The phase is polled every 750ms, so give it one poll to notice.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    assert.equal(store.getSnapshot().phase?.phase, "finished");
-    assert.deepEqual(
-      store.getSnapshot().sessions.map((session) => session.opened_with),
-      ["Привет"],
-      "the card was not re-read when the session stopped",
-    );
-  } finally {
-    await store.close();
-  }
-});
-
-test("the session's options are read from the host when it opens, and a choice goes back to the agent", async () => {
-  const host = fakeHost();
-  const store = new SessionStore(host.fetch);
-  await store.loadProfiles();
-  await store.saveSecret("p1", { type_id: "generic_env_var", label: "Fixture key", name: "FIXTURE_KEY", value: "s3cr3t" });
-  await store.open("new", "api-key");
-  try {
-    await settle();
-    const options = store.getSnapshot().sessionOptions;
-    assert.ok(options, "the options were read when the session opened");
-    const model = options.options.find((option) => option.category === "model");
-    assert.equal(model.currentValue, "fast");
-    assert.deepEqual(model.choices.map((choice) => choice.value), ["fast", "quality"]);
-
-    await store.setSessionOption("model", "quality");
-    assert.equal(store.getSnapshot().sessionOptions.options[0].currentValue, "quality");
-    assert.equal(store.getSnapshot().problem, "");
-
-    await store.setSessionOption("model", "imaginary");
-    assert.ok(store.getSnapshot().problem.includes("imaginary"), "the agent's refusal is the problem line");
-    assert.equal(store.getSnapshot().sessionOptions.options[0].currentValue, "quality", "a refused choice changes nothing");
-  } finally {
-    await store.close();
-  }
+test("what an App said is kept until it is let go of, and an App that says nothing lets go", async () => {
+  const store = new SessionStore(fakeHost().fetch);
+  await store.offerContext("notes", { content: [{ type: "text", text: "Revision 4d6eb1e" }, { type: "audio", data: "" }] });
+  assert.deepEqual(store.getSnapshot().offered, { server_name: "notes", content: [{ type: "text", text: "Revision 4d6eb1e" }] });
+  // Another server's App saying nothing does not take it away.
+  await store.offerContext("other", { content: [] });
+  assert.equal(store.getSnapshot().offered?.server_name, "notes");
+  await store.offerContext("notes", { content: [] });
+  assert.equal(store.getSnapshot().offered, null);
 });

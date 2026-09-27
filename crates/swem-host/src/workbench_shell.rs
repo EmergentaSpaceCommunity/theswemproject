@@ -651,10 +651,6 @@ struct WorkbenchConnection {
     /// Idempotent observation-to-view binding. A retried long poll must not
     /// create a second App instance for the same native tool call.
     observed_apps: tokio::sync::Mutex<BTreeMap<String, OpenedApp>>,
-    /// Exact project refs the operator bound as the next turns' context.
-    /// Connection-local: it dies with the connection and is never restored
-    /// from the ledger (re-binding is an explicit act).
-    model_context: tokio::sync::Mutex<Option<ModelContext>>,
     context_events: AtomicU64,
     /// What the profile's setup came to on this connection, in sentences:
     /// where the role went, which variable the model took, whether the agent
@@ -819,15 +815,6 @@ pub(crate) struct Opening {
     pub auth_method_id: Option<String>,
     pub file_callbacks: Option<FileSystemCapabilities>,
     pub place: Option<ChatPlace>,
-}
-
-/// What the host puts after what was written, so the engine knows who wrote.
-pub(crate) enum Closing {
-    Nothing,
-    /// The line the old road appends; it leaves with that road.
-    Line(crate::Correspondent),
-    /// The block of a turn given from a chat.
-    Block(String),
 }
 
 /// What a person changed about a profile since a chat began with it, in
@@ -1480,21 +1467,6 @@ impl WorkbenchShellState {
         self.profile_secrets(profile_id)
     }
 
-    /// Every session this profile has opened, newest first.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
-    pub async fn profile_sessions(
-        &self,
-        profile_id: &str,
-    ) -> Result<Vec<crate::SessionSummary>, WorkbenchShellError> {
-        let profile_id = profile_id.to_owned();
-        self.with_ledger(move |ledger| ledger.sessions_of_profile(&profile_id))
-            .await
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
-    }
-
     /// What this profile's agent has been handed and what it has handed back:
     /// the files in `inbox` and `outbox` inside its own workspace.
     ///
@@ -1530,28 +1502,6 @@ impl WorkbenchShellState {
             .select(profile_id)
             .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
         crate::workbench_files::read(&profile.workspace, area, name).await
-    }
-
-    /// What a route's lane holds, from the beginning: the conversation a
-    /// resumed session opens on.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkbenchShellError`] for an unknown route.
-    pub async fn route_history(
-        &self,
-        route_id: &str,
-        limit: usize,
-    ) -> Result<Vec<crate::SurfaceEvent>, WorkbenchShellError> {
-        let route_id = route_id.to_owned();
-        self.with_ledger(move |ledger| ledger.history(&route_id, limit))
-            .await
-            .map_err(|error| match error {
-                crate::RoutingError::RouteNotFound(route) => {
-                    WorkbenchShellError::NotFound(format!("unknown session {route}"))
-                }
-                other => WorkbenchShellError::Failed(other.to_string()),
-            })
     }
 
     /// Every durable profile of this inventory.
@@ -2030,7 +1980,6 @@ impl WorkbenchShellState {
                 apps: tokio::sync::Mutex::new(apps),
                 observation: tokio::sync::Mutex::new(observation),
                 observed_apps: tokio::sync::Mutex::new(BTreeMap::new()),
-                model_context: tokio::sync::Mutex::new(None),
                 context_events: AtomicU64::new(1),
                 setup_notes: tokio::sync::Mutex::new(
                     setup
@@ -2204,30 +2153,7 @@ impl WorkbenchShellState {
         connection_id: &str,
         content: Vec<ContentBlock>,
     ) -> Result<NativeTurnOutcome, WorkbenchShellError> {
-        self.submit_prompt_from(connection_id, content, None).await
-    }
-
-    /// The same turn, with who is writing it and from where.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkbenchShellError::NotFound`] for an unknown connection,
-    /// [`WorkbenchShellError::Invalid`] for a name that cannot be written,
-    /// and the session failure when the turn fails.
-    pub async fn submit_prompt_from(
-        &self,
-        connection_id: &str,
-        content: Vec<ContentBlock>,
-        correspondent: Option<crate::Correspondent>,
-    ) -> Result<NativeTurnOutcome, WorkbenchShellError> {
         let connection = self.connection(connection_id).await?;
-        let content = self
-            .name_who_is_writing(
-                &connection,
-                content,
-                correspondent.map_or(Closing::Nothing, Closing::Line),
-            )
-            .await?;
         connection
             .control
             .submit_prompt(content)
@@ -2241,62 +2167,12 @@ impl WorkbenchShellState {
             })
     }
 
-    /// Put the correspondent where both readers of a turn will find it: ahead
-    /// of what was written, for the agent, and in the lane, for a person
-    /// reading the conversation back.
-    ///
-    /// ACP carries no author, so for the agent this can only be prose in the
-    /// content - in the open, where a reader of the transcript sees the same
-    /// thing the agent saw. The lane is the other half: a sentence inside a
-    /// turn is what the agent was told, while the event is what the host
-    /// knows, and only the second survives whatever the agent made of it.
-    async fn name_who_is_writing(
-        &self,
-        connection: &WorkbenchConnection,
-        mut content: Vec<ContentBlock>,
-        closing: Closing,
-    ) -> Result<Vec<ContentBlock>, WorkbenchShellError> {
-        let correspondent = match closing {
-            Closing::Nothing => return Ok(content),
-            // The block is the last thing of the turn, after what was
-            // written and whatever rides along with it. The chat's own
-            // record says who wrote; nothing more is appended for it.
-            Closing::Block(block) => {
-                content.push(ContentBlock::Text(
-                    agent_client_protocol::schema::v1::TextContent::new(block),
-                ));
-                return Ok(content);
-            }
-            Closing::Line(correspondent) => correspondent,
-        };
-        correspondent
-            .validate()
-            .map_err(WorkbenchShellError::Invalid)?;
-        // After what was written, not before it. An agent reads every block
-        // of a turn, so either place is equally visible to it; the first
-        // block is what a client that reads only one takes to be the message,
-        // and displacing the person's own words with a line about them turns
-        // every such client into one that hears the label and not the ask.
-        content.push(ContentBlock::Text(
-            agent_client_protocol::schema::v1::TextContent::new(correspondent.provenance_line()),
-        ));
-        let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
-        self.append_context_event(
-            connection,
-            event,
-            "host/turn_written",
-            json!({ "correspondent": correspondent, "text": text_of(&content) }),
-        )
-        .await?;
-        Ok(content)
-    }
-
     async fn submit_workbench_prompt(
         &self,
         connection_id: &str,
         mut content: Vec<ContentBlock>,
         content_refs: Vec<String>,
-        closing: Closing,
+        block: String,
     ) -> Result<WorkbenchPromptResponse, WorkbenchShellError> {
         let connection = self.connection(connection_id).await?;
         let workspace = connection
@@ -2358,15 +2234,11 @@ impl WorkbenchShellState {
                 .await?;
             }
         }
-        // What an App said a person is looking at rides along as baseline
-        // ACP content on every turn until it is let go of; the route keeps
-        // the blocks verbatim.
-        if let Some(context) = connection.model_context.lock().await.as_ref() {
-            content.extend(model_context::context_content(context));
-        }
-        let content = self
-            .name_who_is_writing(&connection, content, closing)
-            .await?;
+        // The host's block is the last thing of the turn, after what was
+        // written and whatever rides along with it.
+        content.push(ContentBlock::Text(
+            agent_client_protocol::schema::v1::TextContent::new(block),
+        ));
         let outcome = match connection.control.submit_prompt(content).await {
             Ok(outcome) => outcome,
             // Content the agent cannot take is this turn's problem, not the
@@ -2713,52 +2585,6 @@ impl WorkbenchShellState {
             .set_legacy_mode(mode_id)
             .await
             .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))
-    }
-
-    /// Find the live runtime for an exact profile/route without starting or
-    /// loading an agent session. This returns only an ephemeral host handle.
-    ///
-    /// # Errors
-    /// Rejects missing or mismatched profiles/routes and ambiguous runtimes.
-    pub async fn live_route_connection(
-        &self,
-        profile_id: &str,
-        route_id: &str,
-    ) -> Result<Option<Value>, WorkbenchShellError> {
-        let profile = self
-            .inventory
-            .select(profile_id)
-            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
-        let route = route_id.to_owned();
-        let stored = self
-            .with_ledger(move |ledger| ledger.route(&route))
-            .await
-            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
-        if stored.agent_id != profile.agent_id || stored.agent_profile_id != profile.profile_id {
-            return Err(WorkbenchShellError::Conflict(format!(
-                "this chat belongs to another agent, not to {}",
-                profile.profile_id
-            )));
-        }
-        let connections = self.connections.lock().await;
-        let mut live = connections.iter().filter(|(_, connection)| {
-            connection.route_id == route_id
-                && !matches!(
-                    connection.control.phase(),
-                    crate::NativeSessionPhase::Finished
-                )
-        });
-        let result = live.next().map(|(id, _)| {
-            json!({
-                "connection_id": id, "route_id": route_id,
-            })
-        });
-        if live.next().is_some() {
-            return Err(WorkbenchShellError::Conflict(
-                "route has multiple live runtimes".into(),
-            ));
-        }
-        Ok(result)
     }
 
     /// Long-poll the durable ledger for the next delivery batch after this
@@ -3666,21 +3492,6 @@ where
     }
 }
 
-/// What a turn said, as one string, for a lane a person reads back.
-///
-/// Text blocks only: an attachment is named by its own event, and a lane that
-/// tried to carry bytes would stop being a record and start being a store.
-fn text_of(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     query?.split('&').find_map(|pair| {
         let (key, value) = pair.split_once('=')?;
@@ -3874,20 +3685,6 @@ async fn serve_content(
 }
 
 #[derive(Deserialize)]
-struct OpenConnectionBody {
-    profile_id: String,
-    mode: ShellConnectionMode,
-    #[serde(default)]
-    route_id: Option<String>,
-    #[serde(default)]
-    connection_id: Option<String>,
-    /// The authentication method the person chose in the surface, by the id
-    /// the agent advertised at handshake time.
-    #[serde(default)]
-    auth_method_id: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct ProfileSecretBody {
     type_id: String,
     #[serde(default)]
@@ -3928,18 +3725,6 @@ struct CreateLocalProfileBody {
     setup: Option<crate::AgentSetup>,
 }
 
-#[derive(Deserialize)]
-struct PromptBody {
-    #[serde(default)]
-    content: Vec<ContentBlock>,
-    #[serde(default)]
-    content_refs: Vec<String>,
-    /// Who is writing, and from where. Absent while no surface says - which
-    /// is what every caller written before this did.
-    #[serde(default)]
-    correspondent: Option<crate::Correspondent>,
-}
-
 #[derive(Serialize)]
 struct WorkbenchPromptResponse {
     stop_reason: String,
@@ -3975,25 +3760,6 @@ impl WorkbenchArtifactIssue {
             reason: reason.into(),
         }
     }
-}
-
-#[derive(Deserialize)]
-struct SelectPermissionBody {
-    sequence: u64,
-    option_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnswerNativeElicitationBody {
-    sequence: u64,
-    #[serde(flatten)]
-    action: AcpElicitationAction,
-}
-
-#[derive(Deserialize)]
-struct AcknowledgeBody {
-    surface_id: String,
-    cursor: u64,
 }
 
 #[derive(Deserialize)]
@@ -4245,9 +4011,11 @@ async fn route_shell(
             };
             json_result(state.declare_model_provider(&body))
         }
-        (&Method::DELETE, ["api", "model-providers", id]) => {
-            json_result(state.forget_model_provider(id).map(|()| json!({ "forgotten": id })))
-        }
+        (&Method::DELETE, ["api", "model-providers", id]) => json_result(
+            state
+                .forget_model_provider(id)
+                .map(|()| json!({ "forgotten": id })),
+        ),
         // What the agent offers to configure on a session - its model, its
         // mode - and choosing among it. A choice the agent refuses is a 409
         // with the agent's sentence; the connection stays.
@@ -4343,9 +4111,6 @@ async fn route_shell(
         (&Method::GET, ["api", "agents", agent_id, "install-plan"]) => {
             json_result(state.agent_install_plan(agent_id))
         }
-        (&Method::GET, ["api", "profiles", profile_id, "sessions"]) => {
-            json_result(state.profile_sessions(profile_id).await)
-        }
         (&Method::GET, ["api", "profiles", profile_id, "schedules"]) => {
             json_result(state.profile_schedules(profile_id))
         }
@@ -4373,18 +4138,6 @@ async fn route_shell(
                 Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
                 Err(error) => error_response(&error),
             }
-        }
-        (&Method::GET, ["api", "routes", route, "history"]) => {
-            let limit = query_param(query.as_deref(), "limit")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(500_usize)
-                .min(5_000);
-            json_result(
-                state
-                    .route_history(route, limit)
-                    .await
-                    .map(|events| json!({ "events": events })),
-            )
         }
         (&Method::GET, ["api", "profiles", profile_id, "handshake"]) => {
             json_result(state.profile_handshake(profile_id).await)
@@ -4484,36 +4237,12 @@ async fn route_shell(
         },
         // An App of a space: its relay and its close. No agent session
         // takes part, so these are not under a connection.
-        (&Method::POST, ["api", "space-apps", app, "rpc"]) => {
-            match read_json(request).await {
-                Ok(body) => json_result(state.space_app_rpc(app, body).await),
-                Err(error) => error_response(&error),
-            }
-        }
+        (&Method::POST, ["api", "space-apps", app, "rpc"]) => match read_json(request).await {
+            Ok(body) => json_result(state.space_app_rpc(app, body).await),
+            Err(error) => error_response(&error),
+        },
         (&Method::POST, ["api", "space-apps", app, "close"]) => {
             json_result(state.space_app_close(app).await)
-        }
-        (&Method::POST, ["api", "connections", connection_id, "context"]) => {
-            let connection_id = (*connection_id).to_owned();
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<BindModelContextBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(state.bind_model_context(&connection_id, body).await)
-        }
-        (&Method::GET, ["api", "connections", connection_id, "context"]) => {
-            json_result(
-                state
-                    .model_context(connection_id)
-                    .await
-                    .map(|context| json!({ "context": context })),
-            )
-        }
-        (&Method::DELETE, ["api", "connections", connection_id, "context"]) => {
-            json_result(state.clear_model_context(connection_id).await)
         }
         (&Method::POST, ["api", "content"]) => {
             json_result(upload_content(state, request, query.as_deref()).await)
@@ -4554,9 +4283,11 @@ async fn route_shell(
             // The product ships the official AppBridge it was built against,
             // so a domain App opens without a flag and without a second
             // install step. `--apps-bundle` still overrides it for development.
-            None if WorkbenchShellState::apps_enabled() => {
-                respond(StatusCode::OK, "application/javascript", APPS_BRIDGE.to_owned())
-            }
+            None if WorkbenchShellState::apps_enabled() => respond(
+                StatusCode::OK,
+                "application/javascript",
+                APPS_BRIDGE.to_owned(),
+            ),
             // No bundle configured: the Apps panel stays disabled - the
             // honest App-disabled mode, not an error.
             None => respond(
@@ -4565,76 +4296,6 @@ async fn route_shell(
                 "apps bundle not configured".into(),
             ),
         },
-        (&Method::POST, ["api", "connections"]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<OpenConnectionBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            match state
-                .open_connection_with_id(
-                    &body.profile_id,
-                    body.mode,
-                    body.route_id,
-                    body.connection_id,
-                    body.auth_method_id,
-                    // The page is a browser tab: it has no files of its own,
-                    // and an agent told otherwise would be lied to.
-                    None,
-                )
-                .await
-            {
-                Ok((connection_id, route_id, _session_id)) => respond_json(
-                    StatusCode::OK,
-                    &json!({ "connection_id": connection_id, "route_id": route_id }),
-                ),
-                Err(error) => error_response(&error),
-            }
-        }
-        (&Method::GET, ["api", "connections", connection_id]) => {
-            json_result(state.connection_status(connection_id).await)
-        }
-        (&Method::GET, ["api", "routes", route_id, "connection"]) => {
-            let Some(profile) = query_param(query.as_deref(), "profile_id") else {
-                return error_response(&WorkbenchShellError::Invalid("profile_id is required".into()));
-            };
-            json_result(state.live_route_connection(&profile, route_id).await)
-        }
-        (&Method::POST, ["api", "connections", connection_id, "prompt"]) => {
-            let connection_id = (*connection_id).to_owned();
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<PromptBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(
-                state
-                    .submit_workbench_prompt(
-                        &connection_id,
-                        body.content,
-                        body.content_refs,
-                        body.correspondent.map_or(Closing::Nothing, Closing::Line),
-                    )
-                    .await,
-            )
-        }
-        (&Method::POST, ["api", "connections", connection_id, "cancel"]) => {
-            json_result(state.cancel(connection_id).await)
-        }
-        (&Method::POST, ["api", "connections", connection_id, "disconnect"]) => {
-            json_result(state.disconnect(connection_id).await.map(|outcome| {
-                json!({ "termination": outcome.termination, "turns": outcome.turns.len() })
-            }))
-        }
-        (&Method::POST, ["api", "connections", connection_id, "close"]) => {
-            json_result(state.close(connection_id).await.map(|outcome| {
-                json!({ "termination": outcome.termination, "turns": outcome.turns.len() })
-            }))
-        }
         (&Method::GET, ["api", "connections", connection_id, "apps"]) => {
             json_result(state.apps_list(connection_id).await)
         }
@@ -4659,7 +4320,14 @@ async fn route_shell(
         }
         (
             &Method::POST,
-            ["api", "connections", connection_id, "apps", "interactions", interaction_id],
+            [
+                "api",
+                "connections",
+                connection_id,
+                "apps",
+                "interactions",
+                interaction_id,
+            ],
         ) => {
             let body = match read_json(request).await.and_then(|value| {
                 serde_json::from_value::<AnswerAppInteractionBody>(value)
@@ -4679,30 +4347,17 @@ async fn route_shell(
                     .await,
             )
         }
-        (&Method::GET, ["api", "connections", connection_id, "elicitations", "next"]) => {
-            let after = query_param(query.as_deref(), "after")
-                .and_then(|value| value.parse().ok()).unwrap_or(0);
-            let wait = query_param(query.as_deref(), "wait_ms")
-                .and_then(|value| value.parse().ok())
-                .map_or(Duration::from_secs(25), Duration::from_millis);
-            json_result(state.elicitation_after(connection_id, after, wait).await)
-        }
-        (&Method::POST, ["api", "connections", connection_id, "elicitations", "answer"]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<AnswerNativeElicitationBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(
-                state
-                    .answer_elicitation(connection_id, body.sequence, body.action)
-                    .await
-                    .map(|()| json!({ "answered": body.sequence })),
-            )
-        }
-        (&Method::GET, ["api", "connections", connection_id, "apps", "observations", "next"]) => {
+        (
+            &Method::GET,
+            [
+                "api",
+                "connections",
+                connection_id,
+                "apps",
+                "observations",
+                "next",
+            ],
+        ) => {
             let after = query_param(query.as_deref(), "after")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
@@ -4711,7 +4366,17 @@ async fn route_shell(
                 .map_or(Duration::from_secs(25), Duration::from_millis);
             json_result(state.next_observed_app(connection_id, after, wait).await)
         }
-        (&Method::GET, ["api", "connections", connection_id, "apps", "observations", observation_id]) => {
+        (
+            &Method::GET,
+            [
+                "api",
+                "connections",
+                connection_id,
+                "apps",
+                "observations",
+                observation_id,
+            ],
+        ) => {
             let wait = query_param(query.as_deref(), "wait_ms")
                 .and_then(|value| value.parse().ok())
                 .map_or(Duration::from_secs(25), Duration::from_millis);
@@ -4752,63 +4417,6 @@ async fn route_shell(
                     .app_close(connection_id, app_id)
                     .await
                     .map(|()| json!({ "closed": true })),
-            )
-        }
-        (&Method::GET, ["api", "connections", connection_id, "permissions", "next"]) => {
-            let after = query_param(query.as_deref(), "after")
-                .and_then(|value| value.parse().ok()).unwrap_or(0);
-            let wait = query_param(query.as_deref(), "wait_ms")
-                .and_then(|value| value.parse().ok())
-                .map_or(Duration::from_secs(25), Duration::from_millis);
-            json_result(state.permission_after(connection_id, after, wait).await)
-        }
-        (
-            &Method::POST,
-            ["api", "connections", connection_id, "permissions", "select"],
-        ) => {
-            let connection_id = (*connection_id).to_owned();
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<SelectPermissionBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(
-                state
-                    .select_permission(&connection_id, body.sequence, &body.option_id)
-                    .await
-                    .map(|()| json!({ "selected": body.option_id })),
-            )
-        }
-        (&Method::GET, ["api", "routes", route_id, "events"]) => {
-            let Some(surface_id) = query_param(query.as_deref(), "surface_id") else {
-                return error_response(&WorkbenchShellError::Invalid(
-                    "surface_id query parameter is required".into(),
-                ));
-            };
-            let limit = query_param(query.as_deref(), "limit")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(200);
-            let wait = query_param(query.as_deref(), "wait_ms")
-                .and_then(|value| value.parse().ok())
-                .map_or(Duration::from_secs(25), Duration::from_millis);
-            json_result(state.events(route_id, &surface_id, limit, wait).await)
-        }
-        (&Method::POST, ["api", "routes", route_id, "ack"]) => {
-            let route_id = (*route_id).to_owned();
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<AcknowledgeBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(
-                state
-                    .acknowledge(&route_id, &body.surface_id, body.cursor)
-                    .await
-                    .map(|()| json!({ "acknowledged": body.cursor })),
             )
         }
         _ => respond(StatusCode::NOT_FOUND, "text/plain", "not found".into()),

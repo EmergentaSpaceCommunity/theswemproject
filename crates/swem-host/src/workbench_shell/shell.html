@@ -25,19 +25,11 @@
     font-weight:var(--font-weight-bold); }
   .primary:hover:not(:disabled) { background:var(--accent); border-color:var(--accent); }
   [hidden] { display:none !important; }
-  .app-shell { display:flex; flex-direction:column; height:100vh; }
-  .space-bar { display:flex; gap:6px; padding:8px 18px; border-bottom:var(--border-width-regular) solid var(--line); background:var(--panel); }
-  .space-bar button { padding:.4rem .8rem; }
-  .space-bar button[aria-pressed="true"] { color:var(--on-accent); background:var(--accent2); border-color:var(--accent2); font-weight:700; }
   .space { flex:1; min-height:0; }
   /* A server's space is its App, and the App owns the whole area: the frame
      fills it, and the App's own page lays itself out inside. */
   .server-space { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; }
   .server-space > .domain-app { flex:1 1 auto; min-height:0; }
-  /* The single row is pinned to the space height: columns scroll inside
-     themselves and never grow with the conversation, so an App frame keeps its
-     measured position while the agent's answer is still arriving. */
-  .agent-space { display:grid; grid-template-columns:260px minmax(360px,1fr) 360px; grid-template-rows:minmax(0,1fr); }
   /* The Store: where things come from on the left, what they are on the
      right, one row per thing with its one button. */
   .store-space { display:grid; grid-template-columns:300px minmax(360px,1fr); grid-template-rows:minmax(0,1fr); }
@@ -68,33 +60,15 @@
   .provenance[data-state^="unresolved"] { border-left-color:var(--bad); }
   .rows { display:grid; gap:6px; }
   .root { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); color:var(--muted); }
-  .decision { font-weight:700; }
   .bad { color:var(--bad); min-height:1.4em; }
   .rail,.context { background:var(--panel); overflow:auto; }
   .rail { border-right:var(--border-width-regular) solid var(--line); padding:18px; }
-  .context-blocks { margin:4px 0 0; padding-left:18px; display:grid; gap:2px; overflow-wrap:anywhere; }
   .context { border-left:var(--border-width-regular) solid var(--line); padding:18px; }
-  .brand { display:flex; align-items:center; gap:10px; margin-bottom:24px; font-weight:800; letter-spacing:.12em; }
-  .brand-mark { width:26px; height:26px; border-radius:var(--border-radius-md); background:linear-gradient(135deg,var(--accent),var(--accent2)); }
   #profiles { width:100%; color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:.65rem; }
-  .session-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:8px; }
-  /* One installed agent can hold several profiles, one per person. The rail
-     asks for a name before it makes one, so the select never grows a row
-     nobody can tell apart. */
-  .add-profile-open { width:100%; margin-top:6px; text-align:left; }
-  .add-profile { display:grid; gap:6px; margin-top:6px; }
   /* The sessions this agent already has: a person continues one rather than
      remembering a route id. */
   .sessions { display:grid; gap:6px; margin-top:14px; }
-  .session-row { width:100%; text-align:left; display:grid; gap:2px; }
-  .session-name { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono);
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #open-new { grid-column:1/-1; }
   .main { min-width:0; min-height:0; display:flex; flex-direction:column; }
-  /* Configuring an agent, signing it in and talking to it are three panels of
-     one space, so the header carries the choice between them. */
-  .agent-panels { display:flex; gap:4px; margin-left:16px; }
-  .agent-panels button { padding:.35rem .7rem; font-size:var(--font-text-sm-size); }
   /* Standing instructions: what an agent does when nobody asks it to. */
   .schedule-list { display:grid; gap:8px; margin:6px 0; padding:0; list-style:none; }
   .schedule-row { display:grid; gap:2px; padding:8px 10px;
@@ -128,108 +102,32 @@
   .terminal-list li[aria-current="true"] { color:var(--fg); font-weight:600; }
   .terminal-screen { flex:1 1 auto; min-height:360px; border:var(--border-width-regular) solid var(--line);
     border-radius:var(--border-radius-lg); background:var(--bg); padding:8px; overflow:hidden; }
-  .main-header { height:64px; border-bottom:var(--border-width-regular) solid var(--line); display:flex; align-items:center;
-    justify-content:space-between; padding:0 22px; }
   .status { display:flex; align-items:center; gap:8px; color:var(--muted); }
-  #empty-state { margin:auto; width:min(580px,calc(100% - 40px)); text-align:center; }
-  #empty-state h1 { font:var(--font-weight-bold) var(--font-heading-3xl-size)/var(--font-heading-3xl-line-height) var(--font-sans);
-    margin:0 0 12px; letter-spacing:var(--k-tracking-display); }
-  #empty-state p { color:var(--muted); margin:0 auto 24px; max-width:480px; }
-  #agent-options { display:grid; gap:9px; text-align:left; }
-  .agent-option { display:flex; align-items:center; justify-content:space-between; gap:14px;
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); padding:13px; }
-  .agent-option small { display:block; color:var(--muted); }
-  #onboarding-status,#close-error { color:var(--bad); margin-top:10px; min-height:1.4em; }
   #conversation { flex:1; overflow:auto; padding:28px max(24px,calc((100% - 760px)/2)); }
   .message { margin:0 0 20px; }
-  .message-label { color:var(--muted); font-size:var(--font-text-xs-size); text-transform:uppercase; letter-spacing:.1em; margin-bottom:6px; }
-  .message-body { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--font-text-lg-size); }
-  .message.user .message-body { color:var(--text); }
   .message.thought { opacity:.68; }
-  .composer-wrap { padding:14px max(20px,calc((100% - 800px)/2)) 22px; }
   .composer { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); padding:12px; box-shadow:var(--shadow-md); }
-  #prompt-text { display:block; width:100%; min-height:70px; resize:none; border:0; outline:0;
-    color:var(--text); background:transparent; }
-  .composer-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-  .writing-as { margin-left:auto; max-width:14rem; }
-  #attachment-list { color:var(--muted); font-size:var(--font-text-sm-size); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #file-input { display:none; }
-  .attach-label { cursor:pointer; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:.5rem .7rem; }
   #permission { position:fixed; inset:0; z-index:20; display:none; place-items:center; background:var(--k-scrim); }
-  .permission-card { width:min(520px,calc(100% - 36px)); border:var(--border-width-regular) solid var(--color-border-primary); border-radius:var(--border-radius-lg);
-    background:var(--panel); padding:20px; box-shadow:var(--shadow-lg); }
-  #permission-options { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
   #elicitation { position:fixed; inset:0; z-index:21; display:none; place-items:center; background:var(--k-scrim); }
-  .elicitation-card { width:min(620px,calc(100% - 36px)); max-height:calc(100vh - 36px); overflow:auto;
-    border:var(--border-width-regular) solid var(--color-border-primary); border-radius:var(--border-radius-lg); background:var(--panel); padding:20px; box-shadow:var(--shadow-lg); }
-  #elicitation-context,#elicitation-message,#elicitation-error { overflow-wrap:anywhere; }
-  #elicitation-context { color:var(--muted); font:var(--font-text-sm-size)/var(--font-text-sm-line-height) var(--font-mono); }
-  #elicitation-message { margin:12px 0; }
-  #elicitation-error { color:var(--bad); min-height:1.4em; }
-  #elicitation-fields { display:grid; gap:10px; }
   .elicitation-field { display:grid; gap:4px; }
   .elicitation-field small { color:var(--muted); }
   .elicitation-field input,.elicitation-field select { width:100%; color:var(--text); background:var(--bg);
     border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:8px; }
-  .elicitation-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
   .context h2 { margin:0; font-size:var(--font-text-lg-size); }
-  #apps-list { display:grid; gap:8px; margin:12px 0; }
-  #app-container iframe { width:100%; min-height:420px; border:0; border-radius:var(--border-radius-lg); background:var(--bg); }
   details { color:var(--muted); margin-top:16px; }
   details pre,#events { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
   #events { max-height:240px; overflow:auto; padding-left:24px; }
-  .artifact-card img,.artifact-card video { display:block; max-width:100%; max-height:360px; margin:.55rem 0; }
-  .artifact-card audio { display:block; width:100%; margin:.55rem 0; }
-  .artifact-actions { display:flex; gap:.75rem; font-size:var(--font-text-sm-size); }
-  /* The dev drawer: what the page carries for whoever builds it, under the
-     Dev switch on the bar. A drawer over the bottom edge rather than a column,
-     because it belongs to no one column, and hidden rather than absent,
-     because the walks read its ids by text and value. */
-  /* The selected profile on the rail: whose agent, what it runs on, its role's
-     first line, and whether a session is open on it. */
-  .profile-card { display:grid; gap:4px; padding:8px 10px; margin:6px 0; }
   /* Setup: the role and a skill's body are paragraphs, not one-line fields. */
   .environment textarea { width:100%; min-width:0; box-sizing:border-box; color:var(--text); background:var(--bg);
     border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; font:inherit; resize:vertical; }
   .provider-row,.skill-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
   .provider-row .k-caption,.skill-row .k-caption { flex-basis:100%; }
-  .profile-card-head { display:flex; align-items:center; gap:8px; }
-  .profile-card-line { display:flex; align-items:center; gap:8px; }
-  .profile-card-role { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  /* Over the conversation: the session's model, its mode, its usage and the
-     agent's plan - all the agent's own words, read from the session. */
-  .conversation-header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:8px 22px;
-    border-bottom:var(--border-width-regular) solid var(--line); color:var(--muted); font-size:var(--font-text-sm-size); }
-  .conversation-model { display:flex; align-items:center; gap:6px; }
-  .conversation-model select { color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:4px 6px; font:inherit; }
-  .session-mode { cursor:pointer; font:inherit; font-size:var(--font-text-xs-size); }
-  .session-plan { margin:0; flex-basis:100%; color:var(--muted); }
-  .session-plan > summary { cursor:pointer; }
   #plan { margin:4px 0 0; padding-left:20px; }
   #plan li[data-status="completed"] { text-decoration:line-through; opacity:.7; }
   #plan li[data-status="in_progress"] { color:var(--text); }
-  /* A tool the agent used: title and status on one line, the rest folded. */
-  .tool-card { margin:6px 0; padding:8px 12px; }
-  .tool-card-head { display:flex; align-items:center; gap:8px; }
-  .tool-card-title { font-size:var(--font-text-sm-size); color:var(--text); overflow:hidden; text-overflow:ellipsis; }
-  .tool-card-status { margin-left:auto; font-size:var(--font-text-xs-size); }
-  .tool-card[data-status="failed"] { border-color:var(--bad); }
-  .tool-card[data-status="in_progress"] { border-color:var(--accent2); }
-  .tool-card-detail { margin-top:4px; }
-  .tool-card-detail pre { margin:4px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); }
   /* The slash commands the agent offers, over the draft while it starts with "/". */
   .composer { position:relative; }
   .commands { position:absolute; left:0; right:0; bottom:100%; margin:0 0 6px; padding:4px; list-style:none; z-index:5; max-height:240px; overflow:auto; }
-  .command-row { display:flex; gap:8px; width:100%; text-align:left; background:transparent; border:0; padding:6px 8px; font:inherit; color:var(--text); cursor:pointer; border-radius:var(--border-radius-md); }
-  .command-row:hover,.command-row:focus { background:var(--bg); }
-  .dev-toggle { margin-left:8px; font-size:var(--font-text-xs-size); }
-  .dev-toggle[aria-pressed="true"] { color:var(--on-accent); background:var(--accent); border-color:var(--accent); }
-  .dev-panel { position:fixed; right:0; bottom:0; left:0; max-height:40vh; overflow:auto; padding:10px 18px; z-index:20;
-    color:var(--muted); background:var(--panel); border-top:var(--border-width-regular) solid var(--line); box-shadow:var(--shadow-lg); }
-  .dev-panel-columns { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
-  .dev-panel pre { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0; }
-  .legacy-inputs { display:grid; gap:6px; margin-top:8px; }
-  .legacy-inputs input,#route-id { min-width:0; color:var(--text); background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; }
   #terminal { color:var(--bad); margin-top:8px; min-height:1.4em; }
   #terminal[data-status="finished"] { color:var(--muted); }
   /* Access: the sign-in flow the agent's own handshake describes. */
@@ -252,20 +150,14 @@
   #secret-list { list-style:none; margin:8px 0; padding:0; display:grid; gap:6px; }
   .secret-entry { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .secret-add { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; }
-  #turn-outcome { color:var(--muted); font-size:var(--font-text-sm-size); }
-  @media (max-width:1000px) { .agent-space,.project-space,.store-space { grid-template-columns:220px 1fr; }
-    .project-space { grid-template-areas:"nav home" "collab collab" "activity activity"; grid-template-rows:minmax(0,1fr) auto auto; }
-    .agent-space .context { display:none; } }
-  @media (max-width:680px) { body { overflow:auto; } .app-shell { height:auto; min-height:100vh; }
-    .agent-space,.project-space { display:block; height:auto; }
-    .rail { border:0; border-bottom:var(--border-width-regular) solid var(--line); } .main { min-height:75vh; } }
+  @media (max-width:1000px) { .agent-space,.project-space,.store-space { grid-template-columns:220px 1fr; } }
+  @media (max-width:680px) { body { overflow:auto; } .rail { border:0; border-bottom:var(--border-width-regular) solid var(--line); } .main { min-height:75vh; } }
 </style>
 <style>__WORKBENCH_CSS__</style>
 </head>
 <body>
-<!-- The shell is a projection of the host route ledger and driver commands.
-     It stores no conversation of its own: the only position is the durable
-     surface cursor, and the browser never sees the native session id. -->
+<!-- The page keeps no conversation of its own: everything in it is what
+     the host said on the one stream it follows. -->
 <div id="workbench-root"></div>
 <script src="/workbench.js"></script>
 </body>

@@ -8,6 +8,9 @@
 // the directory the agent works in.
 
 import { useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+
+import { world } from "../page/world.ts";
 
 import { AuthCard } from "./AuthCard.tsx";
 import type { AgentSkill, DeclareMcpServer, McpServerView, ModelProviderView } from "./session.ts";
@@ -363,8 +366,11 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
   }, [hidden]);
   // The agent asked to be signed in: said here, where the keys are, as well
   // as on the rail.
-  const terminal = state.conversation.terminal;
-  const needsAuthentication = Boolean(terminal?.needsAuthentication) || state.problem.includes("requires authentication");
+  const failed = useStore(world, (known) => {
+    const agent = Object.values(known.participants).find((one) => one.profile_id === state.profileId);
+    return agent ? (known.failed[agent.participant_id] ?? "") : "";
+  });
+  const needsAuthentication = failed.includes("requires authentication");
   useEffect(() => {
     if (workspace.current) workspace.current.value = profile?.workspace ?? "";
     if (agentHome.current) agentHome.current.value = profile?.agent_home ?? "";

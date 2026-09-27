@@ -27,9 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use super::chats::{ledger_refusal, recipients};
-use super::{
-    ChatPlace, Closing, Opening, ShellConnectionMode, WorkbenchShellError, WorkbenchShellState,
-};
+use super::{ChatPlace, Opening, ShellConnectionMode, WorkbenchShellError, WorkbenchShellState};
 use crate::{
     Chat, ChatSession, Delivery, DeliveryState, Message, NativeSessionControl, NativeSessionPhase,
     NativeTurnControlOutcome, Participant, ParticipantKind, Question, QuestionState, Said, Speaker,
@@ -748,7 +746,7 @@ impl WorkbenchShellState {
             )),
         ];
         let answered = self
-            .submit_workbench_prompt(&connection_id, above, handed_over, Closing::Block(block))
+            .submit_workbench_prompt(&connection_id, above, handed_over, block)
             .await;
         for keeper in keepers {
             keeper.abort();
