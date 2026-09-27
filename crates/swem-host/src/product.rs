@@ -328,11 +328,13 @@ impl Product {
                 let declared = resolver_declarations
                     .lock()
                     .map_err(|_| "declaration registry poisoned".to_owned())?;
+                // An attachment whose server is not declared here is left
+                // out, and the shell says so: the agent reaches less, and
+                // the person can still talk to it and detach what is gone.
                 for attachment in &profile.attachments {
-                    let server = declared.get(&attachment.server_name).ok_or_else(|| {
-                        format!("no declared server named {}", attachment.server_name)
-                    })?;
-                    mcp_servers.push(server.clone());
+                    if let Some(server) = declared.get(&attachment.server_name) {
+                        mcp_servers.push(server.clone());
+                    }
                 }
                 drop(declared);
                 match backend {

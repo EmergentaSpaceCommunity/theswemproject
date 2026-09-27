@@ -1,6 +1,6 @@
 # ExecPlan 004 — A chat opens whatever changed since it began
 
-**Status:** active (2026-09-27). Roadmap A1; `product/agents.md` ("Chats never become
+**Status:** completed (2026-09-27). Roadmap A1; `product/agents.md` ("Chats never become
 unopenable").
 
 ## Outcome
@@ -66,16 +66,19 @@ a chat is picked; history is read only after a connection exists.
 
 ## Progress
 
-- [ ] 1 identity
-- [ ] 2 no refusal on a changed setup
-- [ ] 3 continue
-- [ ] 4 an attachment that is not set up
-- [ ] 5 page
-- [ ] 6 worded refusal when the engine cannot continue
+- [x] 1 identity
+- [x] 2 no refusal on a changed setup
+- [x] 3 continue
+- [x] 4 an attachment that is not set up
+- [x] 5 page
+- [x] 6 worded refusal when the engine cannot continue
 
 ## Discoveries
 
-(none yet)
+- With the resolver no longer failing, the profile's handshake answers again: the rail said
+  "the agent could not be reached" for the same reason the chat did not open.
+- `host/setup_changed` and `host/attachment_unavailable` take their event id from what they
+  say, so opening the same chat again appends nothing.
 
 ## Decision log
 
@@ -84,8 +87,26 @@ a chat is picked; history is read only after a connection exists.
 
 ## Validation
 
-(none yet)
+Done by hand in Chrome on the owner's own data root, the ledger and profiles copied first:
+
+- the earlier chat was picked and read with no agent started; a message was sent and answered
+  in the same chat; the record went from 186 to 208 events;
+- the product was stopped and started; the chat was read again, with the new exchange in it; a
+  second message was answered;
+- Setup lists the attached server as "Attached, but not set up on this computer" with Detach;
+- the ledger holds one `host/setup_changed` ("it now reaches ...") and one
+  `host/attachment_unavailable` for that chat.
+
+`cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` are clean.
+`scripts/suites.sh` passes except `callback_authority` (roadmap debt, macOS). One test of
+`native_session` (`cancellation_protocol_failure_and_transport_timeout_remain_distinct`) failed
+two runs of three while the product and an agent were running on the same machine and passed
+otherwise; it holds a one-second deadline and is not touched by this change.
 
 ## Outcome / remaining gaps
 
-Not started.
+Done. A chat opens and goes on whatever changed about its agent since it began.
+
+Remaining: when the engine itself no longer has the session, the chat is readable and the
+refusal is in words, but going on needs a new chat. A2 makes a chat hold several sessions and
+removes that.

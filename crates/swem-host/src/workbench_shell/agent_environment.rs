@@ -163,11 +163,23 @@ impl WorkbenchShellState {
                 let declared = self.declared_servers()?;
                 let mut bindings = Vec::with_capacity(names.len());
                 for name in names {
-                    let server = declared.get(name.as_str()).ok_or_else(|| {
-                        WorkbenchShellError::Invalid(format!(
+                    // One the profile already holds stays as it is even when
+                    // its server is not declared here any more: a person
+                    // changing the others is not asked to repair this one
+                    // first, and leaving its name out is how it is detached.
+                    let Some(server) = declared.get(name.as_str()) else {
+                        if let Some(held) = existing
+                            .attachments
+                            .iter()
+                            .find(|attachment| &attachment.server_name == name)
+                        {
+                            bindings.push(held.clone());
+                            continue;
+                        }
+                        return Err(WorkbenchShellError::Invalid(format!(
                             "this host declares no MCP server named {name}"
-                        ))
-                    })?;
+                        )));
+                    };
                     let transport = match server {
                         McpServer::Stdio(_) => AttachmentTransport::Stdio,
                         McpServer::Http(_) => AttachmentTransport::Http,

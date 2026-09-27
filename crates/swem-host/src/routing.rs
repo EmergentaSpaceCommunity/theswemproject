@@ -187,6 +187,34 @@ impl SessionRouteBinding {
     }
 }
 
+/// What makes a route the route it is: whose it is and which native session
+/// it leads to.
+///
+/// Where the agent works, where it runs and what it attaches are how a chat
+/// began, not what it is. A person changes them and goes on talking; the
+/// binding keeps what they were, and only these four are proved on a retry
+/// or a return.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteIdentity {
+    pub route_id: String,
+    pub agent_id: String,
+    pub agent_profile_id: String,
+    pub native_session_id: String,
+}
+
+impl SessionRouteBinding {
+    /// The part of this binding that is proved when a route is met again.
+    #[must_use]
+    pub fn identity(&self) -> RouteIdentity {
+        RouteIdentity {
+            route_id: self.route_id.clone(),
+            agent_id: self.agent_id.clone(),
+            agent_profile_id: self.agent_profile_id.clone(),
+            native_session_id: self.native_session_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SurfaceEvent {
     pub sequence: u64,
@@ -448,12 +476,16 @@ impl RoutingLedger {
         Ok(Self { connection })
     }
 
-    /// Insert an immutable route binding, or prove an idempotent retry matches.
+    /// Insert a route binding, or prove a retry names the same route.
+    ///
+    /// The row that is kept is the first one: it is how the chat began. A
+    /// later bind with another workspace, environment or attachments is the
+    /// same route met again after its agent was changed, and passes.
     ///
     /// # Errors
     ///
-    /// Returns [`RoutingError::BindingDrift`] if the route id already names a
-    /// different agent/session/environment/workspace/attachment binding.
+    /// Returns [`RoutingError::BindingDrift`] if the route id already names
+    /// another agent, profile or native session.
     pub fn bind_route(&mut self, binding: &SessionRouteBinding) -> Result<(), RoutingError> {
         let attachments = serde_json::to_string(&binding.attachments)?;
         let workspace = binding.workspace.to_str().ok_or_else(|| {
@@ -474,7 +506,7 @@ impl RoutingLedger {
                 attachments,
             ],
         )?;
-        self.require_binding(binding)
+        self.require_identity(&binding.identity())
     }
 
     /// Read one exact route.
@@ -621,14 +653,15 @@ impl RoutingLedger {
         Ok(events)
     }
 
-    /// Verify reconnect inputs against the immutable stored binding.
+    /// Prove a route met again is the one that was stored.
     ///
     /// # Errors
     ///
-    /// Returns [`RoutingError::BindingDrift`] on any mismatch.
-    pub fn require_binding(&self, expected: &SessionRouteBinding) -> Result<(), RoutingError> {
+    /// Returns [`RoutingError::BindingDrift`] when the stored route belongs to
+    /// another agent or profile, or leads to another native session.
+    pub fn require_identity(&self, expected: &RouteIdentity) -> Result<(), RoutingError> {
         let actual = self.route(&expected.route_id)?;
-        if actual == *expected {
+        if actual.identity() == *expected {
             Ok(())
         } else {
             Err(RoutingError::BindingDrift {

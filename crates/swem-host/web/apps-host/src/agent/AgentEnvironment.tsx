@@ -425,6 +425,24 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
                 ) : null}
               </li>
             ))}
+            {/* What the agent attaches and this computer does not have: said,
+                and detachable. It is not in the list above, which holds only
+                what is declared here. */}
+            {state.mcpServersKnown
+              ? [...attached]
+                  .filter((name) => !state.mcpServers.some((server) => server.name === name))
+                  .map((name) => (
+                    <li className="server-row" data-server={name} data-missing="true" key={name}>
+                      <strong>{name}</strong>
+                      <span className="k-caption k-muted">
+                        Attached, but not set up on this computer. The agent works without it.
+                      </span>
+                      <button className="server-forget" disabled={state.busy} onClick={() => void toggle(name)}>
+                        Detach
+                      </button>
+                    </li>
+                  ))
+              : null}
           </ul>
           {state.mcpServers.length === 0 ? (
             <p id="mcp-servers-empty" className="k-muted">

@@ -437,6 +437,9 @@ export interface SessionState {
   schedules: Schedule[];
   /// Every MCP server this host can attach to an agent.
   mcpServers: McpServerView[];
+  /// Whether the host has said what it declares yet: until it has, a server
+  /// the agent attaches cannot be called missing.
+  mcpServersKnown: boolean;
   permissionProfiles: PermissionProfileOption[];
   environments: EnvironmentProfileOption[];
   /// A sentence about the last thing that happened while configuring, or "".
@@ -500,6 +503,7 @@ export class SessionStore {
       filesStatus: "",
       schedules: [],
       mcpServers: [],
+      mcpServersKnown: false,
       permissionProfiles: [],
       environments: [],
       environmentStatus: "",
@@ -672,7 +676,7 @@ export class SessionStore {
   async loadMcpServers(): Promise<void> {
     try {
       const answer = await this.api<{ servers: McpServerView[] }>("GET", "/api/mcp-servers");
-      this.set({ mcpServers: answer.servers, environmentStatus: "" });
+      this.set({ mcpServers: answer.servers, mcpServersKnown: true, environmentStatus: "" });
     } catch (error) {
       this.set({ mcpServers: [], environmentStatus: (error as Error).message });
     }
@@ -1063,10 +1067,32 @@ export class SessionStore {
     }
   }
 
-  /// Open one of this agent's earlier sessions, with what was said in it.
+  /// Open one of this agent's earlier chats: what was said in it, read from
+  /// the record. No agent is started for reading. One that is already
+  /// running on this chat is joined; otherwise the agent starts when the
+  /// person writes.
   async resumeSession(routeId: string): Promise<void> {
-    this.setRouteInput(routeId);
-    await this.open("resume");
+    await this.readChat(routeId);
+    const generation = this.generation;
+    try {
+      const live = await this.api<{ connection_id: string; route_id: string } | null>(
+        "GET",
+        `/api/routes/${encodeURIComponent(routeId)}/connection?profile_id=${encodeURIComponent(this.state.profileId)}`,
+      );
+      if (!live || generation !== this.generation) return;
+      this.set({ connectionId: live.connection_id });
+      void this.elicitationLoop(generation, live.connection_id);
+      this.showConnection(live, generation);
+    } catch {
+      // Nothing is running on it: the chat is read, and that is enough.
+    }
+  }
+
+  private async readChat(routeId: string, problem = ""): Promise<void> {
+    this.resetSurface();
+    this.set({ routeId, routeInput: routeId, problem });
+    this.remember(`swem.workbench.route.${this.state.profileId}`, routeId);
+    await this.loadHistory(routeId, this.generation);
   }
 
   async loadHandshake(profileId: string): Promise<void> {
@@ -1497,7 +1523,21 @@ export class SessionStore {
     link?: { uri: string; name?: string; mimeType?: string };
     embed?: { uri: string; text: string };
   }): Promise<void> {
-    const connection = this.state.connectionId;
+    let connection = this.state.connectionId;
+    const reading = this.state.routeId;
+    if (!connection && reading) {
+      // A chat that was being read: the agent starts now, on the first
+      // thing the person says, and goes on from where the chat stopped.
+      this.setRouteInput(reading);
+      await this.open("resume");
+      connection = this.state.connectionId;
+      if (!connection) {
+        // It could not start. The chat is still there to read, with why.
+        const why = this.state.problem;
+        await this.readChat(reading, why);
+        throw new Error(why);
+      }
+    }
     if (!connection) return;
     // A resource is its URI: a name, a MIME type or a body without one has
     // nothing to hang on, and the blocks below would leave it out. What the

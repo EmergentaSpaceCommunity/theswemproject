@@ -11,7 +11,7 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 
 | Item | A person can | State |
 |---|---|---|
-| A1 | open an existing chat and go on talking after the agent's setup changed; an attached server that is not set up is a notice, not a refusal | |
+| A1 | open an existing chat and go on talking after the agent's setup changed; an attached server that is not set up is a notice, not a refusal | **done** (2026-09-27, ExecPlan 004) |
 | A2 | see who said what; keep two agents working at once; stop from the composer; answer a question after reopening the page | |
 | A3 | read markdown and code; use a rail of agents and chats; switch theme | |
 | A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | |

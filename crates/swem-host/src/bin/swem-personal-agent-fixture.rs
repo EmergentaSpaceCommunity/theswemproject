@@ -146,7 +146,7 @@ async fn second_process(
         &profile.workspace,
         profile.attachments.clone(),
     )?;
-    ledger.require_binding(&expected)?;
+    ledger.require_identity(&expected.identity())?;
     drop(ledger);
 
     let transcript = profile.workspace.join("profile-resume-transcript.jsonl");

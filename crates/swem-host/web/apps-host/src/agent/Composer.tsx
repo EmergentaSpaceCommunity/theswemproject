@@ -9,8 +9,10 @@ import { sessionStore, useSession } from "./store.ts";
 const RESOURCE_FIELDS = ["link-uri", "link-name", "link-mime", "embed-uri", "embed-text"];
 
 export function Composer({ hidden }: { hidden: boolean }) {
-  const { connectionId, routeId, writingAs, conversation } = useSession();
-  const connected = connectionId !== null && routeId !== null;
+  const { routeId, writingAs, conversation } = useSession();
+  // A chat that is open to read can be written to: the agent starts on the
+  // first message.
+  const connected = routeId !== null;
   // The text and resource fields are the person's draft, read when sent:
   // they are not mirrored into state keystroke by keystroke.
   const [files, setFiles] = useState<File[]>([]);

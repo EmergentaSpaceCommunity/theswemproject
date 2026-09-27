@@ -108,7 +108,7 @@ fn binding_events_and_cursors_fail_closed() {
 
     let drift = binding(&root, "other-agent-profile");
     assert!(matches!(
-        ledger.require_binding(&drift),
+        ledger.require_identity(&drift.identity()),
         Err(RoutingError::BindingDrift { .. })
     ));
     assert!(matches!(

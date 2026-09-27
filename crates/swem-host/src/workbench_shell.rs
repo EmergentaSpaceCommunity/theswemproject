@@ -789,9 +789,8 @@ pub struct WorkbenchShellState {
     terminals: Arc<Terminals>,
 }
 
-/// What a person changed about a profile since a session was bound to it, in
-/// words. Empty when the only difference is the native session id, which is
-/// drift and not configuration.
+/// What a person changed about a profile since a chat began with it, in
+/// words.
 fn configuration_differences(
     stored: &SessionRouteBinding,
     wanted: &SessionRouteBinding,
@@ -836,6 +835,44 @@ fn configuration_differences(
         }
     }
     differences
+}
+
+/// The sentence for an agent that no longer has the session a chat led to.
+///
+/// The driver says it in the protocol's words; a person is told what it means
+/// for them. What was said stays in the record either way.
+fn cannot_go_on(failure: &str) -> Option<String> {
+    [
+        "reconnect target was absent from ACP session/list",
+        "agent did not advertise ACP loadSession",
+        "agent did not advertise ACP sessionCapabilities.resume",
+    ]
+    .iter()
+    .any(|marker| failure.contains(marker))
+    .then(|| {
+        "the agent no longer has this conversation on its side, so it cannot go on from where it stopped. \
+         What was said is kept here; start a new chat to continue the work"
+            .to_owned()
+    })
+}
+
+/// A name for a set of sentences, the same for the same sentences.
+fn said_once(sentences: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for sentence in sentences {
+        hasher.update(sentence.as_bytes());
+        hasher.update([0]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .fold(String::new(), |mut name, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(name, "{byte:02x}");
+            name
+        })
 }
 
 fn nanos_now() -> u128 {
@@ -1539,6 +1576,7 @@ impl WorkbenchShellState {
             .inventory
             .select(profile_id)
             .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let mut setup_changed = Vec::new();
         let (route_id, start) = match mode {
             // A new session gets a new route, always. A route is bound to the
             // exact native session it was opened with, so reusing one for a
@@ -1581,7 +1619,26 @@ impl WorkbenchShellState {
                         }
                         other => WorkbenchShellError::Failed(other.to_string()),
                     })?;
-                let expected = SessionRouteBinding::new(
+                // A chat is its agent's and leads to one native session;
+                // that is what is proved here. Where the agent works, where
+                // it runs and what it attaches are how the chat began. A
+                // person changes them and goes on talking, so a difference
+                // there is a thing to record, never a reason to refuse.
+                let identity = crate::RouteIdentity {
+                    route_id: route_id.clone(),
+                    agent_id: profile.agent_id.clone(),
+                    agent_profile_id: profile.profile_id.clone(),
+                    native_session_id: stored.native_session_id.clone(),
+                };
+                self.with_ledger(move |ledger| ledger.require_identity(&identity))
+                    .await
+                    .map_err(|_| {
+                        WorkbenchShellError::Conflict(format!(
+                            "this chat belongs to another agent, not to {}",
+                            profile.profile_id
+                        ))
+                    })?;
+                let current = SessionRouteBinding::new(
                     route_id.clone(),
                     profile.agent_id.clone(),
                     profile.profile_id.clone(),
@@ -1591,30 +1648,13 @@ impl WorkbenchShellState {
                     profile.attachments.clone(),
                 )
                 .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-                // A session is bound to the configuration it was started
-                // with. Once a person edits the profile - attaches a project,
-                // moves the workspace - an old session no longer matches, and
-                // that is a thing to say rather than a drift to fail on.
-                let differences = configuration_differences(&stored, &expected);
-                self.with_ledger(move |ledger| ledger.require_binding(&expected))
-                    .await
-                    .map_err(|error| {
-                        WorkbenchShellError::Conflict(if differences.is_empty() {
-                            error.to_string()
-                        } else {
-                            format!(
-                                "this session was started with a different configuration of {} ({}); start a new session to use the current one",
-                                profile.profile_id,
-                                differences.join(", ")
-                            )
-                        })
-                    })?;
+                setup_changed = configuration_differences(&stored, &current);
                 let session_id = stored.native_session_id;
                 (
                     route_id,
                     match mode {
                         ShellConnectionMode::Load => NativeSessionStart::Load { session_id },
-                        _ => NativeSessionStart::Resume { session_id },
+                        _ => NativeSessionStart::Continue { session_id },
                     },
                 )
             }
@@ -1707,10 +1747,13 @@ impl WorkbenchShellState {
                 (lease.as_ref().clone(), Some(transport.as_ref().clone()))
             }
         };
-        // Pair every durable attachment with its connection-local declaration,
-        // fail-closed on any unmatched name. A non-exhaustive future transport
-        // cannot satisfy a durable attachment name here.
+        // Pair every durable attachment with its connection-local
+        // declaration. One that has none - a server that was forgotten, or
+        // that another computer had - is left out and said: the agent reaches
+        // less than its profile names, never more, and a missing server is no
+        // reason for a person to be unable to talk to their agent at all.
         let mut resolved_attachments = Vec::with_capacity(profile.attachments.len());
+        let mut unavailable = Vec::new();
         for attachment in &profile.attachments {
             let server = connection.mcp_servers.iter().find(|server| match server {
                 McpServer::Stdio(stdio) => stdio.name == attachment.server_name,
@@ -1719,16 +1762,8 @@ impl WorkbenchShellState {
                 _ => false,
             });
             let Some(server) = server else {
-                return Err(
-                    abort_resolved_environment(
-                        &connection.environment,
-                        WorkbenchShellError::Failed(format!(
-                            "profile attachment {} was not resolved to a connection-local MCP declaration",
-                            attachment.server_name
-                        )),
-                    )
-                    .await,
-                );
+                unavailable.push(attachment.server_name.clone());
+                continue;
             };
             resolved_attachments.push(ResolvedMcpAttachment {
                 binding: attachment.clone(),
@@ -1803,10 +1838,9 @@ impl WorkbenchShellState {
         let permission_policy = crate::permission_policy(
             &profile.permission_profile_id,
             &profile.workspace,
-            profile
-                .attachments
+            resolved_attachments
                 .iter()
-                .map(|attachment| attachment.server_name.clone())
+                .map(|attachment| attachment.binding.server_name.clone())
                 .collect(),
         );
         options.permission_policy = match permission_policy {
@@ -1923,7 +1957,18 @@ impl WorkbenchShellState {
                 observed_apps: tokio::sync::Mutex::new(BTreeMap::new()),
                 model_context: tokio::sync::Mutex::new(None),
                 context_events: AtomicU64::new(1),
-                setup_notes: tokio::sync::Mutex::new(setup.notes.clone()),
+                setup_notes: tokio::sync::Mutex::new(
+                    setup
+                        .notes
+                        .iter()
+                        .cloned()
+                        .chain(unavailable.iter().map(|name| {
+                            format!(
+                                "{name} is attached but not set up on this computer; the agent works without it"
+                            )
+                        }))
+                        .collect(),
+                ),
             });
             connections.insert(connection_id.clone(), Arc::clone(&registered));
             registered
@@ -1946,7 +1991,7 @@ impl WorkbenchShellState {
             return Err(WorkbenchShellError::Failed(
                 match handshake_refusal(&mut surface_events) {
                     Some(reason) => format!("{failure}: {reason}"),
-                    None => failure,
+                    None => cannot_go_on(&failure).unwrap_or(failure),
                 },
             ));
         };
@@ -1982,6 +2027,30 @@ impl WorkbenchShellState {
             let _ = registered.control.disconnect().await;
             let _ = self.finish_connection(&connection_id, &registered).await;
             return Err(WorkbenchShellError::Conflict(error.to_string()));
+        }
+        // What is different from how the chat began, and what the agent was
+        // meant to reach and cannot: each said once per chat. The id is made
+        // from what is said, so opening the chat again appends nothing.
+        for (kind, said) in [
+            ("host/setup_changed", &setup_changed),
+            ("host/attachment_unavailable", &unavailable),
+        ] {
+            if said.is_empty() {
+                continue;
+            }
+            let route = route_id.clone();
+            let event_id = format!("{kind}:{}", said_once(said));
+            let payload = json!({ "in_words": said });
+            if let Err(error) = self
+                .with_ledger(move |ledger| {
+                    ledger.append_event(&route, &event_id, kind, SurfaceEventSource::Host, &payload)
+                })
+                .await
+            {
+                let _ = registered.control.disconnect().await;
+                let _ = self.finish_connection(&connection_id, &registered).await;
+                return Err(WorkbenchShellError::Failed(error.to_string()));
+            }
         }
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         let projection = match project_native_session_events_with_output(
@@ -2547,19 +2616,12 @@ impl WorkbenchShellState {
             .with_ledger(move |ledger| ledger.route(&route))
             .await
             .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
-        let expected = SessionRouteBinding::new(
-            route_id,
-            profile.agent_id,
-            profile.profile_id,
-            stored.native_session_id,
-            profile.environment_profile_id,
-            &profile.workspace,
-            profile.attachments,
-        )
-        .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
-        self.with_ledger(move |ledger| ledger.require_binding(&expected))
-            .await
-            .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))?;
+        if stored.agent_id != profile.agent_id || stored.agent_profile_id != profile.profile_id {
+            return Err(WorkbenchShellError::Conflict(format!(
+                "this chat belongs to another agent, not to {}",
+                profile.profile_id
+            )));
+        }
         let connections = self.connections.lock().await;
         let mut live = connections.iter().filter(|(_, connection)| {
             connection.route_id == route_id

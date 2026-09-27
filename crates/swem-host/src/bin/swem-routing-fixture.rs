@@ -110,7 +110,7 @@ async fn second_process(
         workspace,
         attachments,
     )?;
-    ledger.require_binding(&expected)?;
+    ledger.require_identity(&expected.identity())?;
 
     let mut options = NativeSessionOptions::new(Duration::from_secs(10));
     options.start = NativeSessionStart::Resume {

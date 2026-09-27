@@ -1877,6 +1877,12 @@ pub enum NativeSessionStart {
     Resume {
         session_id: String,
     },
+    /// Go on with a session by whichever of the two the agent offers:
+    /// resume when it does, load otherwise. What a person means by opening
+    /// a chat they had; which ACP method carries it is the agent's business.
+    Continue {
+        session_id: String,
+    },
 }
 
 fn listed_session_id(sessions: &[SessionInfo], reconnect_id: &str) -> bool {
@@ -4164,10 +4170,26 @@ async fn run_native_session_core_inner(
                     }),
                 );
             }
+            let session_start = match session_start {
+                NativeSessionStart::Continue { session_id } => {
+                    if initialize
+                        .agent_capabilities
+                        .session_capabilities
+                        .resume
+                        .is_some()
+                    {
+                        NativeSessionStart::Resume { session_id }
+                    } else {
+                        NativeSessionStart::Load { session_id }
+                    }
+                }
+                start => start,
+            };
             let reconnect_id = match &session_start {
                 NativeSessionStart::New => None,
                 NativeSessionStart::Load { session_id }
-                | NativeSessionStart::Resume { session_id } => Some(session_id.clone()),
+                | NativeSessionStart::Resume { session_id }
+                | NativeSessionStart::Continue { session_id } => Some(session_id.clone()),
             };
             if let Some(reconnect_id) = reconnect_id
                 && initialize
@@ -4321,7 +4343,8 @@ async fn run_native_session_core_inner(
                     }
                     session_id
                 }
-                NativeSessionStart::Resume { session_id } => {
+                NativeSessionStart::Resume { session_id }
+                | NativeSessionStart::Continue { session_id } => {
                     if initialize
                         .agent_capabilities
                         .session_capabilities
