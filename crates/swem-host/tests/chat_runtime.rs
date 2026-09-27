@@ -893,3 +893,69 @@ async fn the_clock_says_its_message_into_a_chat_as_a_schedule() {
     state.let_go_of(None).await;
     fs::remove_dir_all(root).expect("remove fixture root");
 }
+
+#[tokio::test]
+async fn what_an_app_said_the_person_is_looking_at_goes_with_their_words() {
+    let root = fixture_root("context");
+    let (state, _ledger) = shell_of_two(&root);
+    let chat = state
+        .start_chat(StartChatBody {
+            title: "Context".into(),
+            agents: vec!["coder".into()],
+        })
+        .await
+        .expect("chat");
+    let looking_at = |server: &str| {
+        serde_json::from_value::<Saying>(json!({
+            "text": "what is this?",
+            "context": { "server_name": server, "content": [
+                { "type": "text", "text": "Project notes, revision 4d6eb1e" },
+                { "type": "resource_link", "uri": "notes://revisions/4d6eb1e", "name": "revision" } ] }
+        }))
+        .expect("what a page sends")
+    };
+    state
+        .say_in_chat(&chat.chat_id, looking_at("echo"))
+        .await
+        .expect("say");
+    let page = until(&state, &chat.chat_id, "the answer", settled(2)).await;
+    // The message is the person's words; what they were looking at is
+    // kept with it and is not their words.
+    assert_eq!(page.messages[0].text, "what is this?");
+    assert_eq!(page.messages[0].content[1]["type"], "context");
+    let given = &prompts(&page)[0];
+    assert_eq!(
+        given[..2],
+        [
+            "what is this?".to_owned(),
+            "Project notes, revision 4d6eb1e".to_owned()
+        ]
+    );
+    assert!(
+        given
+            .last()
+            .expect("the block")
+            .starts_with("<swem:turn k=\"")
+    );
+    let links: Vec<&str> = page
+        .events
+        .iter()
+        .filter(|event| event.kind == "host/prompt_submitted")
+        .flat_map(|event| event.payload["content"].as_array().expect("blocks").iter())
+        .filter_map(|block| block["uri"].as_str())
+        .collect();
+    assert_eq!(links, vec!["notes://revisions/4d6eb1e"]);
+
+    // Said by an App of a server this agent does not attach, the agent
+    // could not follow it: it is kept with the message and not given.
+    state
+        .say_in_chat(&chat.chat_id, looking_at("somebody-elses"))
+        .await
+        .expect("say");
+    let page = until(&state, &chat.chat_id, "the second answer", settled(4)).await;
+    let given = &prompts(&page)[1];
+    assert_eq!(given.len(), 2, "{given:?}");
+    assert_eq!(given[0], "what is this?");
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}

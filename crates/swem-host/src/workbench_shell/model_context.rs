@@ -84,7 +84,7 @@ pub(crate) fn context_content(context: &ModelContext) -> Vec<ContentBlock> {
         .collect()
 }
 
-fn validate(body: &BindModelContextBody) -> Result<(), WorkbenchShellError> {
+pub(super) fn validate(body: &BindModelContextBody) -> Result<(), WorkbenchShellError> {
     if body.content.is_empty() {
         return Err(WorkbenchShellError::Invalid(
             "a context says something: at least one block".into(),

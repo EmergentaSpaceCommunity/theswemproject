@@ -84,9 +84,12 @@ turn's ten-minute deadline.
     `.k-switch`, `.k-notice`, `.k-bubble`, `.k-toolcall`, `.k-prose`, `.k-code`, `.k-menu`
   - [x] the new-agent form: a name and the engine it stands on, so a second agent of one
     engine is made from the page
-  - [ ] 5c in the composer: the model and the mode the session offers, what the agent offers
-    with a slash, what an App said the person is looking at; Apps an agent's servers bring,
-    in its chat; a form or a link an agent asks for; how much of its memory it has used
+  - [x] 5c in the composer: what the agent offers with a slash, how much of its memory it
+    has used, and what an App said the person is looking at, which goes with their words as
+    part of the message and is given to an agent that attaches the App's server
+  - [ ] 5d what needs the engine's live session from the page: the model and the mode the
+    session offers, the Apps an agent's servers bring into its chat, a form or a link an
+    agent asks for
 - [ ] 6 removal
 
 ## Discoveries

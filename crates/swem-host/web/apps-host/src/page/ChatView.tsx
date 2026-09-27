@@ -17,8 +17,9 @@ import {
 import { useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 
-import type { PlanEntry, ToolCard } from "../agent/events.ts";
-import { Arrow, Check, Chevron, Clip, Clock, Cross, Laptop, Square, Wrench } from "./icons.tsx";
+import type { AgentCommand, PlanEntry, ToolCard, Usage } from "../agent/events.ts";
+import { sessionStore, useSession } from "../agent/store.ts";
+import { Arrow, Check, Chevron, Clip, Clock, Cross, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
 import { Prose } from "./Prose.tsx";
 import { grouped, type Group, type Item } from "./timeline.ts";
 import type { Chat, Message, Participant, Question } from "./types.ts";
@@ -127,18 +128,31 @@ function Ask({ question, agent }: { question: Question; agent: Participant | und
 }
 
 function Attached({ message }: { message: Message }) {
-  const files = message.content.filter((block) => block.type !== "text");
-  if (files.length === 0) return null;
+  const beside = message.content.filter((block) => block.type !== "text");
+  if (beside.length === 0) return null;
   return (
     <div className="k-inline w-tight">
-      {files.map((block, index) => (
-        <span className="k-chip" key={index}>
-          <Clip size={12} />
-          <span>{block.name ?? block.uri?.split("/").pop() ?? "attachment"}</span>
-        </span>
-      ))}
+      {beside.map((block, index) =>
+        block.type === "context" ? (
+          <span className="k-chip" key={index}>
+            <Tiles size={12} />
+            <span>With what you were looking at in {(block as { server_name?: string }).server_name}</span>
+          </span>
+        ) : (
+          <span className="k-chip" key={index}>
+            <Clip size={12} />
+            <span>{block.name ?? block.uri?.split("/").pop() ?? "attachment"}</span>
+          </span>
+        ),
+      )}
     </div>
   );
+}
+
+/// How much of its memory an agent has used, when it says.
+function used(usage: Usage | undefined): string {
+  if (!usage || usage.used === null || usage.size === null || usage.size <= 0) return "";
+  return `${Math.round((usage.used / usage.size) * 100)}% of its memory used`;
 }
 
 const THROUGH: Record<string, { words: string; sign: typeof Clock }> = {
@@ -237,28 +251,37 @@ async function handOver(file: File): Promise<string> {
 function Composer({
   to,
   running,
+  commands,
+  usage,
   onSay,
   onStop,
 }: {
   to: string;
   running: boolean;
+  commands: AgentCommand[];
+  usage: string;
   onSay: (saying: Saying) => Promise<void>;
   onStop: () => void;
 }) {
   const aui = useAui();
   const text = useAuiState((state) => state.composer.text);
+  const { offered } = useSession();
   const [files, setFiles] = useState<File[]>([]);
   const [problem, setProblem] = useState("");
   const [sending, setSending] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const nothing = text.trim() === "" && files.length === 0;
+  // What the agent offers to be asked with a slash, while a slash is all
+  // that has been typed.
+  const asked = /^\/(\S*)$/.exec(text)?.[1];
+  const offeredCommands = asked === undefined ? [] : commands.filter((command) => command.name.startsWith(asked)).slice(0, 8);
   const send = async () => {
     if (nothing || sending) return;
     setSending(true);
     setProblem("");
     try {
       const content_refs = await Promise.all(files.map(handOver));
-      await onSay({ text, content_refs });
+      await onSay({ text, content_refs, ...(offered ? { context: offered } : {}) });
       aui.composer().setText("");
       setFiles([]);
     } catch (error) {
@@ -275,8 +298,27 @@ function Composer({
         void send();
       }}
     >
-      {files.length > 0 ? (
+      {offeredCommands.length > 0 ? (
+        <div className="k-menu w-commands" role="listbox" aria-label="What it can be asked">
+          {offeredCommands.map((command) => (
+            <button type="button" role="option" aria-selected="false" className="k-menu-item" key={command.name} onClick={() => aui.composer().setText(`/${command.name} `)}>
+              <span className="k-mono">/{command.name}</span>
+              <span className="k-caption w-one-line">{command.description}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {offered || files.length > 0 ? (
         <div className="k-inline w-tight">
+          {offered ? (
+            <span className="k-chip" title={offered.content.map((block) => ("text" in block ? block.text : block.name)).join("\n")}>
+              <Tiles size={12} />
+              <span>What you are looking at in {offered.server_name}</span>
+              <button type="button" className="w-chip-x" aria-label="Let go of it" onClick={() => void sessionStore.clearContext()}>
+                <Cross size={12} />
+              </button>
+            </span>
+          ) : null}
           {files.map((file, index) => (
             <span className="k-chip" key={`${file.name}-${index}`}>
               <Clip size={12} />
@@ -320,6 +362,7 @@ function Composer({
           {problem ? <span className="k-caption k-is-danger">{problem}</span> : null}
         </div>
         <div className="k-inline w-tight">
+          {usage ? <span className="k-caption">{usage}</span> : null}
           {running ? (
             <button type="button" className="k-btn" onClick={onStop}>
               <Square />
@@ -340,6 +383,8 @@ function Thread({
   groups,
   to,
   running,
+  commands = [],
+  usage = "",
   more,
   onEarlier,
   onSay,
@@ -349,6 +394,8 @@ function Thread({
   groups: Group[];
   to: string;
   running: boolean;
+  commands?: AgentCommand[];
+  usage?: string;
   more: boolean;
   onEarlier: () => void;
   onSay: (saying: Saying) => Promise<void>;
@@ -391,7 +438,7 @@ function Thread({
           {children}
           <ThreadPrimitive.Messages components={{ Message: Said }} />
         </ThreadPrimitive.Viewport>
-        <Composer to={to} running={running} onSay={onSay} onStop={onStop} />
+        <Composer to={to} running={running} commands={commands} usage={usage} onSay={onSay} onStop={onStop} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );
@@ -405,10 +452,16 @@ export function ChatView({ chat }: { chat: Chat }) {
   const groups = useMemo(() => grouped(state.timeline.items), [state.timeline.items]);
   const others = chat.members.filter((member) => member.participant_id !== owner?.participant_id && member.kind !== "schedule");
   const to = others.length === 1 ? (others[0]?.name ?? "") : (chat.title || "everyone");
-  const several = chat.members.filter((member) => member.kind === "agent").length > 1;
+  const agents = chat.members.filter((member) => member.kind === "agent");
+  const several = agents.length > 1;
+  // What one agent offers and has used is said in its own chat; in a chat
+  // of several it would be one agent's among others.
+  const only = several ? undefined : agents[0]?.participant_id;
   return (
     <Thread
       groups={groups}
+      commands={only ? (state.timeline.commands[only] ?? []) : []}
+      usage={only ? used(state.timeline.usage[only]) : ""}
       to={several ? `${to}. Name who it is for with @` : to}
       running={busy}
       more={state.more}

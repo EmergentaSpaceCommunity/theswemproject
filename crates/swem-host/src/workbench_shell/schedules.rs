@@ -424,6 +424,7 @@ impl WorkbenchShellState {
                     text: schedule.say.clone(),
                     blocks: Vec::new(),
                     content_refs: Vec::new(),
+                    context: None,
                     // The window it claimed names the message, so a clock
                     // that says the same window twice has said it once.
                     client_ref: Some(format!(

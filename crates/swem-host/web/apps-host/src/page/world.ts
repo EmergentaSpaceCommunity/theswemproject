@@ -200,6 +200,8 @@ export interface Saying {
   text: string;
   content_refs?: string[];
   blocks?: unknown[];
+  /// What an App said the person is looking at.
+  context?: { server_name: string; content: unknown[] };
 }
 
 export const act = {

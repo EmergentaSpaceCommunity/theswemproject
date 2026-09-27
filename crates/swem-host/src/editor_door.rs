@@ -392,6 +392,7 @@ pub async fn serve_editor_door(
                             text: String::new(),
                             blocks,
                             content_refs: Vec::new(),
+                            context: None,
                             client_ref: Some(format!(
                                 "{name}:{}:{editor}",
                                 prompting.said.fetch_add(1, Ordering::SeqCst)

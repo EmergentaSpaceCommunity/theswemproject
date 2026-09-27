@@ -514,6 +514,7 @@ impl WorkbenchShellState {
         prepared: &Prepared,
         fresh: bool,
         workspace: &std::path::Path,
+        attached: &BTreeSet<String>,
     ) -> Result<(Vec<ContentBlock>, Vec<String>, String), WorkbenchShellError> {
         let trust = trust_of(&prepared.speaks_for, &prepared.owner);
         let said = |message: &Message, sender: &Participant| Said {
@@ -587,9 +588,20 @@ impl WorkbenchShellState {
         let mut above = Vec::new();
         let mut handed_over = Vec::new();
         for block in prepared.message.content.as_array().into_iter().flatten() {
-            if block.get("type").and_then(Value::as_str) == Some("attachment") {
+            let kind = block.get("type").and_then(Value::as_str);
+            if kind == Some("attachment") {
                 if let Some(id) = block.get("content_ref").and_then(Value::as_str) {
                     handed_over.push(id.to_owned());
+                }
+            } else if kind == Some("context") {
+                // What an App said the person was looking at, for an agent
+                // that attaches the App's server and so can follow it.
+                if trust == Trust::Principal
+                    && let Ok(context) =
+                        serde_json::from_value::<super::ModelContext>(block.clone())
+                    && attached.contains(&context.server_name)
+                {
+                    above.extend(super::model_context::context_content(&context));
                 }
             } else if trust == Trust::Principal
                 && let Ok(typed) = serde_json::from_value::<ContentBlock>(block.clone())
@@ -623,8 +635,14 @@ impl WorkbenchShellState {
             .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
         let (connection_id, fresh) = self.connection_in_chat(&prepared, &profile_id).await?;
         let connection = self.connection(&connection_id).await?;
-        let (above, handed_over, block) =
-            self.turn_of(&prepared, fresh, &profile.workspace).await?;
+        let attached: BTreeSet<String> = profile
+            .attachments
+            .iter()
+            .map(|attachment| attachment.server_name.clone())
+            .collect();
+        let (above, handed_over, block) = self
+            .turn_of(&prepared, fresh, &profile.workspace, &attached)
+            .await?;
         self.chat_runtime.running.lock().await.insert(
             delivery.delivery_id.clone(),
             Running {

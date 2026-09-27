@@ -79,3 +79,10 @@ html, body, #workbench-root { height: 100%; }
 }
 
 .w-form { width: min(560px, calc(100% - 48px)); margin: 48px auto; display: flex; flex-direction: column; gap: 18px; }
+
+.w-composer { position: relative; }
+.w-commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; max-height: 280px; overflow: auto; }
+.w-commands .k-mono { white-space: nowrap; }
+/* What an agent is set up with reads as a column, not across the screen. */
+.w-panel > .environment, .w-panel > .files-panel { width: min(100%, 880px); margin: 0 auto; flex: none; overflow: visible; }
+.w-panel .environment textarea { min-height: 120px; }

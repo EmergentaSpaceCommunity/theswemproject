@@ -37,6 +37,9 @@ pub struct Saying {
     /// What was handed over with it, by the id the content store gave.
     #[serde(default)]
     pub content_refs: Vec<String>,
+    /// What an App said the person is looking at, given with the words.
+    #[serde(default)]
+    pub context: Option<super::model_context::BindModelContextBody>,
     /// The sender's own name for this message, so that saying it again
     /// after a lost answer is not a second message.
     #[serde(default)]
@@ -319,6 +322,14 @@ impl WorkbenchShellState {
                 ))
             })?;
             content.push(block.clone());
+        }
+        if let Some(context) = &saying.context {
+            super::model_context::validate(context)?;
+            content.push(json!({
+                "type": "context",
+                "server_name": context.server_name,
+                "content": context.content,
+            }));
         }
         for descriptor_id in &saying.content_refs {
             let descriptor = self.content.load(descriptor_id).await?;
