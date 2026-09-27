@@ -22,14 +22,11 @@ const b = await launchBrowser({browser, url, label: "agent-first-run"});
 step("the product opens");
 await b.waitFor("the shell", async () => b.exists("#space-agent"));
 
-// Nothing has been made yet: the Project space lists no project, and the
-// product must let a person get an agent anyway. An agent that can only be
-// had from inside a project is an agent a first run cannot reach.
-await b.click("#space-project");
-await sleep(1500);
-const projects = await b.evaluate(`document.querySelectorAll(".project-row").length`);
-if (projects !== 0) cleanup(1, `a first run should have no project, found ${projects}`);
-step("no project exists");
+// The harness alone: the Agent space and the Store, and no space of a
+// server nobody declared. An agent is had from here, on a first run, with
+// nothing else installed.
+if (await b.exists("#space-project")) cleanup(1, "the harness offers a Project space of its own");
+step("the harness draws Agent and Store, and nothing of a server's");
 
 await b.click("#space-agent");
 await b.waitFor("the first-run list of agents", async () => b.exists("#agent-options .agent-option"));

@@ -399,7 +399,7 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
 
           <div className="k-eyebrow">Tools this agent reaches</div>
           <p className="k-caption k-muted">
-            An agent reaches a project through its tool server. Attach your project's here and the
+            An agent reaches what you work on through a tool server. Attach one here and the
             agent reads and changes the same work you do.
           </p>
           <ul id="mcp-servers" className="server-list">
@@ -415,7 +415,7 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
                     onChange={() => void toggle(server.name)}
                   />
                   <strong>{server.name}</strong>
-                  <span className="k-chip">{server.origin === "project" ? "project" : "declared"}</span>
+                  <span className="k-chip">{server.origin === "product" ? "came with SWEM" : "declared"}</span>
                 </label>
                 <span className="k-caption k-muted">{serverSummary(server)}</span>
                 {server.origin === "catalogue" ? (
@@ -428,7 +428,7 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
           </ul>
           {state.mcpServers.length === 0 ? (
             <p id="mcp-servers-empty" className="k-muted">
-              Nothing to attach yet. Make a project, or declare a server below.
+              Nothing to attach yet. Install a server from the Store, or declare one below.
             </p>
           ) : null}
           <button id="declare-server-open" onClick={() => setDeclaring((open) => !open)}>

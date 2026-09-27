@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::schema::v1::McpServer;
+use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use swem_host::product::{DataRoot, Product, ProjectServer};
+use swem_host::product::{DataRoot, Product};
 use swem_host::{
     AgentDistributionBuildPlan, AgentDistributionBuildSpec, AgentDistributionInventory,
     BackendProbe, BackendProbeStatus, DistributionBuildAuthorization, ManagedProvisioningPolicy,
@@ -429,12 +429,15 @@ fn product(
         .mcp_observer(
             std::env::current_exe()?,
             vec!["mcp".into(), "observe-stdio".into()],
-        )
-        // A project is served by the Cycle, which is not this binary: it is
-        // the `swem-cycle` hub installed from the Store, beside this binary,
-        // or on PATH. Without one, the product runs as an agent harness alone
-        // and says so when a project is asked for.
-        .project_server(cycle_hub(&root));
+        );
+    // Projects are served by the Cycle, which is not this binary: it is the
+    // `swem-cycle` hub installed from the Store, beside this binary, or on
+    // PATH. When there is one it is a server of this product like any other:
+    // its home App is its space on the Workbench and an agent attaches it by
+    // name. Without one the product is an agent harness alone.
+    if let Some(hub) = cycle_hub(&root) {
+        product = product.declare(hub);
+    }
     if let Some(inventory) = inventory {
         product = product.profiles_at(inventory);
     }
@@ -453,28 +456,33 @@ fn product(
     Ok(product)
 }
 
-/// The Cycle hub this product creates projects through, and how it is
-/// started: `swem-cycle serve` over this root's projects, packages, tools
-/// file and environments. Files, not values, so a tool installed or a
-/// secret added later is read at the next close without a restart.
-fn cycle_hub(root: &DataRoot) -> Option<ProjectServer> {
+/// The Cycle hub, when this machine has one, and how it is started:
+/// `swem-cycle serve` over directories of this product's data root. Where
+/// they are is this product's to say - the harness keeps no place for
+/// projects - and they are files, not values, so a tool installed or a secret
+/// added later is read at the next close without a restart.
+fn cycle_hub(root: &DataRoot) -> Option<McpServer> {
     let command = cycle_server(root)?;
-    Some(ProjectServer {
-        command,
-        args: vec![
+    let under = |name: &str| root.path().join(name).display().to_string();
+    Some(McpServer::Stdio(
+        McpServerStdio::new("swem-cycle", command).args(vec![
             "serve".to_owned(),
             "--projects".to_owned(),
-            root.projects().display().to_string(),
+            under("projects"),
             "--plugins".to_owned(),
-            root.plugins().display().to_string(),
+            under("plugins"),
             "--packages-home".to_owned(),
-            root.plugins().display().to_string(),
+            under("plugins"),
             "--tools".to_owned(),
-            root.tools_file().display().to_string(),
+            root.installed()
+                .join("tools")
+                .join("tools.json")
+                .display()
+                .to_string(),
             "--environment-root".to_owned(),
             root.environments().display().to_string(),
-        ],
-    })
+        ]),
+    ))
 }
 
 /// The editor door. The same product as the Workbench, answered over stdio to

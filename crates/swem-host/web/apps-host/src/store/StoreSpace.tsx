@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { sessionStore } from "../agent/store.ts";
-import { fetchJson } from "../project/api";
+import { fetchJson } from "../http.ts";
 
 type Kind = "agent" | "server" | "skill" | "tool";
 

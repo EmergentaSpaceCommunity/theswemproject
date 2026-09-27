@@ -51,229 +51,28 @@
   .store-entry-words { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
   .store-entry small { color:var(--muted); }
   #store-status { min-height:1.4em; overflow-wrap:anywhere; }
-  .project-space { display:grid; grid-template-columns:260px minmax(360px,1fr) 320px; grid-template-rows:minmax(0,1fr) auto;
-    grid-template-areas:"nav home collab" "activity activity activity"; }
-  #project-navigator { grid-area:nav; }
   /* The main area is the workbench: a tab strip and whatever it opened. */
   .surface { grid-area:home; display:grid; grid-template-rows:auto minmax(0,1fr); min-width:0; min-height:0; }
-  /* A workbench open on a slot owns the whole space: the project's other
-     panels step aside until the rail strip's way back is taken. */
-  .project-space[data-open-slot] { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); grid-template-areas:"home"; }
-  .project-space[data-open-slot] > :not(.surface) { display:none; }
-  /* The strip over an open workbench: the slot's rungs as chips, the next
-     step, the way back. The rail never leaves the screen. */
-  .rail-strip { display:flex; align-items:center; gap:10px; padding:6px 12px; border-bottom:var(--border-width-regular) solid var(--line);
-    background:var(--panel); overflow-x:auto; white-space:nowrap; }
-  .rail-chips { display:flex; gap:4px; list-style:none; margin:0; padding:0; }
-  .rail-chip { padding:2px 8px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-full); font-size:var(--font-text-xs-size); color:var(--muted);
-    border-top:calc(var(--border-width-regular) * 2) solid var(--color-text-secondary); }
-  .rail-chip[data-state="present"] { border-top-color:var(--accent2); color:var(--text); }
-  .rail-chip[data-state="attention"] { border-top-color:var(--color-text-warning); }
-  .rail-chip[data-state="blocked"] { border-top-color:var(--bad); }
-  .rail-chip[data-state="accepted"] { border-top-color:var(--accent); }
-  .rail-chip[data-next="true"] { border-color:var(--accent2); }
-  .rail-strip-next { font-size:var(--font-text-sm-size); overflow:hidden; text-overflow:ellipsis; }
-  /* One rail per slot: its rungs, the door on "what it is made of", the workbench. */
-  #slot-rails { display:grid; gap:10px; }
-  /* A rail is a row: the chips of the cycle, what the row owes under them.
-     The rung element itself has no box (display:contents) so its chip sits
-     in the row and its owed lines and actions wrap to full width below;
-     every data attribute stays on the rung for whoever reads the DOM. */
   .rail { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:10px 14px; display:grid; gap:6px; background:var(--panel); }
-  .rail-head { display:flex; align-items:baseline; gap:10px; }
-  .rail-head .rail-open { margin-left:auto; }
-  .rail .rungs { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; list-style:none; margin:0; padding:0; }
-  .rail .rung { display:contents; }
-  .rail .rung-title { order:0; font-size:var(--font-text-sm-size); padding:2px 10px; border-radius:var(--border-radius-full);
-    border:var(--border-width-regular) solid var(--line); color:var(--muted); white-space:nowrap; }
-  /* A step that still has something to offer opens from its own chip. */
-  .rail button.rung-title { background:transparent; font:inherit; font-size:var(--font-text-sm-size); cursor:pointer; }
-  .rail .rung[data-state="present"] > .rung-title { border-color:var(--accent2); color:var(--text); }
-  .rail .rung[data-state="attention"] > .rung-title { border-color:var(--color-text-warning); color:var(--text); }
-  .rail .rung[data-state="blocked"] > .rung-title { border-color:var(--bad); color:var(--text); }
-  .rail .rung[data-state="accepted"] > .rung-title { border-color:var(--accent); color:var(--text); }
-  .rail .rung[data-next="true"] > .rung-title { box-shadow:0 0 0 1px var(--accent2) inset; color:var(--text); }
-  .rail .rung-notices { order:0; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
-    display:grid; gap:4px; }
-  .rail .rung-notice { padding:4px 8px; border-left:var(--border-width-regular) solid var(--color-text-warning);
-    color:var(--text); font-size:var(--font-text-sm-size); }
-  .rail .rung-produced-from { order:1; flex-basis:100%; margin:0; padding-left:16px; }
-  .rail .rung-produced { order:1; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
-    display:grid; gap:2px; }
-  .rail .produced-row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
-  .rail .produced-name { font-size:var(--font-text-sm-size); }
-  .rail .produced-download, .rail .produced-bring { font-size:var(--font-text-sm-size); }
-  .rail .produced-play { flex-basis:100%; height:32px; max-width:320px; }
-  /* A name the Cycle marked, not code: the same face, without the box a
-     reader would read as a snippet. */
-  .said-name { font-family:inherit; font-weight:600; }
-  .rail .rung-running { order:0; flex-basis:100%; list-style:none; margin:0; padding:0 0 0 16px;
-    display:grid; gap:4px; }
-  .rail .rung-running-row { padding:4px 8px; border-left:var(--border-width-regular) solid var(--accent2);
-    color:var(--text); font-size:var(--font-text-sm-size); }
-  .rail .rung-owed { order:1; flex-basis:100%; margin:0; padding-left:16px; color:var(--muted); font-size:var(--font-text-sm-size); }
-  .rail .rung-actions { order:2; flex-basis:100%; display:flex; flex-wrap:wrap; gap:6px; margin:0; }
-  .rail .slot-units { order:3; flex-basis:100%; display:flex; flex-wrap:wrap; gap:4px; margin:0; }
-  .rail .rail-next { margin:0; font-size:var(--font-text-sm-size); }
-  /* A slot's card is a zoom, not a ladder: its steps are sections stacked
-     under the slot, each headed by a plain caption rather than a chip, and
-     only the steps with something to say are there at all. */
-  .rail .rungs-zoom { display:grid; gap:8px; }
-  .rail .rungs-zoom .rung { display:grid; gap:4px; padding-left:10px; border-left:var(--border-width-regular) solid var(--line); }
-  .rail .rungs-zoom .rung-title,.rail .rungs-zoom button.rung-title { order:0; padding:0; border:0; border-radius:0; background:transparent;
-    font-size:var(--font-text-xs-size); text-transform:uppercase; letter-spacing:.04em; color:var(--muted); text-align:left; }
-  .rail .rungs-zoom .rung[data-state="attention"] { border-left-color:var(--color-text-warning); }
-  .rail .rungs-zoom .rung[data-state="blocked"] { border-left-color:var(--bad); }
-  .rail .rungs-zoom .rung[data-state="accepted"] { border-left-color:var(--accent); }
-  .rail .rungs-zoom .rung[data-next="true"] > .rung-title { color:var(--text); box-shadow:none; }
-  .rail .rungs-zoom .rung-notices,.rail .rungs-zoom .rung-owed,.rail .rungs-zoom .rung-produced,.rail .rungs-zoom .rung-produced-from,
-  .rail .rungs-zoom .rung-running,.rail .rungs-zoom .rung-actions,.rail .rungs-zoom .slot-units { padding-left:0; }
-  .slot-units { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:4px; }
-  .slot-unit { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; padding:4px 8px;
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); font-size:var(--font-text-sm-size); }
-  .slot-unit[data-filled="false"] { border-style:dashed; border-color:var(--color-text-warning); }
-  .slot-unit-title { font-weight:600; }
-  .slot-unit-kind { text-transform:uppercase; letter-spacing:.06em; font-size:var(--font-text-xs-size); }
-  .slot-unit-intent { color:var(--muted); }
-  .slot-unit-missing { color:var(--color-text-warning); margin-left:auto; }
-  .slot-rail-head strong { min-width:80px; }
-  .open-workbench { padding:.4rem .6rem; font-size:var(--font-text-sm-size); }
-  .rail-next { margin:8px 0 0; }
-  /* What the rails are derived from, folded away for whoever needs digests. */
-  #developer-diagnostics { margin-top:8px; }
-  #developer-diagnostics > summary { cursor:pointer; font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.1em; color:var(--muted); }
-  .diagnostics-body { display:grid; gap:20px; padding-top:12px; }
   .domain-app { display:flex; flex-direction:column; min-height:0; min-width:0; }
   .domain-app .app-host { flex:1 1 auto; min-height:0; display:flex; }
   .domain-app .app-mount { flex:1 1 auto; min-height:0; display:flex; }
   .domain-app .app-mount > iframe { flex:1 1 auto; min-height:0; }
   .domain-app .app-status { margin:0; padding:6px 12px; color:var(--color-text-secondary); font-size:var(--font-text-sm-size); }
-  #project-home { overflow:auto; min-height:0; }
-  #project-collaborator { grid-area:collab; }
-  #project-activity { grid-area:activity; max-height:160px; overflow:auto; border-top:var(--border-width-regular) solid var(--line);
-    background:var(--panel); padding:10px 18px; font-size:var(--font-text-sm-size); }
-  .home-body { padding:18px 22px; display:grid; gap:20px; }
-  .home-body h3 { margin:0 0 8px; font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.1em; color:var(--muted); }
-  #project-empty { margin:auto; width:min(560px,calc(100% - 40px)); text-align:center; padding:60px 0; }
-  #project-empty h1 { font:var(--font-weight-bold) var(--font-heading-3xl-size)/var(--font-heading-3xl-line-height) var(--font-sans);
-    margin:0 0 12px; letter-spacing:var(--k-tracking-display); }
-  #project-empty p { color:var(--muted); }
-  /* The cycle as a readable axis. State colours come from the same tokens
-     the rest of the shell paints with, so a theme change carries them. */
-  #cycle-axis-next { margin:0; }
-  /* What can be done at a rung: a button that opens the tool's own form. */
-  .rung-action { padding:.4rem .6rem; font-size:var(--font-text-sm-size); }
-  .rung-agent-step { margin:0; font-size:var(--font-text-sm-size); }
-  .rung-form { display:grid; gap:8px; padding:10px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); background:var(--panel); }
-  .rung-form textarea,.rung-form input,.rung-form select { width:100%; min-width:0; color:var(--text); background:var(--bg);
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:8px; }
-  /* The projection rung's own editor: what was asked, the reading of it, and
-     one row per thing the reading declares. */
-  .rail .decompose { order:3; flex-basis:100%; text-align:left; }
-  .decompose-intent { margin:0; padding:8px 10px; border-left:calc(var(--border-width-regular) * 3) solid var(--line); color:var(--muted);
-    font-size:var(--font-text-sm-size); }
-  .decompose-intent p { margin:0 0 4px; }
-  .decompose-outdated { margin:0; color:var(--color-text-warning); font-size:var(--font-text-sm-size); }
-  .decompose-declared { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
-  .decompose-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 8px;
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
-  .decompose-row[data-state="cited"] { opacity:0.7; }
-  .decompose-row[data-state="unknown"] { border-color:var(--bad); }
-  .decompose-row > label { display:flex; align-items:center; gap:4px; flex:0 1 auto; }
-  .decompose-row > label > span { color:var(--muted); font-size:var(--font-text-sm-size); }
-  .decompose-row > input[data-field="intent"] { flex:1 1 220px; }
-  .decompose-row input,.decompose-row select { width:auto; min-width:0; color:var(--text); background:var(--bg);
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:4px 6px; }
-  #project-slots .slot-row { display:flex; align-items:center; gap:10px; }
-  #project-slots .slot-row button { margin-left:auto; }
-  .new-slot { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-  /* The project's assets: what it is made of, with the names a person gave. */
-  .asset-list { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
-  .asset-row { display:grid; gap:6px; border:var(--border-width-regular) solid var(--line);
-    border-radius:var(--border-radius-lg); padding:10px 12px; }
-  .asset-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
-  .asset-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .asset-actions input { min-width:0; flex:1 1 160px; color:var(--text); background:var(--bg);
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:6px; }
-  .asset-actions audio { height:32px; }
-  .asset-actions img { max-height:64px; border-radius:var(--border-radius-md); }
-  .bring-asset { display:grid; gap:4px; margin-top:10px; }
   /* A panel that failed says so where it is, instead of blanking the page. */
   .panel-failed { padding:24px; display:grid; gap:10px; align-content:start; }
   .panel-failed button { justify-self:start; }
-  .new-slot input,.new-slot select { min-width:0; flex:1 1 140px; color:var(--text); background:var(--bg);
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; }
-  /* Why a unit exists, beside the unit itself. The state colour repeats the
-     axis vocabulary so a stale pin reads the same everywhere. */
-  .provenance-block { display:grid; gap:8px; margin:6px 0 0; }
   .provenance { border-left:calc(var(--border-width-regular) * 2) solid var(--line); padding:2px 0 2px 8px; display:grid; gap:2px; }
   .provenance[data-state="current"] { border-left-color:var(--accent2); }
   .provenance[data-state="stale"] { border-left-color:var(--color-text-warning); }
   .provenance[data-state^="unresolved"] { border-left-color:var(--bad); }
-  .provenance-state { color:var(--muted); font-size:var(--font-text-sm-size); text-transform:uppercase; letter-spacing:.06em; }
-  .provenance-claim { margin:0; }
-  .provenance-quote { margin:0; padding-left:8px; border-left:calc(var(--border-width-regular) * 2) solid var(--color-border-primary);
-    color:var(--muted); font-style:italic; }
-  .provenance-caveat { display:block; }
-  .provenance-debt { margin:6px 0 0; }
   .rows { display:grid; gap:6px; }
-  .branch-card { border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-lg); padding:12px; margin-bottom:10px; cursor:pointer; }
-  .branch-card.active { border-color:var(--accent2); }
-  .branch-card header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
-  .branch-card .roots { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
   .root { font:var(--font-text-xs-size)/var(--font-text-xs-line-height) var(--font-mono); color:var(--muted); }
   .decision { font-weight:700; }
-  .decision-accepted { color:var(--accent); }
-  .decision-rejected,.decision-blocked { color:var(--bad); }
-  .obligations { margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:var(--font-text-sm-size); }
   .bad { color:var(--bad); min-height:1.4em; }
-  #viewing,#agent-context { display:grid; gap:4px; padding:8px 0; }
   .rail,.context { background:var(--panel); overflow:auto; }
   .rail { border-right:var(--border-width-regular) solid var(--line); padding:18px; }
-  .new-project { display:grid; gap:6px; margin:8px 0 12px; }
-  .new-project input,.new-project textarea,.new-project select { width:100%; min-width:0; box-sizing:border-box; color:var(--text); background:var(--bg);
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); padding:7px; font:inherit; }
-  #new-project-seed-summary { margin:0; font-size:var(--font-text-xs-size); }
-  /* Packages: what this SWEM can do at all, and how to give it more. It sits
-     under the projects because a domain is not a thing of one project. */
-  /* Everything here holds a path, a url or a digest, none of which break at
-     spaces. Without min-width:0 and a break rule one of them widens the rail
-     and pushes its own Install button off the side of the screen. */
-  #packages { margin-top:16px; min-width:0; }
-  #packages > summary { cursor:pointer; color:var(--muted); font-size:var(--font-text-sm-size); }
-  .packages-body { display:grid; gap:8px; margin-top:8px; min-width:0; }
-  .package-row { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
-  .package-row[data-refused="true"] { border-color:var(--bad); }
-  .package-source { display:grid; gap:6px; min-width:0; }
-  .package-source input,.package-source select { width:100%; min-width:0; box-sizing:border-box; color:var(--text);
-    background:var(--bg); border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md);
-    padding:7px; font:inherit; }
-  /* The one thing in this panel that is not a field and not a row: what the
-     host says when it refuses. A mismatched digest is answered with both
-     digests in it, 64 characters each and no break in either, and this line
-     had no break rule - so the sentence ran off the rail, the panel grew to
-     the width of the text, and the full-width button the person had to press
-     again was stretched with it, label and middle off the side of the screen.
-     Nothing had ever made this line long. */
-  #packages-status { min-width:0; overflow-wrap:anywhere; }
-  /* The plan is what the person consents to, so it is read before the button
-     that acts on it, not summarised beside it. */
-  .package-plan { display:grid; gap:6px; min-width:0; padding:8px 10px;
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
-  .package-plan p { margin:0; overflow-wrap:anywhere; }
-  .package-plan code { overflow-wrap:anywhere; word-break:break-all; font-size:var(--font-text-xs-size); }
-  /* Recipes: what the installed packages say to do with a project like this
-     one. A row is read before it is run, so the steps sit above the button. */
-  #recipes { min-width:0; }
-  .recipes-body { display:grid; gap:10px; margin-top:8px; min-width:0; }
-  .recipe-row { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:start; min-width:0;
-    padding:8px 10px; border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
-  .recipe-row p { margin:2px 0 0; overflow-wrap:anywhere; }
-  .recipe-steps { margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:var(--font-text-xs-size); }
-  .recipe-run-report { margin-top:10px; padding:8px 10px; min-width:0; overflow-wrap:anywhere;
-    border:var(--border-width-regular) solid var(--line); border-radius:var(--border-radius-md); }
-  .recipe-run-report[data-completed="false"] { border-color:var(--bad); }
-  .recipe-run-report li[data-outcome="not run"] { color:var(--muted); }
+  .context-blocks { margin:4px 0 0; padding-left:18px; display:grid; gap:2px; overflow-wrap:anywhere; }
   .context { border-left:var(--border-width-regular) solid var(--line); padding:18px; }
   .brand { display:flex; align-items:center; gap:10px; margin-bottom:24px; font-weight:800; letter-spacing:.12em; }
   .brand-mark { width:26px; height:26px; border-radius:var(--border-radius-md); background:linear-gradient(135deg,var(--accent),var(--accent2)); }

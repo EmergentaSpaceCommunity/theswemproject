@@ -1,36 +1,31 @@
-//! Project-owned App handles are independent of native agent connections.
-//! Reads stay on the resources-only Project client; an explicitly opened App
-//! uses the existing MCP Apps discovery, sandbox and server-scoped relay.
+//! The Apps of the servers this host declared, outside any agent session.
 //!
-//! One Apps client per project, dialled the first time somebody opens an
-//! App of that project or acts on it, and never by listing. Until
-//! 2026-09-21 this module dialled every declared project the moment any
-//! project's Apps were asked for - one child process each, on top of the
-//! one the project's envelope reader already ran - and rebuilt all of them
-//! whenever a project was declared. A person with two projects paid 57.6 s
-//! to open the Apps of one.
+//! A server that marks one of its App resources as its home is a space on
+//! the Workbench; opening the space opens that App, which reads its server
+//! and calls its tools through the same relay and the same gates a session's
+//! App goes through. No agent connection takes part.
+//!
+//! One Apps client per declared server, dialled the first time somebody
+//! lists the spaces or opens one, and kept. A request for one server never
+//! waits on the dial of another.
 use std::collections::BTreeMap;
 
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use tokio::sync::OnceCell;
 
 use super::*;
-use crate::workbench_apps::{AppAttachmentEntry, AppAttachmentView};
+use crate::workbench_apps::AppAttachmentEntry;
 
-/// One declared project server and, once somebody needed its Apps, the
-/// dialled attachment. The cell shares one dial between concurrent
-/// requests for this server and never makes a request for another wait.
+/// One declared server and, once somebody needed its Apps, the dialled
+/// attachment. The cell shares one dial between concurrent requests for
+/// this server and never makes a request for another wait.
 struct AppSlot {
     declaration: McpServer,
-    /// Where bytes an App of this server uploads land: the server's own
-    /// workspace, as the factory that made the project knows it.
-    upload_root: Option<PathBuf>,
     cell: OnceCell<Arc<AppAttachmentEntry>>,
 }
 
-/// One open App of a project, by handle. It holds the attachment it was
+/// One open App of a space, by handle. It holds the attachment it was
 /// opened on, so a request for it never goes through a list.
-struct ProjectOpenApp {
+struct SpaceOpenApp {
     entry: Arc<AppAttachmentEntry>,
     uri: String,
     /// The View's HTML and the CSP the host resolved for it, kept so the
@@ -42,25 +37,25 @@ struct ProjectOpenApp {
 }
 
 #[derive(Default)]
-struct ProjectOpen {
-    map: BTreeMap<String, ProjectOpenApp>,
+struct SpaceOpen {
+    map: BTreeMap<String, SpaceOpenApp>,
     next_app: u64,
 }
 
-/// The project Apps this host may dial, one slot per declaration, and the
+/// The servers whose Apps this host may dial, one slot per declaration, and the
 /// Apps a person has open. `slots` is locked only to find or add a slot,
 /// never across an `.await`; `open` is locked to look a handle up and is
 /// put down before anything is asked of the server.
-pub(super) struct ProjectApps {
+pub(super) struct ServerApps {
     slots: std::sync::Mutex<Vec<Arc<AppSlot>>>,
-    open: tokio::sync::Mutex<ProjectOpen>,
+    open: tokio::sync::Mutex<SpaceOpen>,
 }
 
-impl ProjectApps {
+impl ServerApps {
     pub(super) fn new() -> Self {
         Self {
             slots: std::sync::Mutex::new(Vec::new()),
-            open: tokio::sync::Mutex::new(ProjectOpen {
+            open: tokio::sync::Mutex::new(SpaceOpen {
                 map: BTreeMap::new(),
                 next_app: 1,
             }),
@@ -68,9 +63,9 @@ impl ProjectApps {
     }
 
     /// Take in every declaration not yet known, dialling none. Only adds,
-    /// so a project declared while another's App is open leaves that App's
+    /// so a server declared while another's App is open leaves that App's
     /// client where it is.
-    fn refresh(&self, declarations: &[McpServer], upload_root: impl Fn(&str) -> Option<PathBuf>) {
+    fn refresh(&self, declarations: &[McpServer]) {
         let mut slots = lock(&self.slots);
         for declaration in declarations {
             let name = match declaration {
@@ -87,7 +82,6 @@ impl ProjectApps {
             }
             slots.push(Arc::new(AppSlot {
                 declaration: declaration.clone(),
-                upload_root: upload_root(name),
                 cell: OnceCell::new(),
             }));
         }
@@ -102,20 +96,22 @@ impl ProjectApps {
             .iter()
             .find(|slot| slot_name(&slot.declaration) == Some(server))
             .cloned()
-            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown Project server".into()))?;
+            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown server".into()))?;
         let entry = slot
             .cell
             .get_or_try_init(|| async {
                 let entry = workbench_apps::discover_server(
                     server.to_owned(),
                     &slot.declaration,
-                    slot.upload_root.clone(),
+                    // A space's server works where it works; this host
+                    // knows no directory of its own to hand it bytes in.
+                    None,
                 )
                 .await;
                 if matches!(slot.declaration, McpServer::Stdio(_)) && entry.relay_client().is_err()
                 {
                     return Err(WorkbenchShellError::Failed(format!(
-                        "the project server {server} could not be started"
+                        "the server {server} could not be started"
                     )));
                 }
                 Ok(Arc::new(entry))
@@ -155,7 +151,7 @@ impl ProjectApps {
         let app = open
             .map
             .get(app_id)
-            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown Project App".into()))?;
+            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown App".into()))?;
         Ok((Arc::clone(&app.entry), app.uri.clone(), app.isolated))
     }
 }
@@ -188,46 +184,27 @@ pub struct SpaceView {
 }
 
 impl WorkbenchShellState {
-    /// Every server this host declared, projects and the catalogue's alike,
-    /// as one list of declarations.
+    /// Every server this host declared, as one list of declarations.
     fn every_declaration(&self) -> Vec<McpServer> {
-        let mut declarations: Vec<McpServer> = self
-            .project_declarations
-            .lock()
-            .map(|held| held.clone())
-            .unwrap_or_default();
-        if let Some(catalogue) = self.mcp_catalogue.get()
-            && let Ok(declared) = catalogue.declared().lock()
-        {
-            for (name, server) in declared.iter() {
-                if !declarations
-                    .iter()
-                    .any(|held| slot_name(held) == Some(name.as_str()))
-                {
-                    declarations.push(server.clone());
-                }
-            }
-        }
-        declarations
+        self.mcp_catalogue
+            .get()
+            .and_then(|catalogue| {
+                catalogue
+                    .declared()
+                    .lock()
+                    .ok()
+                    .map(|declared| declared.values().cloned().collect())
+            })
+            .unwrap_or_default()
     }
 
-    /// The Apps client of any declared server, dialled once and kept.
+    /// The Apps client of a declared server, dialled once and kept.
     pub(super) async fn declared_app_entry(
         &self,
         server: &str,
     ) -> Result<Arc<AppAttachmentEntry>, WorkbenchShellError> {
-        let declarations = self.every_declaration();
-        let factory_root = self
-            .project_factory
-            .get()
-            .map(|factory| factory.root.clone());
-        self.project_apps.refresh(&declarations, |name| {
-            factory_root
-                .as_ref()
-                .map(|root| root.join(name).join("workspace"))
-                .filter(|workspace| workspace.is_dir())
-        });
-        self.project_apps.entry(server).await
+        self.server_apps.refresh(&self.every_declaration());
+        self.server_apps.entry(server).await
     }
 
     /// Every space a declared server offers: its home App, read off the
@@ -269,7 +246,7 @@ impl WorkbenchShellState {
     }
 
     /// Open a declared server's home App as a space: read the App and hand
-    /// it to the page exactly as a project's App is handed, without a tool
+    /// it to the page as any App is handed, without a tool
     /// call - the App reads the server through the relay from there.
     ///
     /// # Errors
@@ -292,75 +269,7 @@ impl WorkbenchShellState {
                 "{server} declares no home App at {uri}"
             )));
         }
-        self.open_app_of(entry, server, uri, None).await
-    }
-
-    /// The dialled Apps attachment of one project, dialling it now if nobody
-    /// has. Only this project.
-    pub(super) async fn project_app_entry(
-        &self,
-        server: &str,
-    ) -> Result<Arc<AppAttachmentEntry>, WorkbenchShellError> {
-        let declarations = self
-            .project_declarations
-            .lock()
-            .map(|held| held.clone())
-            .unwrap_or_default();
-        // A project's server works in the workspace the factory made for it;
-        // an App of that server uploads into the same place.
-        let factory_root = self
-            .project_factory
-            .get()
-            .map(|factory| factory.root.clone());
-        self.project_apps.refresh(&declarations, |name| {
-            factory_root
-                .as_ref()
-                .map(|root| root.join(name).join("workspace"))
-                .filter(|workspace| workspace.is_dir())
-        });
-        self.project_apps.entry(server).await
-    }
-
-    /// Discover domain Apps without launching an agent.
-    /// # Errors
-    /// Refuses an unavailable or nonpersistent Project source.
-    pub async fn project_apps_list(
-        &self,
-        server: &str,
-    ) -> Result<Vec<AppAttachmentView>, WorkbenchShellError> {
-        // The one server asked about, and nothing else: until 2026-09-21 this
-        // took the whole project list, which dialled every project to say
-        // whether this one keeps its records.
-        let available = match self.project_source(server).await {
-            Ok(entry) => entry.view().available == Some(true),
-            Err(WorkbenchShellError::NotFound(_)) => false,
-            Err(error) => return Err(error),
-        };
-        if !available {
-            return Err(WorkbenchShellError::Conflict(
-                "Apps require an available persistent Project source".into(),
-            ));
-        }
-        Ok(vec![self.project_app_entry(server).await?.view()])
-    }
-
-    /// Open a declared domain surface, without creating or claiming an agent session.
-    ///
-    /// `slot` is the project slot the person opened it from, when they opened
-    /// it from one. Two slots of the same kind declare the same `ui://`
-    /// resource, so the resource cannot say which line of work is on screen;
-    /// this open can, because it is one per open.
-    /// # Errors
-    /// Refuses unknown resources and invalid MCP Apps metadata.
-    pub async fn project_app_open(
-        &self,
-        server: &str,
-        uri: &str,
-        slot: Option<&str>,
-    ) -> Result<OpenedApp, WorkbenchShellError> {
-        self.project_apps_list(server).await?;
-        let entry = self.project_app_entry(server).await?;
-        self.open_app_of(entry, server, uri, slot).await
+        self.open_app_of(entry, server, uri).await
     }
 
     /// Open one App of a dialled server and hand it to the page: the View's
@@ -371,7 +280,6 @@ impl WorkbenchShellState {
         entry: Arc<AppAttachmentEntry>,
         server: &str,
         uri: &str,
-        slot: Option<&str>,
     ) -> Result<OpenedApp, WorkbenchShellError> {
         let workbench_apps::AppRead {
             html,
@@ -383,12 +291,12 @@ impl WorkbenchShellState {
             .await
             .map_err(WorkbenchShellError::Conflict)?;
         let app_id = {
-            let mut open = self.project_apps.open.lock().await;
-            let app_id = format!("p{}", open.next_app);
+            let mut open = self.server_apps.open.lock().await;
+            let app_id = format!("s{}", open.next_app);
             open.next_app += 1;
             open.map.insert(
                 app_id.clone(),
-                ProjectOpenApp {
+                SpaceOpenApp {
                     entry,
                     uri: uri.into(),
                     html: html.clone(),
@@ -405,10 +313,10 @@ impl WorkbenchShellState {
         let view_url = sandbox_origin
             .as_ref()
             .filter(|_| isolated)
-            .map(|origin| view_address(origin, &app_id, slot));
+            .map(|origin| view_address(origin, &app_id));
         Ok(OpenedApp {
             app_id,
-            connection_id: "project".into(),
+            connection_id: SPACE_CONNECTION.into(),
             server_name: server.into(),
             uri: uri.into(),
             html,
@@ -422,31 +330,31 @@ impl WorkbenchShellState {
         })
     }
 
-    /// The View of a Project App that asked for a real origin, as a document.
-    pub(super) async fn project_app_view(
+    /// The View of a space's App that asked for a real origin, as a document.
+    pub(super) async fn space_app_view(
         &self,
         app_id: &str,
     ) -> Result<(String, String), WorkbenchShellError> {
-        let open = self.project_apps.open.lock().await;
+        let open = self.server_apps.open.lock().await;
         let app = open
             .map
             .get(app_id)
-            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown Project App".into()))?;
+            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown App".into()))?;
         if !app.isolated {
             return Err(WorkbenchShellError::NotFound(
-                "Project App is not served as a document".into(),
+                "this App is not served as a document".into(),
             ));
         }
         Ok((app.html.clone(), app.csp.clone()))
     }
 
-    /// One file under a Project App's View path, by the server's listing.
-    pub(super) async fn project_app_file(
+    /// One file under a space App's View path, by the server's listing.
+    pub(super) async fn space_app_file(
         &self,
         app_id: &str,
         path: &str,
     ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
-        let (entry, view_uri, _) = self.project_apps.opened(app_id).await?;
+        let (entry, view_uri, _) = self.server_apps.opened(app_id).await?;
         let uri = workbench_apps::sibling_uri(&view_uri, path)
             .ok_or_else(|| WorkbenchShellError::NotFound(format!("no file at {path}")))?;
         workbench_apps::read_file_resource(&entry, &uri)
@@ -457,7 +365,7 @@ impl WorkbenchShellState {
     /// Relay through the same method and tool-visibility gates as session Apps.
     /// # Errors
     /// Refuses malformed requests and unknown App handles.
-    pub async fn project_app_rpc(
+    pub async fn space_app_rpc(
         &self,
         app_id: &str,
         message: Value,
@@ -471,7 +379,7 @@ impl WorkbenchShellState {
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| WorkbenchShellError::Invalid("relay requires a method".into()))?;
-        let (entry, _, _) = self.project_apps.opened(app_id).await?;
+        let (entry, _, _) = self.server_apps.opened(app_id).await?;
         let Some(id) = message
             .get("id")
             .filter(|id| id.is_string() || id.is_i64() || id.is_u64())
@@ -509,115 +417,73 @@ impl WorkbenchShellState {
         })
     }
 
-    pub(super) async fn project_app_script(
+    pub(super) async fn space_app_script(
         &self,
         app_id: &str,
         uri: &str,
     ) -> Result<String, WorkbenchShellError> {
-        let (entry, _, _) = self.project_apps.opened(app_id).await?;
+        let (entry, _, _) = self.server_apps.opened(app_id).await?;
         workbench_apps::read_script_resource(&entry, uri)
             .await
             .map_err(WorkbenchShellError::Conflict)
     }
 
-    /// The bytes of one blob resource of a project's server, for an App the
-    /// Project space opened without an agent.
-    pub(super) async fn project_app_blob(
+    /// The bytes of one blob resource of a space's server, for an App opened
+    /// without an agent.
+    pub(super) async fn space_app_blob(
         &self,
         app_id: &str,
         uri: &str,
     ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
-        let (entry, _, _) = self.project_apps.opened(app_id).await?;
+        let (entry, _, _) = self.server_apps.opened(app_id).await?;
         workbench_apps::read_blob_resource(&entry, uri)
             .await
             .map_err(WorkbenchShellError::Conflict)
     }
 
-    /// The workspace an open Project App's server works in, when the host
-    /// that declared the server knows one.
-    pub(super) async fn project_app_upload_root(
+    /// Where an open space App's uploads land, when the host that declared
+    /// the server knows a place.
+    pub(super) async fn space_app_upload_root(
         &self,
         app_id: &str,
     ) -> Result<Option<PathBuf>, WorkbenchShellError> {
-        let (entry, _, _) = self.project_apps.opened(app_id).await?;
+        let (entry, _, _) = self.server_apps.opened(app_id).await?;
         Ok(entry.upload_root.clone())
     }
 
-    /// Close observation only; durable domain state remains in the server journal.
+    /// Close the App's handle; what the server keeps, it keeps.
     /// # Errors
     /// Refuses unknown handles. An in-flight relay finishes before removal.
-    pub async fn project_app_close(&self, app_id: &str) -> Result<(), WorkbenchShellError> {
-        self.project_apps
+    pub async fn space_app_close(&self, app_id: &str) -> Result<(), WorkbenchShellError> {
+        self.server_apps
             .open
             .lock()
             .await
             .map
             .remove(app_id)
-            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown Project App".into()))?;
+            .ok_or_else(|| WorkbenchShellError::NotFound("Unknown App".into()))?;
         Ok(())
     }
 }
 
+/// The scope of a space's App in the sandbox origin's addresses, where a
+/// session's App has its connection id.
+pub(super) const SPACE_CONNECTION: &str = "space";
+
 /// Where an isolated App's View is served, for one open.
-///
-/// The slot travels as part of that address. Two slots of the same kind
-/// declare the same `ui://` resource, so the resource cannot say which line of
-/// work is on screen; this address can, because there is one per open, and the
-/// page reads its own `?slot=` without anything else on the road learning a new
-/// word. An App opened outside a slot carries none, and its page keeps the
-/// behaviour it had before a project could hold two of anything.
-fn view_address(origin: &str, app_id: &str, slot: Option<&str>) -> String {
-    let base = format!("{origin}/apps/project/{app_id}/view/");
-    slot.map_or(base.clone(), |slot| {
-        format!(
-            "{base}?slot={}",
-            utf8_percent_encode(slot, NON_ALPHANUMERIC)
-        )
-    })
+fn view_address(origin: &str, app_id: &str) -> String {
+    format!("{origin}/apps/{SPACE_CONNECTION}/{app_id}/view/")
 }
 
 #[cfg(test)]
 mod tests {
     use super::view_address;
 
-    /// Two slots of the same kind are two different surfaces, and the address
-    /// of each says which one it is.
     #[test]
-    fn two_slots_of_one_kind_open_at_two_addresses() {
-        let first = view_address("http://127.0.0.1:9000", "p1", Some("score"));
-        let second = view_address("http://127.0.0.1:9000", "p2", Some("titles"));
+    fn an_app_of_a_space_is_served_under_its_own_handle() {
         assert_eq!(
-            first,
-            "http://127.0.0.1:9000/apps/project/p1/view/?slot=score"
-        );
-        assert_eq!(
-            second,
-            "http://127.0.0.1:9000/apps/project/p2/view/?slot=titles"
-        );
-        assert_ne!(first, second);
-    }
-
-    /// A person names their own slots, so the name is carried as data and
-    /// never as more address.
-    #[test]
-    fn a_slot_named_by_a_person_stays_one_query_value() {
-        let address = view_address("http://127.0.0.1:9000", "p3", Some("лид &/?#=2"));
-        let (path, query) = address.split_once('?').expect("one query");
-        assert_eq!(path, "http://127.0.0.1:9000/apps/project/p3/view/");
-        assert_eq!(query.matches('?').count(), 0);
-        assert_eq!(query.matches('=').count(), 1);
-        assert!(!query.contains('#'), "{query}");
-        assert!(!query.contains('&'), "{query}");
-        assert!(!query.contains(' '), "{query}");
-    }
-
-    /// An App opened outside a slot is the App this product had before, at the
-    /// address it had before.
-    #[test]
-    fn an_app_opened_outside_a_slot_says_nothing_about_slots() {
-        assert_eq!(
-            view_address("http://127.0.0.1:9000", "p4", None),
-            "http://127.0.0.1:9000/apps/project/p4/view/"
+            view_address("http://127.0.0.1:9000", "s4"),
+            "http://127.0.0.1:9000/apps/space/s4/view/"
         );
     }
 }

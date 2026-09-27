@@ -12,7 +12,6 @@
 // events. `fetch` is injected so a test drives the whole thing with a fake
 // host and asks what a person would see.
 
-import type { AgentContextBinding } from "../project/types";
 import { emptyConversation, reduceEvent, type Conversation, type SurfaceEvent } from "./events.ts";
 
 export const SURFACE_ID = "workbench-browser";
@@ -97,13 +96,50 @@ export interface EnvironmentProfileOption {
   summary: string;
 }
 
-/// One MCP server an agent here can attach: a project this product serves, or
-/// a server the person declared. Never carries a secret - only the names of
+/// One MCP server an agent here can attach: one the product declared, or one
+/// the person declared or installed. Never carries a secret - only the names of
 /// the variables and headers a declaration sets.
+/// One block of what an App said the model should know: the two kinds this
+/// host declares it takes.
+export type ModelContextBlock =
+  | { type: "text"; text: string }
+  | { type: "resource_link"; uri: string; name: string; mimeType?: string; description?: string };
+
+/// What the agent is given with every next turn until it is let go of, and
+/// the server whose App said it.
+export interface ModelContext {
+  server_name: string;
+  content: ModelContextBlock[];
+}
+
+/// The blocks of an update this host takes, in the shape the host keeps
+/// them. Anything else an App sent is left out: the host said which kinds it
+/// takes when the App asked.
+export function contextBlocks(content: unknown): ModelContextBlock[] {
+  if (!Array.isArray(content)) return [];
+  const taken: ModelContextBlock[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const one = block as Record<string, unknown>;
+    if (one.type === "text" && typeof one.text === "string" && one.text.trim()) {
+      taken.push({ type: "text", text: one.text });
+    } else if (one.type === "resource_link" && typeof one.uri === "string" && typeof one.name === "string") {
+      taken.push({
+        type: "resource_link",
+        uri: one.uri,
+        name: one.name,
+        ...(typeof one.mimeType === "string" ? { mimeType: one.mimeType } : {}),
+        ...(typeof one.description === "string" ? { description: one.description } : {}),
+      });
+    }
+  }
+  return taken;
+}
+
 export interface McpServerView {
   name: string;
   transport: string;
-  origin: "project" | "catalogue";
+  origin: "product" | "catalogue";
   command?: string;
   args?: string[];
   env_names?: string[];
@@ -371,10 +407,13 @@ export interface SessionState {
   sessionOptions: SessionOptions | null;
   /// Every place a model is served from that a profile here may name.
   modelProviders: ModelProviderView[];
-  /// The project the open session was explicitly handed, as the host holds
-  /// it; `null` when none is bound or no session is open. Connection-local:
-  /// it dies with the connection, and only bind and clear write it.
-  context: AgentContextBinding | null;
+  /// What the open session is given with its next turns, as the host holds
+  /// it; `null` when nothing is or no session is open. Connection-local: it
+  /// dies with the connection.
+  context: ModelContext | null;
+  /// What an App last said a person is looking at, kept by the page so a
+  /// session opened afterwards is given it too; `null` once let go of.
+  offered: ModelContext | null;
   contextError: string;
   /// The sign-in method the person chose for the next start, by the agent's
   /// id for it; "" for the agent's own first choice.
@@ -467,6 +506,7 @@ export class SessionStore {
       modelProviders: [],
       authMethodId: "",
       context: null,
+      offered: null,
       contextError: "",
       historySequences: [],
       writingAs: "",
@@ -775,39 +815,62 @@ export class SessionStore {
     return this.amendProfile({ setup: { ...this.profileSetup(), ...changes } });
   }
 
-  /// The project the open session is handed, as the host holds it. Read when
-  /// a session opens and after every bind or clear; both spaces show it.
+  /// What the open session is given, as the host holds it. Read when a
+  /// session opens; what an App said before that is handed over then.
   async loadContext(): Promise<void> {
     const connectionId = this.state.connectionId;
     if (!connectionId) {
       this.set({ context: null });
       return;
     }
+    if (this.state.offered) {
+      await this.bindContext(this.state.offered);
+      return;
+    }
     try {
-      const answer = await this.api<{ context: AgentContextBinding | null }>("GET", `/api/connections/${encodeURIComponent(connectionId)}/context`);
+      const answer = await this.api<{ context: ModelContext | null }>("GET", `/api/connections/${encodeURIComponent(connectionId)}/context`);
       if (this.state.connectionId === connectionId) this.set({ context: answer.context });
     } catch {
       if (this.state.connectionId === connectionId) this.set({ context: null });
     }
   }
 
-  /// Hand the open session a project at a revision: the explicit act that
-  /// makes the next turns carry it.
-  async bindContext(body: { server_name: string; revision_ref: string; selection_ref: string | null }): Promise<void> {
+  /// An App of `server` said what a person is looking at
+  /// (`ui/update-model-context`). Each update replaces the one before; one
+  /// that says nothing lets go. The open session is given it with its next
+  /// turn; without a session the page keeps it for the one opened next.
+  async offerContext(server: string, update: { content?: unknown[] }): Promise<void> {
+    const content = contextBlocks(update.content);
+    if (content.length === 0) {
+      if (this.state.offered?.server_name === server || this.state.context?.server_name === server) {
+        await this.clearContext();
+      }
+      return;
+    }
+    const offered: ModelContext = { server_name: server, content };
+    this.set({ offered });
+    await this.bindContext(offered);
+  }
+
+  private async bindContext(body: ModelContext): Promise<void> {
     const connectionId = this.state.connectionId;
     if (!connectionId) return;
     this.set({ contextError: "" });
     try {
-      const context = await this.api<AgentContextBinding>("POST", `/api/connections/${encodeURIComponent(connectionId)}/context`, body);
+      const context = await this.api<ModelContext>("POST", `/api/connections/${encodeURIComponent(connectionId)}/context`, body);
       this.set({ context });
     } catch (error) {
-      this.set({ contextError: (error as Error).message });
+      this.set({ context: null, contextError: (error as Error).message });
     }
   }
 
   async clearContext(): Promise<void> {
+    this.set({ offered: null });
     const connectionId = this.state.connectionId;
-    if (!connectionId) return;
+    if (!connectionId) {
+      this.set({ context: null, contextError: "" });
+      return;
+    }
     try {
       await this.api<{ cleared: boolean }>("DELETE", `/api/connections/${encodeURIComponent(connectionId)}/context`);
       this.set({ context: null, contextError: "" });

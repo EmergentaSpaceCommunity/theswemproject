@@ -14,7 +14,8 @@ It ships as one binary, `swem`, which starts a local web Workbench. The Workbenc
 - **Store** - one list of what can be installed: every agent the public ACP registry lists, and the
   MCP servers and skills of the catalogs you add by address. Nothing is hosted here; every index is
   consumed.
-- **Project space** - the projects served by a Cycle, when one is installed (see below).
+- **A space per server** - a server that offers a home App is a space of its own: the Cycle's
+  projects, when a Cycle is installed (see below), or any other server's surface.
 
 The same product answers an editor over ACP (`swem acp --profile <id>`), so an editor that speaks
 ACP works with the same agent, the same setup and the same sessions as the page.
@@ -54,7 +55,7 @@ println!("{}", served.url);
 
 `cargo run -p swem-host --example embed` is exactly that. The builder takes what a distribution
 adds - a shipped catalog, the agent registry to read, declared servers, the container image, the
-observer command, the project server projects are made on - and answers the assembled product,
+observer command - and answers the assembled product,
 which opens the Workbench door or the editor door. Nothing is process-global: two products in one
 process read different roots and registries.
 
@@ -91,13 +92,12 @@ control a walk presses is a control a person presses.
 SWEM's project model - one Cycle per project, from what was asked to what was delivered, with the
 domain packages that make a piece of music or a software model - is a separate program and a
 separate repository, `swem-cycle`. It is an MCP server; this Workbench hosts it like any other,
-and the Project space is its surface.
+and its Project space is its own App, shown as the Cycle's space.
 
 The Store lists it. When `swem-cycle` is installed from there, beside this binary, or on `PATH`,
-the product creates projects through its hub: `swem-cycle serve --projects <data>/projects …` is
-dialled to make a project, and it answers the declaration that serves that project (its own
-`serve-project` over the project's workspace and journal), which the product stores and dials
-like any other server. Without it the product is an agent harness alone and says so at start.
+the product declares its hub as one of its servers (`swem-cycle serve --projects
+<data>/projects …`): the hub's home App appears on the switcher, and an agent attaches the hub
+by name and names a project on each call. Without it the product is an agent harness alone.
 
 ## Extending it
 

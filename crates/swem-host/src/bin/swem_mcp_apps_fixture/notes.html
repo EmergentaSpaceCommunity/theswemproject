@@ -25,6 +25,8 @@
 <input id="note-text" placeholder="text">
 <button id="note-save" disabled>Save note</button>
 <button id="observed-ack" disabled>Acknowledge agent call</button>
+<button id="give-context" disabled>Give this board to the agent</button>
+<button id="drop-context" disabled>Let go of it</button>
 <div id="note-status">initializing…</div>
 <script>
 "use strict";
@@ -57,6 +59,25 @@ function notify(method, params) {
   window.parent.postMessage({jsonrpc: "2.0", method, params}, "*");
 }
 
+// What a person is looking at, said to the host for the agent's next turn
+// (`ui/update-model-context`): a sentence and a link the agent can follow.
+// An update with no content lets go of it.
+document.getElementById("give-context").addEventListener("click", () => {
+  request("ui/update-model-context", {
+    content: [
+      {type: "text", text: "The note board, as the person sees it now."},
+      {type: "resource_link", uri: "ui://apps-fixture/notes", name: "the note board", mimeType: "text/html;profile=mcp-app"},
+    ],
+  })
+    .then(() => status("context given"))
+    .catch((error) => status("context refused: " + error.message));
+});
+document.getElementById("drop-context").addEventListener("click", () => {
+  request("ui/update-model-context", {content: []})
+    .then(() => status("context let go"))
+    .catch((error) => status("context refused: " + error.message));
+});
+
 window.addEventListener("message", (event) => {
   const message = event.data;
   if (!message || message.jsonrpc !== "2.0") return;
@@ -77,6 +98,8 @@ window.addEventListener("message", (event) => {
     observedInput = message.params && message.params.arguments
       ? message.params.arguments : {};
     document.getElementById("note-save").disabled = false;
+    document.getElementById("give-context").disabled = false;
+    document.getElementById("drop-context").disabled = false;
     if (typeof observedInput.nonce === "string") {
       document.getElementById("note-nonce").value = observedInput.nonce;
       document.getElementById("note-text").value = observedInput.text || "";

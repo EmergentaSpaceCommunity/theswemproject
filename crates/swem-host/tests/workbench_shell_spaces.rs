@@ -96,7 +96,7 @@ async fn a_server_with_a_home_app_is_a_space_and_one_without_is_not() {
         refused.to_string().contains("declares no home App"),
         "{refused}"
     );
-    state.project_app_close(&opened.app_id).await.ok();
+    state.space_app_close(&opened.app_id).await.ok();
 
     // The same server without the marker is an ordinary server: no space.
     let plain = shell_with_fixture(&fresh_root("plain"), "notes", false);
@@ -129,7 +129,7 @@ async fn an_app_may_call_a_tool_its_server_declared_after_it_was_dialled() {
     };
     // Not declared yet: asked of the server once more, and refused.
     let before = state
-        .project_app_rpc(&opened.app_id, call(1))
+        .space_app_rpc(&opened.app_id, call(1))
         .await
         .expect("the relay answers");
     assert_eq!(before["error"]["code"], -32602, "{before}");
@@ -144,7 +144,7 @@ async fn an_app_may_call_a_tool_its_server_declared_after_it_was_dialled() {
     // The server declares it; the same call goes through.
     std::fs::write(root.join("notes-late-tool"), b"arrived").expect("the tool arrives");
     let after = state
-        .project_app_rpc(&opened.app_id, call(2))
+        .space_app_rpc(&opened.app_id, call(2))
         .await
         .expect("the relay answers");
     assert!(after.get("error").is_none(), "{after}");
@@ -152,5 +152,5 @@ async fn an_app_may_call_a_tool_its_server_declared_after_it_was_dialled() {
         after["result"]["content"][0]["text"], "the late tool answered",
         "{after}"
     );
-    state.project_app_close(&opened.app_id).await.ok();
+    state.space_app_close(&opened.app_id).await.ok();
 }

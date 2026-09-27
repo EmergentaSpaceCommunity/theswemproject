@@ -22,13 +22,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
+use agent_client_protocol::schema::v1::McpServer;
 
 use crate::workbench_shell::{Catalog, WorkbenchShellHandle};
-use crate::{
-    AgentDiscovery, ProductSupply, ProjectFactory, Readiness, WorkbenchAgentOption,
-    WorkbenchShellState,
-};
+use crate::{AgentDiscovery, Readiness, WorkbenchAgentOption, WorkbenchShellState};
 
 /// Where the agent is inside the image a container environment runs it in,
 /// by convention, so a person needs to say only which image.
@@ -96,22 +93,10 @@ impl DataRoot {
         self.root.join("routes.jsonl")
     }
 
-    /// Where projects live, one directory each with its declaration beside it.
-    #[must_use]
-    pub fn projects(&self) -> PathBuf {
-        self.root.join("projects")
-    }
-
     /// Where this product installs things: agents, tools, servers, skills.
     #[must_use]
     pub fn installed(&self) -> PathBuf {
         self.root.join("installed")
-    }
-
-    /// Where a package a person installs lands.
-    #[must_use]
-    pub fn plugins(&self) -> PathBuf {
-        self.root.join("plugins")
     }
 
     /// The Store's indexes and the registry's cached copy.
@@ -162,26 +147,12 @@ impl DataRoot {
         self.root.join("agents")
     }
 
-    /// The file the project server reads tool paths from at every close.
-    #[must_use]
-    pub fn tools_file(&self) -> PathBuf {
-        crate::tools_file(&self.installed())
-    }
-
     /// Where products before 2026-09-25 installed agents: a sibling of the
     /// data root (`<data home>/swem/agents`) rather than inside it.
     #[must_use]
     pub fn legacy_agents_home(&self) -> Option<PathBuf> {
         self.root.parent().map(|parent| parent.join("agents"))
     }
-}
-
-/// The server projects are made on: how it is started, spelled by whoever
-/// assembles the product. The harness knows nothing of what it serves.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProjectServer {
-    pub command: PathBuf,
-    pub args: Vec<String>,
 }
 
 /// The product before a door is opened onto it.
@@ -196,15 +167,12 @@ pub struct Product {
     container_image: Option<String>,
     agent_in_image: String,
     mcp_observer: Option<(PathBuf, Vec<String>)>,
-    project_server: Option<ProjectServer>,
-    supply: Option<Box<dyn ProductSupply>>,
-    package_directories: Option<Vec<PathBuf>>,
 }
 
 impl Product {
     /// A product over `root`, with the defaults a person's machine gets: a
     /// ten-minute operation timeout, the public agent registry, no shipped
-    /// catalog, no container image, no project server.
+    /// catalog, no container image, no server declared.
     #[must_use]
     pub fn at(root: DataRoot) -> Self {
         Self {
@@ -218,9 +186,6 @@ impl Product {
             container_image: None,
             agent_in_image: AGENT_IN_THE_IMAGE.to_owned(),
             mcp_observer: None,
-            project_server: None,
-            supply: None,
-            package_directories: None,
         }
     }
 
@@ -292,31 +257,6 @@ impl Product {
         self
     }
 
-    /// The server projects are made on. Without one the product runs as an
-    /// agent harness alone and says so when a project is asked for.
-    #[must_use]
-    pub fn project_server(mut self, server: Option<ProjectServer>) -> Self {
-        self.project_server = server;
-        self
-    }
-
-    /// The package directories every project's server loads, for the page's
-    /// listing of them: what a distribution ships beside its binary and what
-    /// this person installed. Only `<root>/plugins` when not named.
-    #[must_use]
-    pub fn package_directories(mut self, directories: Vec<PathBuf>) -> Self {
-        self.package_directories = Some(directories);
-        self
-    }
-
-    /// What the product may say about packages: a supply the embedder
-    /// provides, since the harness reads no package itself.
-    #[must_use]
-    pub fn product_supply(mut self, supply: Box<dyn ProductSupply>) -> Self {
-        self.supply = Some(supply);
-        self
-    }
-
     /// Everything the product is, opened and enabled, with no door yet.
     ///
     /// # Errors
@@ -333,17 +273,14 @@ impl Product {
             .map_err(|error| format!("create the data root {}: {error}", root.path().display()))?;
         let profiles = self.profiles.unwrap_or_else(|| root.profiles());
         let routes = self.routes.unwrap_or_else(|| root.routes());
-        // Connection-local MCP declarations, keyed by their ACP names, shared
-        // with the shell so a project created from the product is attachable
-        // by an agent session without a restart.
+        // The MCP declarations of this product, keyed by their ACP names and
+        // shared with the shell, so a server declared while the product runs
+        // is attachable by an agent session without a restart.
         let declarations: Arc<Mutex<BTreeMap<String, McpServer>>> = Arc::default();
         {
             let mut held = declarations
                 .lock()
                 .map_err(|_| "declaration registry poisoned")?;
-            for server in projects_declared_under(&root.projects())? {
-                held.insert(declaration_name(&server)?, server);
-            }
             for server in self.declarations {
                 held.insert(declaration_name(&server)?, server);
             }
@@ -352,12 +289,6 @@ impl Product {
         let agents_root = root.agents();
         let declared_agents = crate::declared_agents(&agents_root)?;
         let discovered = crate::discover_agents_with(declared_agents.clone(), &installed_root);
-        let project_declarations: Vec<McpServer> = declarations
-            .lock()
-            .map_err(|_| "declaration registry poisoned")?
-            .values()
-            .cloned()
-            .collect();
         let container_image = self.container_image.or_else(|| {
             std::env::var(CONTAINER_IMAGE_VAR)
                 .ok()
@@ -399,7 +330,7 @@ impl Product {
                     .map_err(|_| "declaration registry poisoned".to_owned())?;
                 for attachment in &profile.attachments {
                     let server = declared.get(&attachment.server_name).ok_or_else(|| {
-                        format!("no declared project named {}", attachment.server_name)
+                        format!("no declared server named {}", attachment.server_name)
                     })?;
                     mcp_servers.push(server.clone());
                 }
@@ -461,38 +392,15 @@ impl Product {
         state
             .enable_store(&root.indexes(), self.shipped)
             .map_err(|error| error.to_string())?;
-        state
-            .enable_projects(project_declarations)
-            .map_err(|error| error.to_string())?;
         // The MCP servers a person declares from the product land in the same
-        // declaration map the projects use, so an agent attaches either kind
-        // by name - but they are not projects, so they are loaded after the
-        // Project space has taken its own list.
+        // declaration map as the ones the product itself declared, so an
+        // agent attaches either kind by name.
         state
             .enable_mcp_catalogue(&root.mcp_servers(), Arc::clone(&declarations))
             .map_err(|error| error.to_string())?;
         state
             .enable_model_providers(&root.model_providers())
             .map_err(|error| error.to_string())?;
-        if let Some(supply) = self.supply {
-            state
-                .enable_product_supply(supply)
-                .map_err(|error| error.to_string())?;
-        }
-        if let Some(server) = self.project_server {
-            let hub = McpServerStdio::new("swem-cycle", server.command).args(server.args);
-            state
-                .enable_project_creation(ProjectFactory {
-                    root: root.projects(),
-                    hub,
-                    plugins: self
-                        .package_directories
-                        .unwrap_or_else(|| vec![root.plugins()]),
-                    packages_home: root.plugins(),
-                    attachments: Arc::clone(&declarations),
-                })
-                .map_err(|error| error.to_string())?;
-        }
         if let Some((executable, args)) = self.mcp_observer {
             state.set_mcp_observer_command(executable, args);
         }
@@ -568,24 +476,6 @@ impl Assembled {
     }
 }
 
-/// Every project made under `projects` before: its declaration lives beside
-/// it, so there is no index to fall out of step.
-fn projects_declared_under(projects: &Path) -> Result<Vec<McpServer>, String> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(projects).into_iter().flatten().flatten() {
-        let manifest = entry.path().join("project.json");
-        if !manifest.is_file() {
-            continue;
-        }
-        let bytes = std::fs::read(&manifest)
-            .map_err(|error| format!("read {}: {error}", manifest.display()))?;
-        let server: McpServer = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parse {}: {error}", manifest.display()))?;
-        found.push(server);
-    }
-    Ok(found)
-}
-
 fn declaration_name(server: &McpServer) -> Result<String, String> {
     match server {
         McpServer::Stdio(stdio) => Ok(stdio.name.clone()),
@@ -636,7 +526,6 @@ impl std::fmt::Debug for Product {
             .debug_struct("Product")
             .field("root", &self.root)
             .field("acp_registry", &self.acp_registry)
-            .field("project_server", &self.project_server)
             .finish_non_exhaustive()
     }
 }

@@ -3,7 +3,7 @@
 //
 // The main area has three panels, because configuring an agent, signing it in
 // and talking to it are three different things a person does with it, and all
-// three belong to the agent rather than to a project.
+// three belong to the agent rather than to what it works on.
 
 import { useEffect, useState } from "react";
 

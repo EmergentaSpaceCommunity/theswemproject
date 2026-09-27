@@ -79,6 +79,14 @@ const DOMAIN_WORDS: &[&str] = &[
     "rust_realization",
     "lower_software",
     "ffmpeg",
+    // The vocabulary of the server that serves projects. The harness once
+    // drew a Project space of its own from these; that space is the
+    // server's App now, and the harness reads none of them.
+    "swem://project",
+    "swem-project-envelope",
+    "record_set_digest",
+    "create_project",
+    "project_vision",
 ];
 
 /// Domain packages the harness must not name. It carries `swem-domain-music`
@@ -183,6 +191,12 @@ const SURFACE_DOMAIN_WORDS: &[&str] = &[
     "move_clip",
     "trim_clip",
     "split_clip",
+    "swem://project",
+    "swem-project-envelope",
+    "record_set_digest",
+    "create_project",
+    "project_vision",
+    "add_slot",
 ];
 
 /// The rule can fail. A scan whose word list never matches anything is a

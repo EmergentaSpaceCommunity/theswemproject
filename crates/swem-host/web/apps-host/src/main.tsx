@@ -7,9 +7,8 @@ import { toggleDev, useDev } from "./dev.ts";
 import { AgentSpace } from "./agent/AgentSpace.tsx";
 import { PermissionDialog } from "./agent/PermissionDialog.tsx";
 import { StructuredDialog } from "./agent/StructuredDialog.tsx";
-import { ProjectSpace } from "./project/ProjectSpace";
-import { DomainApp } from "./project/DomainApps";
-import { fetchJson } from "./project/api";
+import { fetchJson } from "./http.ts";
+import { ServerApp } from "./spaces/ServerApp.tsx";
 import { StoreSpace } from "./store/StoreSpace.tsx";
 
 declare global {
@@ -18,10 +17,10 @@ declare global {
   }
 }
 
-/// The three spaces the host draws itself, and one per server that declares
+/// The two spaces the host draws itself, and one per server that declares
 /// a home App: a surface the server ships and the host shows as a space of
 /// its own (`/api/spaces`), opened without a tool call.
-type Space = "agent" | "project" | "store" | { server: string };
+type Space = "agent" | "store" | { server: string };
 const SPACE_KEY = "swem.workbench.space";
 interface SpaceView { server: string; uri: string; name: string; description?: string }
 const sameSpace = (left: Space, right: Space): boolean =>
@@ -50,15 +49,14 @@ function useSpaces(): SpaceView[] {
 type Theme = "dark" | "light";
 const THEME_KEY = "swem.workbench.theme";
 
-/// The product lands on the Project space: the ladder is the door for a
-/// person and an agent alike, and the agent is set up from the project.
-/// A person who chose the Agent space keeps it.
+/// The product lands on the Agent space, the one space every product has.
+/// A person who chose the Store keeps it; a server's space is chosen again
+/// each time, because whether it is offered is the server's to say.
 function loadSpace(): Space {
   try {
-    const kept = localStorage.getItem(SPACE_KEY);
-    return kept === "agent" || kept === "store" ? kept : "project";
+    return localStorage.getItem(SPACE_KEY) === "store" ? "store" : "agent";
   } catch {
-    return "project";
+    return "agent";
   }
 }
 
@@ -90,9 +88,6 @@ function SpaceSwitcher({ space, spaces, onSelect }: { space: Space; spaces: Spac
     <nav id="space-switcher" className="space-bar" aria-label="Workbench spaces">
       <button id="space-agent" aria-pressed={space === "agent"} onClick={() => onSelect("agent")}>
         Agent space
-      </button>
-      <button id="space-project" aria-pressed={space === "project"} onClick={() => onSelect("project")}>
-        Project space
       </button>
       <button id="space-store" aria-pressed={space === "store"} onClick={() => onSelect("store")}>
         Store
@@ -151,18 +146,14 @@ function Workbench() {
         <Guard what="The Agent space">
           <AgentSpace hidden={space !== "agent"} />
         </Guard>
-        <Guard what="The Project space">
-          <ProjectSpace hidden={space !== "project"} />
-        </Guard>
         <Guard what="The Store">
           <StoreSpace hidden={space !== "store"} />
         </Guard>
-        {/* A server's own space: its home App, filling the main area, opened
-            through the host's door for spaces rather than through a project. */}
+        {/* A server's own space: its home App, filling the main area. */}
         {opened ? (
           <Guard what={`The space of ${opened.server}`}>
             <main id="server-space" className="server-space" data-server={opened.server}>
-              <DomainApp server={opened.server} uri={opened.uri} changed={null} openPath={`/api/spaces/${encodeURIComponent(opened.server)}/open`} />
+              <ServerApp server={opened.server} uri={opened.uri} />
             </main>
           </Guard>
         ) : null}

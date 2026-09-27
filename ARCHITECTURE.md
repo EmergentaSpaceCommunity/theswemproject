@@ -13,8 +13,8 @@ A library plus test fixtures. It owns:
 
 - **The product.** `product.rs`: the data root's layout by name (`DataRoot`), the builder
   (`Product`) that assembles everything the product is - profiles, ledger, declared servers,
-  discovery, installs, the Store, projects, the catalogue, model providers, the container
-  resolver, project creation - and the doors onto it (`Assembled::serve`, `editor_door`). The
+  discovery, installs, the Store, the catalogue, model providers, the container resolver - and
+  the doors onto it (`Assembled::serve`, `editor_door`). The
   product binary and an embedding application are both its callers.
 - **Agents.** Discovery of ACP agents: a built-in catalogue of the ones this build describes, the
   agents a person declares (`<data root>/agents/*.json`), and the receipts under the install root.
@@ -45,13 +45,19 @@ A library plus test fixtures. It owns:
   tool its server declares as App-visible, and `resources/read`; a tool the host has not seen is
   asked of the server once more before it is refused, because a server may gain tools while it
   runs).
-- **The Project space's host side** (`workbench_project.rs`, `workbench_content.rs`): reading a
-  project server's resources and calling its tools on behalf of the page, and creating a project
-  through a `ProjectFactory` the product hands it. The host reads what the server publishes; it
-  never interprets a domain.
-- **The page** (`web/apps-host`): React over the shell's HTTP surface. Three spaces - Agent,
-  Project, Store - one design vocabulary (`web/view-kit`), no protocol nouns on screen; diagnostics
-  behind a Dev switch.
+- **Spaces** (`workbench_shell/server_apps.rs`): a declared server that marks one of its App
+  resources as its home is a space on the Workbench; opening the space opens that App, outside
+  any agent session, through the same sandbox and the same relay. The host keeps no registry of
+  spaces and draws none for a server.
+- **What the agent is given** (`workbench_shell/model_context.rs`): an App says what a person is
+  looking at (`ui/update-model-context`); the host keeps the last update per connection,
+  refuses one from a server the session does not attach, and hands the blocks to the agent with
+  every next turn until a person lets go of it. It interprets none of it.
+- **Content** (`workbench_content.rs`): the bytes a person hands an agent and an agent hands
+  back, by descriptor.
+- **The page** (`web/apps-host`): React over the shell's HTTP surface. Two spaces of its own -
+  Agent and Store - and one per server that offers a home App; one design vocabulary
+  (`web/view-kit`), no protocol nouns on screen; diagnostics behind a Dev switch.
 
 The host names no domain. A structural test (`tests/genericity.rs`) scans its source for domain
 words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate.
@@ -60,13 +66,13 @@ words and fails when one appears. `cargo tree -p swem-host -e normal` names no o
 
 The `swem` binary: the crate's product builder over this machine's data root, given what this
 distribution adds - the catalog it ships, the observer command, and the Cycle hub beside it, from
-the Store or on `PATH`, as the server projects are made on. Subcommands cover the same ground from
+the Store or on `PATH`, declared as one of the product's servers. Subcommands cover the same ground from
 a terminal: `swem agents list|plan-install|install|verify|session`, `swem profiles`,
 `swem environments`, `swem acp --profile <id>`, `swem workbench serve`.
 
-The product knows the Cycle only as a server it can be given: its name (`swem-cycle`), the hub's
-subcommand (`serve --projects …`) it dials to make a project, and the `create_project` tool that
-answers a project's declaration. Nothing of the Cycle is compiled in.
+The product knows the Cycle only as a server it declares: its name (`swem-cycle`) and how the
+hub is started (`serve --projects …` over directories of the product's data root). What the
+hub serves, and the space it shows, are the hub's. Nothing of the Cycle is compiled in.
 
 ## Boundaries that hold
 
@@ -78,8 +84,8 @@ answers a project's declaration. Nothing of the Cycle is compiled in.
   applies only against the exact plan the person confirmed. A plan that moved is refused.
 - **Secrets never reach a record.** A profile's secrets live in its vault and are injected at
   launch; a declaration's environment values are never listed back.
-- **The page does not hold domain truth.** What the page shows of a project is read from the
-  server that serves it, at the revision it names.
+- **The page does not hold domain truth.** What a server's space shows is the server's App,
+  reading the server through the host's relay; the host's own page draws none of it.
 - **A walk presses what a person presses.** The product gate drives the real binary in a real
   browser through real controls; no test satisfies a product claim by seeding an internal API.
 
@@ -96,5 +102,6 @@ answers a project's declaration. Nothing of the Cycle is compiled in.
   model-providers/<id>.json       model providers a person added
   workspaces/, agent-homes/       where profiles work and live
   environments/                   prepared environments (containers)
-  projects/<slug>/                projects, when a Cycle serves them
+  projects/, plugins/             the Cycle hub's, when the product declares one; the harness
+                                  reads neither
 ```

@@ -239,11 +239,6 @@ impl WorkbenchShellState {
             .mcp_catalogue
             .get()
             .map(McpCatalogue::declared)
-            .or_else(|| {
-                self.project_factory
-                    .get()
-                    .map(|factory| std::sync::Arc::clone(&factory.attachments))
-            })
             .ok_or_else(|| {
                 WorkbenchShellError::NotFound("this host declares no MCP servers to attach".into())
             })?;

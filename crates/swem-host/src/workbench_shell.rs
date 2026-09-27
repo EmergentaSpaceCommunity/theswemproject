@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::v1::{
     ContentBlock, ElicitationAction as AcpElicitationAction, ElicitationCapabilities,
     ElicitationFormCapabilities, ElicitationUrlCapabilities, EmbeddedResourceResource,
-    FileSystemCapabilities, McpServer, McpServerStdio,
+    FileSystemCapabilities, McpServer,
 };
 use base64::Engine as _;
 use futures_util::TryStreamExt as _;
@@ -46,27 +46,21 @@ pub use model_providers::{
     DeclareModelProviderBody, MODEL_PROVIDER_SCHEMA, ModelChoice, ModelProvider, ModelProviderBook,
     ModelProviderOrigin, ModelProviderView,
 };
-#[path = "workbench_shell/project_apps.rs"]
-mod project_apps;
-pub use project_apps::SpaceView;
-mod project_tools;
-mod recipes;
-pub use recipes::{RecipeRun, RecipeStepRun, RecipeView};
+#[path = "workbench_shell/server_apps.rs"]
+mod server_apps;
+pub use server_apps::SpaceView;
+#[path = "workbench_shell/model_context.rs"]
+mod model_context;
+pub use model_context::{BindModelContextBody, ModelContext, ModelContextBlock};
 #[path = "workbench_shell/schedules.rs"]
 mod schedules;
 mod store;
 pub use schedules::{SCHEDULE_SURFACE, Schedule, ScheduleBook, SetScheduleBody};
 #[path = "workbench_shell/terminal.rs"]
 mod terminal;
-use crate::workbench_content::{
-    WorkbenchContentDescriptor, WorkbenchContentSource, WorkbenchContentStore,
-};
+use crate::workbench_content::{WorkbenchContentSource, WorkbenchContentStore};
 use crate::workbench_observation::{
     ObservationIngress, ObservationRuntime, ObservedAppCall, ObserverCommand,
-};
-use crate::workbench_project::{
-    self, AgentContextBinding, BindAgentContextBody, EnvelopeRead, MaterializeArtifactBody,
-    ProjectSourceView, ProjectSources,
 };
 use crate::{
     CredentialSourceRef, EnvironmentLease, EnvironmentRequirements, EnvironmentTransport,
@@ -224,11 +218,6 @@ pub fn credential_environment(
 
 /// The static shell page served at `/`. It knows profile/route/driver/event
 /// vocabulary only; agents, Cycle, Telegram and domain schemas never appear.
-/// How often the host re-reads a watched project's digest. Short enough that a
-/// human sees an agent's edit land while still looking at it, long enough that
-/// an idle project is not re-derived continuously.
-const PROJECT_WATCH_INTERVAL: Duration = Duration::from_millis(700);
-
 const SHELL_HTML: &str = include_str!("workbench_shell/shell.html");
 /// The shared view kit: one stylesheet the shell and every domain App render
 /// from. It lives at the repository root rather than inside this crate because
@@ -656,7 +645,7 @@ struct WorkbenchConnection {
     /// Exact project refs the operator bound as the next turns' context.
     /// Connection-local: it dies with the connection and is never restored
     /// from the ledger (re-binding is an explicit act).
-    agent_context: tokio::sync::Mutex<Option<AgentContextBinding>>,
+    model_context: tokio::sync::Mutex<Option<ModelContext>>,
     context_events: AtomicU64,
     /// What the profile's setup came to on this connection, in sentences:
     /// where the role went, which variable the model took, whether the agent
@@ -668,17 +657,6 @@ struct WorkbenchConnection {
 pub struct ObservedAppOpen {
     pub opened: OpenedApp,
     pub observation: ObservedAppCall,
-}
-
-/// The project changed: its record set is no longer the one the caller saw.
-///
-/// The digest is the Cycle's own `record_set_digest` - SHA-256 over the sorted
-/// set of record refs the envelope was derived from - so it answers exactly
-/// "is anything different?" and nothing else. The caller passes the last one it
-/// held back as `after`.
-#[derive(Clone, Debug, Serialize)]
-pub struct ProjectChange {
-    pub record_set_digest: String,
 }
 
 /// One host-discovered agent shown by the first-run Workbench. Discovery is
@@ -715,35 +693,6 @@ struct LocalOnboarding {
 /// receipts - so the shell holds it as a function and calls it when the answer
 /// can have changed.
 type RediscoverAgents = Box<dyn Fn() -> Vec<WorkbenchAgentOption> + Send + Sync>;
-
-/// How the host makes a project when a person asks for one: a directory to
-/// put it in and the command that serves it. The command is this product's own
-/// binary, so a project is a workspace, a journal and one declaration - never a
-/// file the person has to write.
-#[derive(Clone, Debug)]
-pub struct ProjectFactory {
-    /// Where projects live: `<root>/<slug>/{workspace,journal,project.json}`,
-    /// the layout the hub writes and this host reads back at the next start.
-    pub root: PathBuf,
-    /// The Cycle hub that makes projects: dialled for `create_project`, which
-    /// answers the declaration that serves the project. What every project's
-    /// server loads - packages, the tools file, the environment root - is the
-    /// hub's to know; it is in this declaration's arguments, not here.
-    pub hub: McpServerStdio,
-    /// The package directories every project's server loads, for the page's
-    /// listing of them: the ones the distribution ships and the ones this
-    /// person installed. Owed to the hub, which will list packages itself.
-    pub plugins: Vec<PathBuf>,
-    /// Where a package a person installs lands (`<data root>/plugins`). It is
-    /// one of `plugins`, named on its own because that list may also hold
-    /// directories the command line pointed at, which are not ours to write
-    /// into.
-    pub packages_home: PathBuf,
-    /// The declarations a personal agent profile may attach to, by ACP name.
-    /// A project created here lands in the same map, so an agent session can
-    /// be bound to it without restarting the product.
-    pub attachments: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
-}
 
 /// The official MCP Apps bridge this product was built against, committed in
 /// the repository and pinned by the bundle-freshness gate.
@@ -810,41 +759,20 @@ pub struct WorkbenchShellState {
     onboarding: std::sync::OnceLock<LocalOnboarding>,
     /// How to ask the host what is installed now; see `set_agent_discovery`.
     rediscover: std::sync::OnceLock<RediscoverAgents>,
-    /// Connection-local MCP declarations the Project space may dial without
-    /// any agent session. Environment-free by construction: no resolver, no
-    /// lease, no profile takes part. Mutable because a person creates projects
-    /// from the product rather than by writing declaration files by hand.
-    project_declarations: std::sync::Mutex<Vec<McpServer>>,
-    /// Boot-time enabling happens once; `declare_project` is what adds later.
-    projects_enabled: std::sync::OnceLock<()>,
-    /// Where `create_project` puts a new project and which command serves it.
-    /// Absent in tests and embedders that declare their projects themselves.
-    project_factory: std::sync::OnceLock<ProjectFactory>,
     /// The ACP registry index this product reads, when its builder named
     /// one; else the crate's default for this process.
     acp_registry_index: std::sync::OnceLock<String>,
-    /// The project sources this host may dial (resources-only clients), one
-    /// slot per declaration, dialled the first time somebody opens that one.
-    /// Refreshed from `project_declarations` by name on every use, so a
-    /// project declared while another is open is found on the next request
-    /// and the open one keeps its child.
-    projects: ProjectSources,
-    /// The project Apps this host may dial, the same way: one slot per
-    /// declaration, dialled when an App of that project is opened or acted
-    /// on, refreshed by name. There is no generation to compare any more:
-    /// a project declared while another is being read is found because the
-    /// next lookup reads the declarations, and nothing built earlier has to
-    /// be thrown away for that - which is what a `try_lock` clear once
-    /// silently failed to do, leaving a new project "not answering".
-    project_apps: project_apps::ProjectApps,
+    /// The Apps of the servers this host declared, outside any agent
+    /// session: one slot per declaration, dialled when a space of that
+    /// server is listed or opened, refreshed by name. A server declared
+    /// while another's App is open is found because the next lookup reads
+    /// the declarations, and nothing built earlier is thrown away for it.
+    server_apps: server_apps::ServerApps,
     /// The MCP servers a person declared for their agents, and the directory
     /// they are kept in. Absent in tests and embedders that declare their own.
     mcp_catalogue: std::sync::OnceLock<McpCatalogue>,
     /// The model providers a profile may name, shipped and declared.
     model_providers: std::sync::OnceLock<ModelProviderBook>,
-    /// What the product root supplies about packages; a host alone has
-    /// none and lists nothing.
-    supply: std::sync::OnceLock<Box<dyn crate::ProductSupply>>,
     /// Where what this product installs lands (`<data root>/installed`), when
     /// installing is enabled; a host alone installs nothing.
     installed_root: std::sync::OnceLock<PathBuf>,
@@ -996,56 +924,15 @@ impl WorkbenchShellState {
             mcp_observer: std::sync::OnceLock::new(),
             onboarding: std::sync::OnceLock::new(),
             rediscover: std::sync::OnceLock::new(),
-            project_declarations: std::sync::Mutex::new(Vec::new()),
-            projects_enabled: std::sync::OnceLock::new(),
-            project_factory: std::sync::OnceLock::new(),
             acp_registry_index: std::sync::OnceLock::new(),
-            projects: ProjectSources::new(),
-            project_apps: project_apps::ProjectApps::new(),
+            server_apps: server_apps::ServerApps::new(),
             mcp_catalogue: std::sync::OnceLock::new(),
             model_providers: std::sync::OnceLock::new(),
-            supply: std::sync::OnceLock::new(),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
             schedules: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
         })
-    }
-
-    /// Declare the MCP servers the Project space may dial on its own. Nothing
-    /// is spawned here; discovery happens on the first project read.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for duplicate names or when already configured.
-    pub fn enable_projects(&self, declarations: Vec<McpServer>) -> Result<(), WorkbenchShellError> {
-        let mut names = BTreeSet::new();
-        for declaration in &declarations {
-            let name = match declaration {
-                McpServer::Stdio(stdio) => stdio.name.clone(),
-                McpServer::Http(http) => http.name.clone(),
-                McpServer::Sse(sse) => sse.name.clone(),
-                other => {
-                    return Err(WorkbenchShellError::Invalid(format!(
-                        "unsupported MCP declaration transport: {other:?}"
-                    )));
-                }
-            };
-            if !names.insert(name.clone()) {
-                return Err(WorkbenchShellError::Invalid(format!(
-                    "duplicate project declaration {name}"
-                )));
-            }
-        }
-        self.projects_enabled
-            .set(())
-            .map_err(|()| WorkbenchShellError::Conflict("projects already enabled".into()))?;
-        *self
-            .project_declarations
-            .lock()
-            .map_err(|_| WorkbenchShellError::Invalid("project declarations poisoned".into()))? =
-            declarations;
-        Ok(())
     }
 
     /// What installing `agent_id` would fetch, so the person consents to an
@@ -1171,668 +1058,19 @@ impl WorkbenchShellState {
         Ok(crate::all_receipts(self.installed_root()?))
     }
 
-    fn factory(&self) -> Result<&ProjectFactory, WorkbenchShellError> {
-        self.project_factory
-            .get()
-            .ok_or_else(|| WorkbenchShellError::NotFound("project creation is not enabled".into()))
-    }
-
-    /// The tools loaded packages declare for this machine, each with the
-    /// exact plan installing it consents to, and whether it is installed.
-    ///
-    /// # Errors
-    ///
-    /// Not found when this host installs nothing.
-    pub fn tools(&self) -> Result<Vec<crate::ToolView>, WorkbenchShellError> {
-        Ok(crate::tool_views_of(
-            &self.declared_tools(),
-            self.installed_root()?,
-        ))
-    }
-
-    /// Every tool a person could install here: the ones this process
-    /// assembled, plus the ones of packages installed into it since it
-    /// started.
-    ///
-    /// The two sources are not the same set, for the reason
-    /// `declared_secret_types` gives: `assembly::configure` fixes this
-    /// process's module set once, so a package installed into a running host
-    /// never joins the host's own vocabulary. Without reading the installed
-    /// manifests as well, a person who installs a package that brings a tool
-    /// is shown no tool to install, and the adapters that ask the host for it
-    /// have nothing to be given until the product is restarted.
-    fn declared_tools(&self) -> Vec<crate::SupplyTool> {
-        self.supply().tools(self.packages_home())
-    }
-
-    /// Install one declared tool against the plan the person saw; the file
-    /// the Cycle reads is rewritten, so the next close has it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an unknown tool, a moved plan, or a supply failure.
-    pub fn install_tool(
-        &self,
-        name: &str,
-        plan_id: &str,
-    ) -> Result<crate::ToolView, WorkbenchShellError> {
-        let view = self
-            .tools()?
-            .into_iter()
-            .find(|tool| tool.name == name)
-            .ok_or_else(|| {
-                WorkbenchShellError::NotFound(format!("no loaded package declares tool {name}"))
-            })?;
-        let executable = crate::install_tool(&view, plan_id, self.installed_root()?)
-            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
-        Ok(crate::ToolView {
-            executable: Some(executable),
-            ..view
-        })
-    }
-
-    /// Every package this product reads, whether or not it loads, wherever it
-    /// came from: the ones the distribution ships beside the binary and the
-    /// ones this person installed. Listing only the second is what made a page
-    /// say "Packages (0)" while the domain it was showing came from a package.
-    ///
-    /// A package the loader refuses is listed with its diagnostic rather
-    /// than left out, because a person who installed it needs to know.
-    ///
-    /// # Errors
-    ///
-    /// Not found when the product has no plugins directory.
-    pub fn packages(&self) -> Result<Vec<crate::PackageView>, WorkbenchShellError> {
-        let factory = self.factory()?;
-        Ok(factory
-            .plugins
-            .iter()
-            .flat_map(|directory| {
-                let home = if directory == &factory.packages_home {
-                    crate::PackageHome::Yours
-                } else {
-                    crate::PackageHome::Product
-                };
-                self.supply().package_views(directory, home)
-            })
-            .collect())
-    }
-
-    /// Read a source and answer the plan installing it consents to: what the
-    /// package is, what it declares and what it would replace. The package is
-    /// fetched, checked and loaded to answer this, so a package the Cycle
-    /// could not run is refused here rather than at the next start.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an unreadable source, a digest that does not match, or a
-    /// package the loader refuses.
-    pub fn plan_package(
-        &self,
-        source: &crate::PackageSource,
-    ) -> Result<crate::PackagePlan, WorkbenchShellError> {
-        let factory = self.factory()?;
-        self.supply()
-            .plan_package(source, &factory.packages_home)
-            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-    }
-
-    /// Install the package staged under the plan the person read. Every
-    /// project's Cycle started after this loads it; the process that did the
-    /// installing keeps the assembly it started with.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a plan nothing is staged under, which is what a plan gone
-    /// stale looks like.
-    pub fn install_package(
-        &self,
-        plan_id: &str,
-    ) -> Result<crate::PackageView, WorkbenchShellError> {
-        let factory = self.factory()?;
-        self.supply()
-            .install_package(plan_id, &factory.packages_home)
-            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-    }
-
-    /// The vault file of a project this product created.
-    fn project_vault(&self, server_name: &str) -> Result<PathBuf, WorkbenchShellError> {
-        let factory = self.factory()?;
-        let root = factory.root.join(server_name);
-        if !root.join("project.json").is_file() {
-            return Err(WorkbenchShellError::NotFound(format!(
-                "project {server_name} was not created by this product; it has no vault here"
-            )));
-        }
-        Ok(root.join(crate::PROJECT_VAULT_FILE))
-    }
-
-    /// What a project's vault holds and may hold; values never leave the
-    /// host.
-    ///
-    /// # Errors
-    ///
-    /// Not found for a project without a vault here.
-    pub fn project_secrets(
-        &self,
-        server_name: &str,
-    ) -> Result<crate::ProjectSecrets, WorkbenchShellError> {
-        let file = self.project_vault(server_name)?;
-        Ok(crate::ProjectSecrets {
-            types: self.declared_secret_types(),
-            entries: crate::project_secret_entries(&file)
-                .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?,
-        })
-    }
-
-    /// Every secret type a person could keep a value of here: the ones this
-    /// process assembled, plus the ones of packages installed into it since
-    /// it started.
-    ///
-    /// The two sources are not the same set, for the reason `declared_recipes`
-    /// gives: `assembly::configure` fixes this process's module set once, so a
-    /// package installed into a running host never joins the host's own
-    /// vocabulary, and yet its recipes are offered here and run in the Cycle
-    /// of every project opened afterwards. Without reading the installed
-    /// manifests as well, the recipe is offered and the key it requires has
-    /// nowhere to go until the product is restarted.
-    fn declared_secret_types(&self) -> Vec<crate::SupplySecretType> {
-        self.supply().secret_types(self.packages_home())
-    }
-
-    /// Where this person's own packages are installed, when this host
-    /// creates projects; a host that does not has no such place, and the
-    /// supply answers from what the distribution ships alone.
-    pub(crate) fn packages_home(&self) -> Option<&Path> {
-        self.factory()
-            .ok()
-            .map(|factory| factory.packages_home.as_path())
-    }
-
-    /// The product root's supply, or the empty one of a host alone.
-    pub(crate) fn supply(&self) -> &dyn crate::ProductSupply {
-        self.supply
-            .get()
-            .map_or(&crate::NoSupply as &dyn crate::ProductSupply, |supply| {
-                supply.as_ref()
-            })
-    }
-
-    /// Hand the host what the product root knows about packages: the
-    /// tools and secret types they declare, their recipes, and how one is
-    /// installed. Set once, before the shell serves.
-    ///
-    /// # Errors
-    ///
-    /// Conflict when a supply is already set.
-    pub fn enable_product_supply(
-        &self,
-        supply: Box<dyn crate::ProductSupply>,
-    ) -> Result<(), WorkbenchShellError> {
-        self.supply
-            .set(supply)
-            .map_err(|_| WorkbenchShellError::Conflict("the product supply is already set".into()))
-    }
-
-    /// Store one value of one declared type in a project's vault and return
-    /// the entry a `bind_secret` names.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a type no loaded package declares or an empty value.
-    pub fn set_project_secret(
-        &self,
-        server_name: &str,
-        type_id: &str,
-        value: &str,
-    ) -> Result<crate::ProjectSecretEntry, WorkbenchShellError> {
-        // Blanks are not a value. The empty check alone let a field of spaces
-        // through, and a vault entry of spaces reaches the release exactly as
-        // a real one does, so what is stored is refused here rather than
-        // discovered at the delivery. The value itself is kept as typed: only
-        // the emptiness is judged on the trimmed text.
-        if value.trim().is_empty() {
-            return Err(WorkbenchShellError::Invalid(
-                "a secret needs a value, not blanks".into(),
-            ));
-        }
-        if !self
-            .declared_secret_types()
-            .iter()
-            .any(|declared| declared.type_id == type_id)
-        {
-            return Err(WorkbenchShellError::Invalid(format!(
-                "no loaded package declares secret type {type_id}"
-            )));
-        }
-        let file = self.project_vault(server_name)?;
-        crate::set_project_secret(&file, server_name, type_id, value)
-            .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-    }
-
-    /// Enable project creation from the product: where new projects live and
-    /// which command serves them.
-    ///
-    /// # Errors
-    ///
-    /// Returns a conflict when creation is already configured.
-    pub fn enable_project_creation(
-        &self,
-        factory: ProjectFactory,
-    ) -> Result<(), WorkbenchShellError> {
-        self.project_factory
-            .set(factory)
-            .map_err(|_| WorkbenchShellError::Conflict("project creation already enabled".into()))
-    }
-
-    /// Create a project the person named, through the Cycle hub: the hub
-    /// makes the workspace, the journal and the declaration that serves them,
-    /// and answers that declaration; it is added to the Project space at once.
-    ///
-    /// The project is empty on purpose. What fills it is the person and their
-    /// agent working through the Cycle, not content the host invented.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a name the hub refuses (empty, unusable, already taken), a host
-    /// with no project factory configured, or a hub that does not answer.
-    pub async fn create_project(
-        &self,
-        name: &str,
-    ) -> Result<ProjectSourceView, WorkbenchShellError> {
-        let factory = self.project_factory.get().ok_or_else(|| {
-            WorkbenchShellError::Invalid("this host does not create projects".into())
-        })?;
-        let (hub, exit) = crate::workbench_apps::spawn_host_client(&factory.hub)
-            .await
-            .ok_or_else(|| {
-                WorkbenchShellError::Invalid(format!(
-                    "the Cycle hub did not answer: {} {}",
-                    factory.hub.command.display(),
-                    factory.hub.args.join(" ")
-                ))
-            })?;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("name".into(), serde_json::Value::String(name.to_owned()));
-        let answered = hub
-            .call_tool(
-                rmcp::model::CallToolRequestParams::new("create_project").with_arguments(arguments),
-            )
-            .await;
-        let _ = hub.cancel().await;
-        let _ = exit.wait().await;
-        let answered = answered.map_err(|error| {
-            WorkbenchShellError::Invalid(format!(
-                "the Cycle hub refused to create a project: {error}"
-            ))
-        })?;
-        if answered.is_error.unwrap_or(false) {
-            let sentence = answered
-                .content
-                .iter()
-                .filter_map(|block| block.as_text().map(|text| text.text.clone()))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return Err(if sentence.contains("already exists") {
-                WorkbenchShellError::Conflict(sentence)
-            } else {
-                WorkbenchShellError::Invalid(sentence)
-            });
-        }
-        let made = answered.structured_content.ok_or_else(|| {
-            WorkbenchShellError::Invalid("the Cycle hub answered no project".into())
-        })?;
-        let slug = made
-            .get("slug")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| WorkbenchShellError::Invalid("the Cycle hub named no slug".into()))?
-            .to_owned();
-        let declaration: McpServer = made
-            .get("declaration")
-            .cloned()
-            .ok_or_else(|| {
-                WorkbenchShellError::Invalid("the Cycle hub answered no declaration".into())
-            })
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(|error| {
-                    WorkbenchShellError::Invalid(format!("the Cycle hub's declaration: {error}"))
-                })
-            })?;
-        if let Ok(mut attachments) = factory.attachments.lock() {
-            attachments.insert(slug.clone(), declaration.clone());
-        }
-        self.declare_project(declaration)?;
-        // The one project just made is dialled here, and no other: a created
-        // project must answer before it is handed back, and that is the only
-        // fact worth a child process at this point.
-        self.project_source(&slug)
-            .await
-            .map(|entry| entry.view())
-            .map_err(|error| {
-                WorkbenchShellError::Invalid(format!(
-                    "project {slug} did not answer after creation: {error}"
-                ))
-            })
-    }
-
-    /// Add one declaration to the Project space and drop the discovery cache
-    /// so the next read dials it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a transport this host cannot dial or a name already declared.
-    pub fn declare_project(&self, declaration: McpServer) -> Result<(), WorkbenchShellError> {
-        let name = declaration_name(&declaration)?;
-        let mut declarations = self
-            .project_declarations
-            .lock()
-            .map_err(|_| WorkbenchShellError::Invalid("project declarations poisoned".into()))?;
-        if declarations
-            .iter()
-            .any(|held| declaration_name(held).is_ok_and(|held| held == name))
-        {
-            return Err(WorkbenchShellError::Conflict(format!(
-                "project {name} is already declared"
-            )));
-        }
-        declarations.push(declaration);
-        Ok(())
-    }
-
-    /// Bring the project sources up to date with the declarations, by name.
-    /// Dials nothing; a name already known keeps what it has.
-    fn refresh_project_sources(&self) {
-        let declarations = self
-            .project_declarations
-            .lock()
-            .map(|held| held.clone())
-            .unwrap_or_default();
-        self.projects.refresh(&declarations);
-    }
-
-    /// The dialled source of one project, dialling it now if nobody has.
-    /// Only this project: a request for one project never waits on another.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source or one that publishes no envelope;
-    /// failed when its process could not be started.
-    async fn project_source(
-        &self,
-        server_name: &str,
-    ) -> Result<Arc<workbench_project::ProjectSourceEntry>, WorkbenchShellError> {
-        self.refresh_project_sources();
-        self.projects.source(server_name).await
-    }
-
-    /// Every declared project, from what listing knows. A project nobody has
-    /// opened is listed by name with what the server says of itself absent;
-    /// one that has been opened carries its server's own words. Nothing is
-    /// dialled to answer this. Empty when nothing is declared.
-    ///
-    /// # Errors
-    ///
-    /// Never fails today; the signature leaves room for a failing refresh.
-    /// Not `async`: nothing here waits, which is the whole point of it.
-    pub fn projects(&self) -> Result<Vec<ProjectSourceView>, WorkbenchShellError> {
-        self.refresh_project_sources();
-        Ok(self.projects.views())
-    }
-
-    /// Read the whole envelope of one project source, verbatim.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source; failed when the read is refused.
-    pub async fn project_envelope(
-        &self,
-        server_name: &str,
-    ) -> Result<EnvelopeRead, WorkbenchShellError> {
-        self.project_source(server_name).await?.read_root().await
-    }
-
-    /// The digest of the record set this project's envelope was derived from.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source; failed when the read is refused or the
-    /// envelope does not carry the digest.
-    async fn project_record_digest(
-        &self,
-        server_name: &str,
-    ) -> Result<String, WorkbenchShellError> {
-        let read = self.project_envelope(server_name).await?;
-        serde_json::from_str::<Value>(&read.text)
-            .ok()
-            .as_ref()
-            .and_then(|envelope| envelope.get("record_set_digest"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                WorkbenchShellError::Failed(format!(
-                    "{server_name} published no record_set_digest to watch"
-                ))
-            })
-    }
-
-    /// Wait until this project's record set differs from `after`, or `wait`
-    /// elapses. `None` means nothing changed in that window; the caller asks
-    /// again with the digest it still holds.
-    ///
-    /// This polls, and that is a considered choice rather than a shortcut. The
-    /// Cycle publishes no resource notification, and even if it did, the
-    /// process an agent mutates is not this one: the agent owns its own MCP
-    /// child and this host opens an independent connection over the same
-    /// journal (see `workbench_apps.rs`). A notification emitted in a tool
-    /// handler would travel down the agent's pipe, not to the human's
-    /// workbench. So the host watches the digest the Cycle already computes -
-    /// once per project, on one schedule it controls - instead of every open
-    /// browser tab re-deriving the whole envelope on a timer of its own.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source; failed when the read is refused.
-    pub async fn next_project_change(
-        &self,
-        server_name: &str,
-        after: &str,
-        wait: Duration,
-    ) -> Result<Option<ProjectChange>, WorkbenchShellError> {
-        let deadline = tokio::time::Instant::now() + wait;
-        loop {
-            let digest = self.project_record_digest(server_name).await?;
-            if digest != after {
-                return Ok(Some(ProjectChange {
-                    record_set_digest: digest,
-                }));
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Ok(None);
-            }
-            tokio::time::sleep(PROJECT_WATCH_INTERVAL.min(remaining)).await;
-        }
-    }
-
-    /// Read one declared view (`selections` or `revisions`) by exact ref: the
-    /// URI comes from the envelope the server published, never from the host.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source or a ref the envelope does not declare.
-    pub async fn project_view(
-        &self,
-        server_name: &str,
-        kind: &str,
-        digest: &str,
-    ) -> Result<EnvelopeRead, WorkbenchShellError> {
-        let entry = self.project_source(server_name).await?;
-        let root = entry.read_root().await?;
-        let envelope: Value = serde_json::from_str(&root.text)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let reference = format!("sha256:{digest}");
-        let uri =
-            workbench_project::declared_view_uri(&envelope, kind, &reference).ok_or_else(|| {
-                WorkbenchShellError::NotFound(format!(
-                    "the project envelope of {server_name} declares no {kind} entry {reference}"
-                ))
-            })?;
-        entry.read_declared(&uri).await
-    }
-
-    /// Bring the bytes of one artifact the envelope lists into the content
-    /// store: read the blob at the URI the envelope declares, verify the
-    /// digest, ingest. The descriptor names the exact record the bytes belong
-    /// to; the bytes are then served like any other content, including as a
-    /// download. `scope` is the selection the caller is reading: the same bytes
-    /// can be produced by several branches, so the descriptor names a producing
-    /// execution only when that selection produced them, and names none rather
-    /// than one from a branch the reader is not on. Idempotent: the same bytes
-    /// read from the same selection yield the same descriptor.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown source or an artifact the envelope does not
-    /// list; failed when the blob read or the digest check fails.
-    pub async fn project_artifact(
-        &self,
-        server_name: &str,
-        digest: &str,
-        scope: Option<&str>,
-    ) -> Result<(WorkbenchContentDescriptor, String), WorkbenchShellError> {
-        let entry = self.project_source(server_name).await?;
-        let root = entry.read_root().await?;
-        let envelope: Value = serde_json::from_str(&root.text)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let declared =
-            workbench_project::declared_artifact(&envelope, digest, scope).ok_or_else(|| {
-                WorkbenchShellError::NotFound(format!(
-                    "the project envelope of {server_name} lists no artifact with digest {digest}"
-                ))
-            })?;
-        let blob = entry.read_declared_blob(&declared.uri, digest).await?;
-        if blob.mime != declared.media_type {
-            return Err(WorkbenchShellError::Failed(format!(
-                "artifact {digest} is listed as {} but served as {}",
-                declared.media_type, blob.mime
-            )));
-        }
-        let descriptor = self
-            .content
-            .ingest_bytes_with_reference(
-                &blob.bytes,
-                declared.name,
-                blob.mime,
-                WorkbenchContentSource::ProjectArtifact,
-                server_name.to_owned(),
-                declared.reference,
-            )
-            .await?;
-        Ok((descriptor, blob.uri))
-    }
-
     /// Terminate the project clients and await their child boundaries.
     ///
     /// # Errors
     ///
     /// Returns the first cleanup failure.
-    pub async fn shutdown_projects(&self) -> Result<(), String> {
+    pub async fn shutdown_server_apps(&self) -> Result<(), String> {
         self.close_terminals().await;
-        let sources_result = self.projects.shutdown().await;
-        let apps_result = self.project_apps.shutdown().await;
-        sources_result.and(apps_result)
+        self.server_apps.shutdown().await
     }
 
     /// Ids of the open native connections (a test oracle for "no agent").
     pub async fn active_connections(&self) -> Vec<String> {
         self.connections.lock().await.keys().cloned().collect()
-    }
-
-    /// Stage exact project refs as the context of this connection's next
-    /// turns. Requires an open connection whose profile attaches the same
-    /// server name (so the agent reads the same persistent records) and a
-    /// journal-backed envelope that declares the refs. Nothing is sent to the
-    /// agent here; the next prompt carries the link.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection or source; conflict for a foreign
-    /// ref, a mismatched selection, an unattached server or an ephemeral one.
-    pub async fn bind_agent_context(
-        &self,
-        connection_id: &str,
-        body: BindAgentContextBody,
-    ) -> Result<AgentContextBinding, WorkbenchShellError> {
-        let connection = self.connection(connection_id).await?;
-        if !connection
-            .attachments
-            .iter()
-            .any(|attachment| attachment.binding.server_name == body.server_name)
-        {
-            return Err(WorkbenchShellError::Conflict(format!(
-                "connection {connection_id} does not attach {}; the agent would not see the project",
-                body.server_name
-            )));
-        }
-        let root = self.project_envelope(&body.server_name).await?;
-        let envelope: Value = serde_json::from_str(&root.text)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let uri = workbench_project::validate_binding(&envelope, &body)?;
-        let binding = AgentContextBinding {
-            server_name: body.server_name,
-            revision_ref: body.revision_ref,
-            selection_ref: body.selection_ref,
-            uri,
-        };
-        *connection.agent_context.lock().await = Some(binding.clone());
-        let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
-        self.append_context_event(
-            &connection,
-            event,
-            "host/agent_context_bound",
-            serde_json::to_value(&binding)
-                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?,
-        )
-        .await?;
-        Ok(binding)
-    }
-
-    /// Drop the staged context; later prompts carry no project link.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection.
-    pub async fn clear_agent_context(
-        &self,
-        connection_id: &str,
-    ) -> Result<Value, WorkbenchShellError> {
-        let connection = self.connection(connection_id).await?;
-        let previous = connection.agent_context.lock().await.take();
-        if let Some(previous) = previous {
-            let event = connection.context_events.fetch_add(1, Ordering::Relaxed);
-            self.append_context_event(
-                &connection,
-                event,
-                "host/agent_context_cleared",
-                json!({ "server_name": previous.server_name }),
-            )
-            .await?;
-        }
-        Ok(json!({ "cleared": true }))
-    }
-
-    /// The staged context of one open connection, if any.
-    ///
-    /// # Errors
-    ///
-    /// Not found for an unknown connection.
-    pub async fn agent_context(
-        &self,
-        connection_id: &str,
-    ) -> Result<Option<AgentContextBinding>, WorkbenchShellError> {
-        let connection = self.connection(connection_id).await?;
-        let context = connection.agent_context.lock().await.clone();
-        Ok(context)
     }
 
     async fn append_context_event(
@@ -2683,7 +1921,7 @@ impl WorkbenchShellState {
                 apps: tokio::sync::Mutex::new(apps),
                 observation: tokio::sync::Mutex::new(observation),
                 observed_apps: tokio::sync::Mutex::new(BTreeMap::new()),
-                agent_context: tokio::sync::Mutex::new(None),
+                model_context: tokio::sync::Mutex::new(None),
                 context_events: AtomicU64::new(1),
                 setup_notes: tokio::sync::Mutex::new(setup.notes.clone()),
             });
@@ -2933,10 +2171,11 @@ impl WorkbenchShellState {
                 .await?;
             }
         }
-        // A bound project context rides along as baseline ACP content on
-        // every turn until it is cleared; the route keeps the link verbatim.
-        if let Some(binding) = connection.agent_context.lock().await.as_ref() {
-            content.push(workbench_project::context_link(binding));
+        // What an App said a person is looking at rides along as baseline
+        // ACP content on every turn until it is let go of; the route keeps
+        // the blocks verbatim.
+        if let Some(context) = connection.model_context.lock().await.as_ref() {
+            content.extend(model_context::context_content(context));
         }
         let content = self
             .name_who_is_writing(&connection, content, correspondent.as_ref())
@@ -3686,8 +2925,8 @@ impl WorkbenchShellState {
         connection_id: &str,
         app_id: &str,
     ) -> Result<(String, String), WorkbenchShellError> {
-        if connection_id == "project" {
-            return self.project_app_view(app_id).await;
+        if connection_id == server_apps::SPACE_CONNECTION {
+            return self.space_app_view(app_id).await;
         }
         let connection = self.connection(connection_id).await?;
         let apps = connection.apps.lock().await;
@@ -3722,8 +2961,8 @@ impl WorkbenchShellState {
         app_id: &str,
         path: &str,
     ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
-        if connection_id == "project" {
-            return self.project_app_file(app_id, path).await;
+        if connection_id == server_apps::SPACE_CONNECTION {
+            return self.space_app_file(app_id, path).await;
         }
         let connection = self.connection(connection_id).await?;
         let apps = connection.apps.lock().await;
@@ -3763,8 +3002,8 @@ impl WorkbenchShellState {
         app_id: &str,
         uri: &str,
     ) -> Result<String, WorkbenchShellError> {
-        if connection_id == "project" {
-            return self.project_app_script(app_id, uri).await;
+        if connection_id == server_apps::SPACE_CONNECTION {
+            return self.space_app_script(app_id, uri).await;
         }
         let connection = self.connection(connection_id).await?;
         let apps = connection.apps.lock().await;
@@ -3799,8 +3038,8 @@ impl WorkbenchShellState {
         app_id: &str,
         uri: &str,
     ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
-        if connection_id == "project" {
-            return self.project_app_blob(app_id, uri).await;
+        if connection_id == server_apps::SPACE_CONNECTION {
+            return self.space_app_blob(app_id, uri).await;
         }
         let connection = self.connection(connection_id).await?;
         let apps = connection.apps.lock().await;
@@ -3835,8 +3074,8 @@ impl WorkbenchShellState {
         connection_id: &str,
         app_id: &str,
     ) -> Result<PathBuf, WorkbenchShellError> {
-        let root = if connection_id == "project" {
-            self.project_app_upload_root(app_id).await?
+        let root = if connection_id == server_apps::SPACE_CONNECTION {
+            self.space_app_upload_root(app_id).await?
         } else {
             let connection = self.connection(connection_id).await?;
             let apps = connection.apps.lock().await;
@@ -4138,7 +3377,7 @@ impl WorkbenchShellHandle {
                 let _ = task.await;
             }
         }
-        let _ = self.state.shutdown_projects().await;
+        let _ = self.state.shutdown_server_apps().await;
     }
 }
 
@@ -4212,25 +3451,6 @@ fn error_response(error: &WorkbenchShellError) -> Response<ShellBody> {
     respond_json(error.status(), &json!({ "error": error.to_string() }))
 }
 
-/// A verbatim project resource read: the body is the server's text, the
-/// content type its MIME, and the exact resource URI travels as a header so a
-/// browser can name what it displayed without parsing the body.
-fn envelope_result(result: Result<EnvelopeRead, WorkbenchShellError>) -> Response<ShellBody> {
-    match result {
-        Ok(read) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", read.mime)
-            .header("x-swem-resource-uri", read.uri)
-            .body(
-                Full::new(Bytes::from(read.text))
-                    .map_err(infallible_to_io)
-                    .boxed(),
-            )
-            .expect("static response"),
-        Err(error) => error_response(&error),
-    }
-}
-
 fn json_result<T: serde::Serialize>(result: Result<T, WorkbenchShellError>) -> Response<ShellBody> {
     match result.and_then(|value| {
         serde_json::to_value(value).map_err(|error| WorkbenchShellError::Failed(error.to_string()))
@@ -4244,15 +3464,14 @@ fn json_result<T: serde::Serialize>(result: Result<T, WorkbenchShellError>) -> R
 ///
 /// A handler that does its work synchronously holds the runtime thread it is
 /// polled on for the whole of it, and nothing can take that task away: it
-/// never yields. On 2026-09-21 `state.packages()` - which loads every package,
-/// and so instantiates every package's WebAssembly component - took 13-22 s on
-/// this machine, and an unrelated `GET /api/projects` measured beside it went
-/// from 39 ms to 21 s. From the page that is every press being ignored for
-/// twenty seconds.
+/// never yields. On 2026-09-21 one handler that loaded WebAssembly components
+/// took 13-22 s on this machine, and an unrelated request measured beside it
+/// went from 39 ms to 21 s. From the page that is every press being ignored
+/// for twenty seconds.
 ///
-/// The compiled-code cache took that particular call to under half a second,
-/// but the shape is what allowed it: any handler that thinks instead of
-/// waiting can do this again. So the computing ones are handed to the blocking
+/// That handler has left the host, but the shape is what allowed it: any
+/// handler that thinks instead of waiting can do this again. So the computing
+/// ones are handed to the blocking
 /// pool, where a thread may be occupied without costing the runtime one, and
 /// the waiting ones are left exactly where they are - they already yield, and
 /// moving them would only add a hop.
@@ -4509,32 +3728,10 @@ pub struct ProfileSecrets {
 }
 
 #[derive(Deserialize)]
-struct CreateProjectBody {
-    name: String,
-}
-
-#[derive(Deserialize)]
 struct InstallAgentBody {
     agent_id: String,
     /// The exact plan the person was shown and clicked.
     plan_id: String,
-}
-
-#[derive(Deserialize)]
-struct InstallToolBody {
-    /// The exact plan the person was shown and clicked.
-    plan_id: String,
-}
-
-#[derive(Deserialize)]
-struct InstallPackageBody {
-    /// The exact plan the person was shown and clicked.
-    plan_id: String,
-}
-
-#[derive(Deserialize)]
-struct ProjectSecretBody {
-    value: String,
 }
 
 #[derive(Deserialize)]
@@ -4957,21 +4154,6 @@ async fn route_shell(
             json_result(state.close_terminal(terminal_id).await)
         }
         (&Method::GET, ["api", "onboarding"]) => json_result(Ok(state.onboarding())),
-        // Project space: connection-independent, resources-only reads of the
-        // declared project servers.
-        (&Method::GET, ["api", "projects"]) => json_result(state.projects()),
-        // A person makes a project here rather than writing an ACP declaration
-        // file by hand and restarting the product.
-        (&Method::POST, ["api", "projects"]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<CreateProjectBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(state.create_project(&body.name).await)
-        }
         (&Method::GET, ["api", "agents", agent_id, "install-plan"]) => {
             json_result(state.agent_install_plan(agent_id))
         }
@@ -5106,66 +4288,6 @@ async fn route_shell(
         ),
         // The skills installed here, as a profile takes a copy of one.
         (&Method::GET, ["api", "skills"]) => json_result(state.installed_skills()),
-        (&Method::GET, ["api", "tools"]) => {
-            let state = Arc::clone(state);
-            blocking_json(move || state.tools()).await
-        }
-        (&Method::POST, ["api", "tools", name, "install"]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<InstallToolBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            let state = Arc::clone(state);
-            // `name` is bound by a slice pattern over `Vec<&str>`, so it is a
-            // `&&str`: `to_owned` on that clones the reference rather than the
-            // string, and the closure would then still borrow the path.
-            let name = (*name).to_owned();
-            blocking_json(move || state.install_tool(&name, &body.plan_id)).await
-        }
-        // Packages a person installs beside the binary: the list, the plan a
-        // source answers with, and the install that consents to that plan.
-        (&Method::GET, ["api", "packages"]) => {
-            let state = Arc::clone(state);
-            blocking_json(move || state.packages()).await
-        }
-        (&Method::POST, ["api", "packages", "plan"]) => {
-            let source = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<crate::PackageSource>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(source) => source,
-                Err(error) => return error_response(&error),
-            };
-            let state = Arc::clone(state);
-            blocking_json(move || state.plan_package(&source)).await
-        }
-        (&Method::POST, ["api", "packages", "install"]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<InstallPackageBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            let state = Arc::clone(state);
-            blocking_json(move || state.install_package(&body.plan_id)).await
-        }
-        (&Method::GET, ["api", "projects", server, "secrets"]) => {
-            json_result(state.project_secrets(server))
-        }
-        (&Method::PUT, ["api", "projects", server, "secrets", type_id]) => {
-            let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<ProjectSecretBody>(value)
-                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
-            }) {
-                Ok(body) => body,
-                Err(error) => return error_response(&error),
-            };
-            json_result(state.set_project_secret(server, type_id, &body.value))
-        }
         (&Method::GET, ["api", "spaces"]) => json_result(state.spaces().await),
         (&Method::POST, ["api", "spaces", server, "open"]) => match read_json(request).await {
             Ok(body) => match body.get("uri").and_then(Value::as_str) {
@@ -5174,121 +4296,38 @@ async fn route_shell(
             },
             Err(error) => error_response(&error),
         },
-        (&Method::GET, ["api", "projects", server, "apps"]) => {
-            json_result(state.project_apps_list(server).await)
-        }
-        (&Method::POST, ["api", "projects", server, "apps", "open"]) => {
+        // An App of a space: its relay and its close. No agent session
+        // takes part, so these are not under a connection.
+        (&Method::POST, ["api", "space-apps", app, "rpc"]) => {
             match read_json(request).await {
-                Ok(body) => match body.get("uri").and_then(Value::as_str) {
-                    // The slot is what the person opened the surface from;
-                    // an App opened outside a slot names none.
-                    Some(uri) => {
-                        let slot = body.get("slot").and_then(Value::as_str);
-                        json_result(state.project_app_open(server, uri, slot).await)
-                    }
-                    None => error_response(&WorkbenchShellError::Invalid("App uri required".into())),
-                },
+                Ok(body) => json_result(state.space_app_rpc(app, body).await),
                 Err(error) => error_response(&error),
             }
         }
-        // What the packages say to do, and one run of it on one project. The
-        // run is a POST because every step writes.
-        (&Method::GET, ["api", "recipes"]) => json_result(Ok(state.recipes())),
-        (&Method::POST, ["api", "projects", server, "recipes", name, "run"]) => {
-            json_result(state.run_recipe(server, name).await)
-        }
-        (&Method::POST, ["api", "projects", server, "tools", tool]) => {
-            match read_json(request).await {
-                Ok(body) => {
-                    let arguments = body.get("arguments").cloned().unwrap_or(json!({}));
-                    json_result(state.project_tool_call(server, tool, arguments).await)
-                }
-                Err(error) => error_response(&error),
-            }
-        }
-        (&Method::POST, ["api", "project-apps", app, "rpc"]) => {
-            match read_json(request).await {
-                Ok(body) => json_result(state.project_app_rpc(app, body).await),
-                Err(error) => error_response(&error),
-            }
-        }
-        (&Method::POST, ["api", "project-apps", app, "close"]) => {
-            json_result(state.project_app_close(app).await)
-        }
-        (&Method::GET, ["api", "projects", server_name, "envelope"]) => {
-            envelope_result(state.project_envelope(server_name).await)
-        }
-        // What makes the human's workbench live: hold the request open until
-        // the project's record set is no longer the one the caller holds. The
-        // sandboxed App cannot poll this itself - only the shell can reach the
-        // host API - so the shell watches and pushes the change into the App
-        // over the bridge.
-        (&Method::GET, ["api", "projects", server_name, "changes", "next"]) => {
-            // The digest arrives percent-encoded (`sha256%3A...`); compared
-            // raw it never equals the one the Cycle holds, every watch
-            // answers at once, and the browser re-reads the envelope in a
-            // tight loop that starves the host.
-            let after = query_param(query.as_deref(), "after")
-                .map(|value| percent_decode(&value))
-                .unwrap_or_default();
-            let wait = query_param(query.as_deref(), "wait_ms")
-                .and_then(|value| value.parse().ok())
-                .map_or(Duration::from_secs(25), Duration::from_millis);
-            json_result(state.next_project_change(server_name, &after, wait).await)
-        }
-        (&Method::GET, ["api", "projects", server_name, kind @ ("selections" | "revisions"), digest]) => {
-            envelope_result(state.project_view(server_name, kind, digest).await)
-        }
-        (&Method::POST, ["api", "projects", server_name, "artifacts", digest]) => {
-            let server_name = (*server_name).to_owned();
-            let digest = (*digest).to_owned();
-            // An absent or empty body stays valid: only the provenance label
-            // depends on the scope, never the bytes.
-            let body = match read_json(request).await {
-                Ok(value) => match serde_json::from_value::<MaterializeArtifactBody>(value) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        return error_response(&WorkbenchShellError::Invalid(error.to_string()));
-                    }
-                },
-                Err(_) => MaterializeArtifactBody::default(),
-            };
-            match state
-                .project_artifact(&server_name, &digest, body.selection_ref.as_deref())
-                .await
-            {
-                Ok((descriptor, uri)) => {
-                    let body = serde_json::to_value(&descriptor).unwrap_or_default();
-                    let mut response = respond_json(StatusCode::OK, &body);
-                    if let Ok(value) = uri.parse() {
-                        response.headers_mut().insert("x-swem-resource-uri", value);
-                    }
-                    response
-                }
-                Err(error) => error_response(&error),
-            }
+        (&Method::POST, ["api", "space-apps", app, "close"]) => {
+            json_result(state.space_app_close(app).await)
         }
         (&Method::POST, ["api", "connections", connection_id, "context"]) => {
             let connection_id = (*connection_id).to_owned();
             let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<BindAgentContextBody>(value)
+                serde_json::from_value::<BindModelContextBody>(value)
                     .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
             }) {
                 Ok(body) => body,
                 Err(error) => return error_response(&error),
             };
-            json_result(state.bind_agent_context(&connection_id, body).await)
+            json_result(state.bind_model_context(&connection_id, body).await)
         }
         (&Method::GET, ["api", "connections", connection_id, "context"]) => {
             json_result(
                 state
-                    .agent_context(connection_id)
+                    .model_context(connection_id)
                     .await
                     .map(|context| json!({ "context": context })),
             )
         }
         (&Method::DELETE, ["api", "connections", connection_id, "context"]) => {
-            json_result(state.clear_agent_context(connection_id).await)
+            json_result(state.clear_model_context(connection_id).await)
         }
         (&Method::POST, ["api", "content"]) => {
             json_result(upload_content(state, request, query.as_deref()).await)

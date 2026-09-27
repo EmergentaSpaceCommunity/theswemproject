@@ -41,27 +41,26 @@ export function SurfaceRail() {
   const context = state.context;
   return (
     <aside className="context" aria-label="Interactive surfaces">
-      {/* The project the open session is working with, as the host holds it:
-          the same binding the Project space's Collaborator shows, read from
-          the same store. It is chosen there, at a revision; here it is seen
-          and let go. */}
-      <h2>With this project</h2>
-      <div
-        id="session-context"
-        className="k-caption"
-        data-server-name={context?.server_name ?? ""}
-        data-revision-ref={context?.revision_ref ?? ""}
-      >
+      {/* What the open session is given with its next turns, as the host
+          holds it. An App says it - what a person is looking at in a
+          server's space - and here it is seen and let go of. */}
+      <h2>What the agent is given</h2>
+      <div id="session-context" className="k-caption" data-server-name={context?.server_name ?? ""} data-blocks={context?.content.length ?? 0}>
         {!connected ? (
           <span className="k-muted">no session open</span>
         ) : context ? (
           <>
             <strong>{context.server_name}</strong>
-            <span className="k-muted"> · revision {context.revision_ref.slice(0, 12)}</span>
-            {context.selection_ref ? <span className="k-muted"> · branch {context.selection_ref.slice(0, 12)}</span> : null}
+            <ul className="context-blocks">
+              {context.content.map((block, index) => (
+                <li key={index} className="context-block" data-kind={block.type}>
+                  {block.type === "text" ? block.text.slice(0, 160) : block.name}
+                </li>
+              ))}
+            </ul>
           </>
         ) : (
-          <span className="k-muted">none yet - pick a project and a revision in the Project space and press "Work with this project"</span>
+          <span className="k-muted">nothing yet - a server's space can say what you are looking at there</span>
         )}
       </div>
       {connected && context ? (
@@ -69,7 +68,7 @@ export function SurfaceRail() {
           Let go of it
         </button>
       ) : null}
-      {state.contextError ? <div className="bad">{state.contextError}</div> : null}
+      {state.contextError ? <div id="session-context-error" className="bad">{state.contextError}</div> : null}
       <h2>Surfaces</h2>
       <div id="apps-status">{state.appsStatus}</div>
       <div id="apps-list">

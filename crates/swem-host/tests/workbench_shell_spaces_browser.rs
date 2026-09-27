@@ -80,6 +80,6 @@ async fn a_real_browser_opens_a_servers_home_app_as_a_space() {
         stdout.contains("spaces OK"),
         "the driver did not reach the end"
     );
-    state.project_app_close("p1").await.ok();
+    state.space_app_close("s1").await.ok();
     std::fs::remove_dir_all(&root).ok();
 }

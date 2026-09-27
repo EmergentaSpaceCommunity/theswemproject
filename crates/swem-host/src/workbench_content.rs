@@ -31,8 +31,9 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 pub enum WorkbenchContentSource {
     UserUpload,
     AgentOutput,
-    /// Bytes a declared project server published as a resource; the
-    /// descriptor's `semantic_reference` names the exact record they belong to.
+    /// Bytes a declared server published as a resource, brought in by the
+    /// host itself. Nothing writes it since 2026-09-27; descriptors recorded
+    /// before keep reading.
     ProjectArtifact,
 }
 

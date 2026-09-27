@@ -1007,7 +1007,8 @@ fn the_generic_host_hardcodes_no_server_id_or_domain_schema() {
     for relative in [
         "src/workbench_apps.rs",
         "src/workbench_shell.rs",
-        "src/workbench_project.rs",
+        "src/workbench_shell/server_apps.rs",
+        "src/workbench_shell/model_context.rs",
         "src/workbench_shell/shell.html",
         "web/apps-host/src/main.tsx",
     ] {

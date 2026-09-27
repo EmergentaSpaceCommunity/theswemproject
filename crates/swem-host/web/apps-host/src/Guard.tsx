@@ -8,7 +8,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface Props {
-  /// What failed, in a person's words: "the Agent space", "the Project space".
+  /// What failed, in a person's words: "the Agent space", "the Store".
   what: string;
   children: ReactNode;
 }

@@ -1,10 +1,10 @@
 //! The MCP servers a person can give an agent.
 //!
 //! An agent that cannot reach anything is not configured. Two kinds of server
-//! end up in the same place here: the projects this product made (their
-//! declaration lives beside the project) and the servers a person declares by
-//! hand, which are kept as ACP `McpServer` documents in the catalogue
-//! directory. Both are attachable by name from a profile, and the name is the
+//! end up in the same place here: the ones the product itself declared when
+//! it was assembled, and the servers a person declares by hand or installs
+//! from the Store, which are kept as ACP `McpServer` documents in the
+//! catalogue directory. Both are attachable by name from a profile, and the name is the
 //! only thing a profile stores - so a declaration can be corrected without
 //! touching every profile that uses it.
 //!
@@ -22,12 +22,12 @@ use serde::{Deserialize, Serialize};
 use super::{WorkbenchShellError, declaration_name};
 
 /// Where a declaration came from, which decides whether it can be removed
-/// here: a project is removed by removing the project.
+/// here: what the product declared is the product's to take away.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpServerOrigin {
-    /// A project this product serves.
-    Project,
+    /// A server the product declared when it was assembled.
+    Product,
     /// A server a person declared in the catalogue.
     Catalogue,
 }
@@ -79,8 +79,8 @@ pub struct DeclareMcpServerBody {
 }
 
 /// The catalogue: a directory of ACP `McpServer` documents, loaded into the
-/// same declaration map the projects use so an attachment resolves the same
-/// way whatever the server is.
+/// same declaration map the product's own servers are in, so an attachment
+/// resolves the same way whatever the server is.
 #[derive(Clone, Debug)]
 pub struct McpCatalogue {
     root: PathBuf,
@@ -163,7 +163,7 @@ impl McpCatalogue {
         Ok(())
     }
 
-    /// Every attachable server, catalogue and project alike, by name.
+    /// Every attachable server, the catalogue's and the product's alike, by name.
     ///
     /// # Errors
     ///
@@ -182,7 +182,7 @@ impl McpCatalogue {
                 let origin = if mine.contains_key(&name) {
                     McpServerOrigin::Catalogue
                 } else {
-                    McpServerOrigin::Project
+                    McpServerOrigin::Product
                 };
                 view_of(&name, &server, origin)
             })
@@ -194,7 +194,7 @@ impl McpCatalogue {
     /// # Errors
     ///
     /// Refuses an unusable name, a transport this host cannot dial, a missing
-    /// command or url, and taking over a project's name.
+    /// command or url, and taking over the name of a server the product declared.
     pub fn declare(
         &self,
         body: &DeclareMcpServerBody,
@@ -209,7 +209,7 @@ impl McpCatalogue {
                 .contains_key(&name);
             if taken {
                 return Err(WorkbenchShellError::Conflict(format!(
-                    "{name} is already the name of a project on this host; give this server another name"
+                    "{name} is already the name of a server this product declares; give this one another name"
                 )));
             }
         }
@@ -233,8 +233,8 @@ impl McpCatalogue {
     ///
     /// # Errors
     ///
-    /// Refuses an unknown name and a project (which is removed by removing the
-    /// project, not by forgetting its declaration).
+    /// Refuses an unknown name and a server the product declared (which is
+    /// the product's to take away).
     pub fn forget(&self, name: &str) -> Result<(), WorkbenchShellError> {
         let path = self.path_of(name)?;
         if !path.is_file() {

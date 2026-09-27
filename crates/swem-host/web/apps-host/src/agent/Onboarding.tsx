@@ -34,8 +34,7 @@ export function Onboarding() {
       <h1>Pick an agent to work with.</h1>
       <p>
         These are the coding agents this computer has, or can install. SWEM runs the agent as it is
-        and adds what it needs around it: a model, a role, keys, tools, a place to work, and the
-        projects you make here.
+        and adds what it needs around it: a model, a role, keys, tools and a place to work.
       </p>
       <div id="agent-options">
         {onboarding?.enabled

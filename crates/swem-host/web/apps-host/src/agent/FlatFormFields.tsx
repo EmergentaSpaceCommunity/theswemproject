@@ -1,5 +1,5 @@
 // The inputs of a flat form, shared by every place a person answers one:
-// an agent's elicitation, a rung's action on the project.
+// an agent's elicitation, a tool's arguments.
 //
 // The inputs are uncontrolled and read when the form is answered, not
 // mirrored keystroke by keystroke: what the form holds is what is sent,

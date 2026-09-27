@@ -22558,7 +22558,7 @@ container holding the app. Specify either width or maxWidth, and either height o
     if (!permissions || typeof permissions !== "object" || !origin) return "";
     return Object.keys(permissions).map((key) => PERMISSION_FEATURES[key]).filter(Boolean).map((feature) => `${feature} ${origin}`).join("; ");
   }
-  async function mount({ container, opened, relay, observation, onStatus, signal, fit = "content" }) {
+  async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content" }) {
     signal?.throwIfAborted();
     const status = onStatus || (() => {
     });
@@ -22578,10 +22578,11 @@ container holding the app. Specify either width or maxWidth, and either height o
     iframe.style.border = opened.prefers_border ? "1px solid #888" : "none";
     iframe.src = opened.sandbox_url + "?csp=" + encodeURIComponent(opened.csp) + "&host=" + encodeURIComponent(window.location.origin) + "&connection=" + encodeURIComponent(opened.connection_id || "") + "&app=" + encodeURIComponent(opened.app_id || "");
     container.appendChild(iframe);
+    const capabilities = onModelContext ? { updateModelContext: { text: {}, resourceLink: {} } } : {};
     const bridge = new DX(
       null,
       { name: "swem-workbench-shell", version: "0.1" },
-      {},
+      capabilities,
       { hostContext: readHostContext() }
     );
     if (fit === "content") {
@@ -22606,6 +22607,12 @@ container holding the app. Specify either width or maxWidth, and either height o
     };
     bridge.oncalltool = (params) => afterHandshake("tools/call", () => relayRequest(relay, "tools/call", params));
     bridge.onreadresource = (params) => afterHandshake("resources/read", () => relayRequest(relay, "resources/read", params));
+    if (onModelContext) {
+      bridge.onupdatemodelcontext = (params) => afterHandshake("ui/update-model-context", async () => {
+        await onModelContext(params || {});
+        return {};
+      });
+    }
     const initialized = new Promise((resolve) => {
       bridge.oninitialized = () => {
         handshakeDone = true;

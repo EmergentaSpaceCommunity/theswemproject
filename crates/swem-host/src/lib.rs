@@ -26,20 +26,16 @@ mod environment;
 mod environment_profile;
 mod install;
 pub mod mcp_observer;
-mod packages;
 mod permission_profile;
 pub mod product;
-pub mod product_supply;
 mod profile;
 mod routing;
 mod session;
-mod supplies;
 mod surface;
 pub mod workbench_apps;
 mod workbench_content;
 mod workbench_files;
 mod workbench_observation;
-mod workbench_project;
 pub mod workbench_shell;
 
 pub use distribution::*;
@@ -47,14 +43,11 @@ pub use editor_door::*;
 pub use environment::*;
 pub use environment_profile::*;
 pub use install::*;
-pub use packages::*;
 pub use permission_profile::*;
-pub use product_supply::*;
 pub use profile::*;
 pub use routing::*;
 pub use session::agent_takes;
 pub use session::*;
-pub use supplies::*;
 pub(crate) use surface::NativeOutputProjection;
 pub use surface::{Correspondent, NativeSessionEvent, SurfaceEventSource};
 pub use workbench_apps::{
@@ -72,16 +65,12 @@ pub use workbench_files::list as list_handed_files_for_tests;
 pub use workbench_files::read as read_handed_file_for_tests;
 pub use workbench_files::{HandedFile, INBOX, OUTBOX};
 pub use workbench_observation::ObservedAppCall;
-pub use workbench_project::{
-    AgentContextBinding, BindAgentContextBody, EnvelopeRead, PROJECT_ENVELOPE_MIME,
-    ProjectSourceView,
-};
 pub use workbench_shell::{
     ACP_REGISTRY_CACHE, AddIndexBody, AmendProfileBody, ArchiveDistribution, BinaryDistribution,
-    CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry, DeclareMcpServerBody, INDEX_SCHEMA,
-    IndexFile, InstalledSkill, McpServerOrigin, McpServerView, NamedValue, NpxDistribution,
-    ObservedAppOpen, OpenTerminalBody, ProjectFactory, RecipeRun, RecipeStepRun, RecipeView,
-    RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
+    BindModelContextBody, CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry,
+    DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, McpServerOrigin, McpServerView,
+    ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
+    OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
     ResolvedDirectAgentConnection, SCHEDULE_SURFACE, Schedule, ScheduleBook, SetScheduleBody,
     ShellConnectionMode, StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreView,
     TerminalInputBody, TerminalOutput, TerminalSizeBody, TerminalView, WorkbenchAgentOption,

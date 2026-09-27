@@ -41,6 +41,9 @@ async function relayRequest(relay, method, params) {
  *  - relay: async (jsonRpcMessage) => jsonRpcResponse  (POSTs to the Rust relay)
  *  - fit: "content" (frame height follows the App) | "fill" (the container's)
  *  - onStatus: (text) => void
+ *  - onModelContext: async ({content, structuredContent}) => void - what
+ *    the App said the model should know (`ui/update-model-context`); a host
+ *    that passes none declares no such capability and the App is refused
  *
  * Returns { teardown: async () => void, bridge }.
  */
@@ -62,7 +65,7 @@ function permissionsToAllow(permissions, origin) {
     .join("; ");
 }
 
-export async function mount({ container, opened, relay, observation, onStatus, signal, fit = "content" }) {
+export async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content" }) {
   signal?.throwIfAborted();
   const status = onStatus || (() => {});
   if (!opened.sandbox_url || !opened.sandbox_origin) {
@@ -104,10 +107,13 @@ export async function mount({ container, opened, relay, observation, onStatus, s
     "&app=" + encodeURIComponent(opened.app_id || "");
   container.appendChild(iframe);
 
+  // What this host takes as context for the model: text and links the
+  // agent can follow. Declared only where somebody hears it.
+  const capabilities = onModelContext ? { updateModelContext: { text: {}, resourceLink: {} } } : {};
   const bridge = new AppBridge(
     null,
     { name: "swem-workbench-shell", version: "0.1" },
-    {},
+    capabilities,
     { hostContext: readHostContext() },
   );
   // `fit: "content"` (a surface in a rail): the frame grows to the height
@@ -157,6 +163,14 @@ export async function mount({ container, opened, relay, observation, onStatus, s
   };
   bridge.oncalltool = (params) => afterHandshake("tools/call", () => relayRequest(relay, "tools/call", params));
   bridge.onreadresource = (params) => afterHandshake("resources/read", () => relayRequest(relay, "resources/read", params));
+  if (onModelContext) {
+    // Each update replaces the one before and goes with the next turn a
+    // person writes; nothing is sent to the agent because an App spoke.
+    bridge.onupdatemodelcontext = (params) => afterHandshake("ui/update-model-context", async () => {
+      await onModelContext(params || {});
+      return {};
+    });
+  }
   const initialized = new Promise((resolve) => {
     bridge.oninitialized = () => {
       handshakeDone = true;

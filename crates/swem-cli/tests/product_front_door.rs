@@ -392,14 +392,6 @@ fn a_person_with_nothing_installs_an_agent_and_can_start_it() {
         "the receipt points at no file: {executable}"
     );
 
-    // And the claim this whole walk exists for: none of it needed a project.
-    // The walk checked the page; this checks the disk, so a project quietly
-    // created to make something work would be caught.
-    assert!(
-        find_any_project(&data_root).is_none(),
-        "a project was created somewhere along the way: {:?}",
-        find_any_project(&data_root)
-    );
     assert!(
         !report["terminal"].as_str().unwrap_or_default().is_empty(),
         "no terminal ran in the agent's environment: {report}"
@@ -567,13 +559,6 @@ fn a_person_hands_their_agent_a_file_and_gets_one_back() {
         !workspace.join("..").join("escaped.txt").exists()
             && !workspaces.join("escaped.txt").exists(),
         "the refused write landed anyway"
-    );
-
-    // And still nothing that is a project: files are a harness capability.
-    assert!(
-        find_any_project(&data_root).is_none(),
-        "a project was created along the way: {:?}",
-        find_any_project(&data_root)
     );
 }
 
