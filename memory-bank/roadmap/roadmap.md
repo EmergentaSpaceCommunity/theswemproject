@@ -29,8 +29,10 @@ A server that declares a home App appears as a space; opening it shows the App; 
 `swem-cycle` from the Store opens its Project space. The host's own Project space is removed only
 after that App renders everything it did. ADR-0006.
 Related journeys: GJ-08. **C4a done** (2026-09-26, ExecPlan 002): the mechanism, proved with the
-Apps fixture. **C4b owed** in the Cycle repository: the Project space as the hub's home App.
-**C4c** after it: the host's Project space, ProductSupply and project routes go.
+Apps fixture. **C4b done** in the Cycle repository (2026-09-27): the Project space is the hub's
+home App, and its gate walks every journey through that space. **C4c** is next: the host's own
+Project space, ProductSupply and project routes go. Owed with it: `ui/update-model-context`, so
+an App can say what a person is looking at (the agent-context binding the panel had).
 
 ## Debt
 
