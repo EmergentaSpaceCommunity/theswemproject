@@ -237,6 +237,8 @@ const PALETTE_CSS: &str = include_str!("../../../web/view-kit/palette.css");
 
 /// The production-built Workbench shell is compiled into the Rust binary.
 /// Node is a source-build dependency, never a product runtime dependency.
+/// How the Workbench's own page lays the kit's shapes out.
+const WORKBENCH_CSS: &str = include_str!("workbench_shell/workbench.css");
 const WORKBENCH_JS: &str = include_str!("../web/apps-host/dist/workbench.js");
 
 /// Connection-local launch material for a profile resolved to a direct
@@ -4166,7 +4168,8 @@ async fn route_shell(
                 "text/html;charset=utf-8",
                 SHELL_HTML
                     .replace("__PALETTE_CSS__", PALETTE_CSS)
-                    .replace("__KIT_CSS__", KIT_CSS),
+                    .replace("__KIT_CSS__", KIT_CSS)
+                    .replace("__WORKBENCH_CSS__", WORKBENCH_CSS),
             );
             let headers = response.headers_mut();
             headers.insert(

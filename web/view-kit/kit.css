@@ -206,3 +206,255 @@
   border-radius: var(--border-radius-lg);
 }
 .k-empty .k-title { color: var(--color-text-primary); }
+
+/* ---- caption ---------------------------------------------------------- */
+
+/* The small grey line under a name. It was defined only inside `.k-pick`
+   and used everywhere else as if it were a shape of its own. */
+.k-caption { color: var(--color-text-secondary); font-size: var(--font-text-sm-size); line-height: var(--font-text-sm-line-height); }
+
+/* ---- who: avatar and state -------------------------------------------- */
+
+/* Somebody, by their first letter. A participant's colour is a semantic
+   role of the palette (`.k-is-info` and its kin), never a colour of its
+   own, so two surfaces cannot disagree about who is who. */
+.k-avatar {
+  width: var(--font-heading-xl-line-height);
+  height: var(--font-heading-xl-line-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--border-radius-lg);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  background: var(--color-background-tertiary);
+  font-weight: var(--font-weight-bold);
+}
+.k-avatar.k-small { width: var(--font-heading-xs-line-height); height: var(--font-heading-xs-line-height); border-radius: var(--border-radius-md); font-size: var(--font-text-xs-size); line-height: var(--font-text-xs-line-height); }
+.k-avatar.k-large { width: var(--font-heading-3xl-line-height); height: var(--font-heading-3xl-line-height); font-size: var(--font-heading-md-size); line-height: var(--font-heading-md-line-height); }
+/* A person is round; an agent is not. */
+.k-avatar.k-round { border-radius: var(--border-radius-full); }
+
+/* What somebody is doing, in a word, with a dot before it. */
+.k-status { display: inline-flex; align-items: center; gap: var(--border-radius-md); white-space: nowrap; color: var(--color-text-secondary); font-size: var(--font-text-sm-size); line-height: var(--font-text-sm-line-height); }
+.k-dot.k-small { width: var(--border-radius-lg); height: var(--border-radius-lg); }
+.k-dot.k-busy { background: var(--color-text-info); }
+.k-dot.k-ready { background: var(--color-text-success); }
+.k-dot.k-asking { background: var(--color-text-warning); }
+
+/* How many, beside a name. */
+.k-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--font-text-sm-line-height);
+  padding: 0 var(--border-radius-md);
+  border-radius: var(--border-radius-full);
+  background: var(--color-background-tertiary);
+  color: var(--color-text-primary);
+  font-size: var(--font-text-xs-size);
+  line-height: var(--font-text-sm-line-height);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* ---- rail ------------------------------------------------------------- */
+
+/* The column a product is found by: who there is, what there is, where to
+   go. A rail item is a row that is picked, not read. */
+.k-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--font-text-sm-line-height);
+  padding: var(--font-text-sm-line-height) var(--font-text-md-size) var(--font-text-md-size);
+  background: var(--color-background-secondary);
+  border-right: var(--border-width-regular) solid var(--color-border-secondary);
+  min-height: 0;
+  overflow: auto;
+}
+.k-rail-group { display: flex; flex-direction: column; gap: var(--border-radius-sm); }
+.k-rail-group > .k-eyebrow { padding: 0 var(--border-radius-md) var(--border-radius-xs); }
+.k-rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--border-radius-lg);
+  width: 100%;
+  padding: var(--border-radius-md) var(--font-text-xs-size);
+  text-align: left;
+  font: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-background-ghost);
+  border: var(--border-width-regular) solid var(--color-border-ghost);
+  border-radius: var(--border-radius-lg);
+  cursor: pointer;
+}
+.k-rail-item:hover { border-color: var(--color-border-secondary); }
+.k-rail-item:focus-visible { outline: var(--border-width-regular) solid var(--color-ring-primary); outline-offset: var(--border-radius-xs); }
+.k-rail-item.k-active { background: var(--color-background-primary); border-color: var(--color-ring-info); box-shadow: var(--shadow-hairline); }
+.k-rail-item.k-quiet { color: var(--color-text-secondary); }
+.k-rail-item.k-quiet.k-active { color: var(--color-text-primary); }
+/* The row that makes a new one of what the rows above are. */
+.k-rail-item.k-new { color: var(--color-text-secondary); border-style: dashed; border-color: var(--color-border-primary); }
+/* A name over a caption, each on one line however long. */
+.k-two { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.k-two > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k-name { font-weight: var(--font-weight-semibold); }
+
+/* ---- segmented -------------------------------------------------------- */
+
+/* A choice of a few, all in sight: light or dark. */
+.k-segmented {
+  display: inline-flex;
+  padding: var(--border-radius-xs);
+  gap: var(--border-radius-xs);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-background-primary);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+}
+.k-segmented > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--border-radius-md);
+  padding: var(--border-radius-sm) var(--font-text-xs-size);
+  font: inherit;
+  font-size: var(--font-text-sm-size);
+  line-height: var(--font-text-sm-line-height);
+  color: var(--color-text-secondary);
+  background: var(--color-background-ghost);
+  border: 0;
+  border-radius: var(--border-radius-md);
+  cursor: pointer;
+}
+.k-segmented > button[aria-pressed=true] { color: var(--color-text-primary); background: var(--color-background-tertiary); box-shadow: var(--shadow-hairline); }
+
+/* ---- switch ----------------------------------------------------------- */
+
+.k-switch {
+  width: var(--font-heading-3xl-size);
+  height: var(--font-heading-lg-size);
+  flex: none;
+  display: flex;
+  padding: var(--border-radius-xs);
+  border-radius: var(--border-radius-full);
+  border: var(--border-width-regular) solid var(--color-border-primary);
+  background: var(--color-background-tertiary);
+  cursor: pointer;
+}
+.k-switch > span { width: var(--font-text-md-size); height: var(--font-text-md-size); border-radius: var(--border-radius-full); background: var(--color-text-secondary); }
+.k-switch[aria-checked=true] { justify-content: end; background: var(--color-background-inverse); border-color: var(--color-border-inverse); }
+.k-switch[aria-checked=true] > span { background: var(--color-text-inverse); }
+
+/* ---- notice ----------------------------------------------------------- */
+
+/* One line the product says about what happened: a semantic border and
+   text on a neutral surface, never a filled banner. */
+.k-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--font-text-xs-size);
+  padding: var(--font-text-xs-size) var(--font-text-sm-size);
+  border-radius: var(--border-radius-lg);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  line-height: var(--font-text-sm-line-height);
+  overflow-wrap: anywhere;
+}
+.k-notice.k-info { border-color: var(--color-border-info); color: var(--color-text-primary); }
+.k-notice.k-success { border-color: var(--color-border-success); color: var(--color-text-primary); }
+.k-notice.k-warning { border-color: var(--color-border-warning); color: var(--color-text-warning); }
+.k-notice.k-danger { border-color: var(--color-border-danger); color: var(--color-text-danger); }
+
+/* A card that asks: somebody must answer before anything goes on. */
+.k-card.k-asking { border-color: var(--color-border-warning); }
+
+/* ---- what was said ---------------------------------------------------- */
+
+/* What the person at this page said: a bubble at the far side. */
+.k-bubble {
+  padding: var(--border-radius-lg) var(--font-text-md-size);
+  border-radius: var(--border-radius-xl);
+  background: var(--color-background-tertiary);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Something an agent did: what it was called, how far it got. */
+.k-toolcall {
+  border-radius: var(--border-radius-lg);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  background: var(--color-background-secondary);
+}
+.k-toolcall > summary { display: flex; align-items: center; gap: var(--border-radius-lg); padding: var(--font-text-xs-size) var(--font-text-sm-size); cursor: pointer; list-style: none; }
+.k-toolcall > summary::-webkit-details-marker { display: none; }
+.k-toolcall > div { padding: 0 var(--font-text-sm-size) var(--font-text-sm-size); }
+.k-toolcall.k-danger { border-color: var(--color-border-danger); }
+.k-toolcall pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: var(--font-text-xs-size); line-height: var(--font-text-sm-line-height); }
+
+/* Prose as an agent writes it: paragraphs, lists, tables, code. */
+.k-prose { overflow-wrap: anywhere; }
+.k-prose > :first-child { margin-top: 0; }
+.k-prose > :last-child { margin-bottom: 0; }
+.k-prose p, .k-prose ul, .k-prose ol, .k-prose blockquote, .k-prose table, .k-prose pre { margin: 0 0 var(--font-text-sm-size); }
+.k-prose h1, .k-prose h2, .k-prose h3, .k-prose h4 { margin: var(--font-text-lg-size) 0 var(--font-text-xs-size); font-weight: var(--font-weight-semibold); }
+.k-prose h1 { font-size: var(--font-heading-lg-size); line-height: var(--font-heading-lg-line-height); }
+.k-prose h2 { font-size: var(--font-heading-md-size); line-height: var(--font-heading-md-line-height); }
+.k-prose h3, .k-prose h4 { font-size: var(--font-heading-sm-size); line-height: var(--font-heading-sm-line-height); }
+.k-prose ul, .k-prose ol { padding-left: var(--font-heading-lg-size); }
+.k-prose li { margin: var(--border-radius-xs) 0; }
+.k-prose a { color: var(--color-text-info); }
+.k-prose blockquote { padding-left: var(--font-text-sm-size); border-left: var(--border-radius-xs) solid var(--color-border-primary); color: var(--color-text-secondary); }
+.k-prose hr { border: 0; border-top: var(--border-width-regular) solid var(--color-border-secondary); margin: var(--font-text-md-size) 0; }
+.k-prose table { border-collapse: collapse; display: block; max-width: 100%; overflow: auto; }
+.k-prose th, .k-prose td { padding: var(--border-radius-md) var(--border-radius-lg); border: var(--border-width-regular) solid var(--color-border-secondary); text-align: left; }
+.k-prose th { background: var(--color-background-secondary); font-weight: var(--font-weight-semibold); }
+.k-prose :not(pre) > code { font-family: var(--font-mono); font-size: var(--font-text-sm-size); padding: var(--border-width-regular) var(--border-radius-sm); border-radius: var(--border-radius-sm); background: var(--color-background-tertiary); }
+
+/* Code, with what it is written in over it. The colours of its words are
+   semantic roles, so code reads in both themes and in a foreign host. */
+.k-code {
+  --k-code-foreground: var(--color-text-primary);
+  --k-code-background: var(--color-background-ghost);
+  --k-code-token-constant: var(--color-text-info);
+  --k-code-token-string: var(--color-text-success);
+  --k-code-token-comment: var(--color-text-tertiary);
+  --k-code-token-keyword: var(--color-text-danger);
+  --k-code-token-parameter: var(--color-text-primary);
+  --k-code-token-function: var(--color-text-info);
+  --k-code-token-string-expression: var(--color-text-success);
+  --k-code-token-punctuation: var(--color-text-secondary);
+  --k-code-token-link: var(--color-text-info);
+  border-radius: var(--border-radius-lg);
+  border: var(--border-width-regular) solid var(--color-border-secondary);
+  background: var(--color-background-secondary);
+  margin: 0 0 var(--font-text-sm-size);
+  overflow: hidden;
+}
+.k-code > header { display: flex; align-items: center; justify-content: space-between; gap: var(--font-text-sm-size); padding: var(--border-radius-sm) var(--border-radius-sm) var(--border-radius-sm) var(--font-text-sm-size); border-bottom: var(--border-width-regular) solid var(--color-border-secondary); color: var(--color-text-secondary); font-family: var(--font-mono); font-size: var(--font-text-xs-size); line-height: var(--font-text-xs-line-height); }
+.k-code pre { margin: 0; padding: var(--font-text-sm-size); overflow: auto; font-family: var(--font-mono); font-size: var(--font-text-sm-size); line-height: var(--font-text-md-line-height); }
+.k-code code { font-family: inherit; }
+
+/* ---- menu ------------------------------------------------------------- */
+
+.k-menu {
+  padding: var(--border-radius-sm);
+  border-radius: var(--border-radius-lg);
+  border: var(--border-width-regular) solid var(--color-border-primary);
+  background: var(--color-background-secondary);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text-primary);
+}
+.k-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--border-radius-lg);
+  width: 100%;
+  padding: var(--border-radius-md) var(--border-radius-lg);
+  border-radius: var(--border-radius-md);
+  font: inherit;
+  color: inherit;
+  background: var(--color-background-ghost);
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.k-menu-item:hover, .k-menu-item[data-highlighted] { background: var(--color-background-tertiary); }

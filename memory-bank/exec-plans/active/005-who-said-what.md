@@ -73,6 +73,18 @@ turn's ten-minute deadline.
     message's; the editor is asked what the agent asks, and the answer is kept in the chat
 - [x] 4 stream and routes: `GET /api/stream` (server-sent events, `Last-Event-ID` or `?cursor=`, `state` whole for a page with no place, `reset` for a place the record never reached); `/api/people`, `/api/chats`, `/api/chats/{id}` (read, rename), `.../messages`, `.../stop`, `/api/questions/{id}` and `.../answer` (`stream.rs`). The old page's routes stand until step 6
 - [ ] 5 page
+  - [x] 5a the spike: the chat library's primitives with an external store render several
+    senders by name with no Tailwind; unfinished marks are closed while an agent writes; one
+    file, built as before
+  - [x] 5b the page: rail of agents, chats of several, Apps and the Store; the agent's header
+    with what it stands on and where it lives; its chats; the chat with senders, markdown,
+    code, what the agent did, its plan, what it asks; composer with attach, send and stop; the
+    theme switch; Files, Terminal and Settings of the agent as tabs. Kit gained `.k-caption`,
+    `.k-avatar`, `.k-status`, `.k-badge`, `.k-rail`, `.k-rail-item`, `.k-segmented`,
+    `.k-switch`, `.k-notice`, `.k-bubble`, `.k-toolcall`, `.k-prose`, `.k-code`, `.k-menu`
+  - [ ] 5c in the composer: the model and the mode the session offers, what the agent offers
+    with a slash, what an App said the person is looking at; Apps an agent's servers bring,
+    in its chat; a form or a link an agent asks for; how much of its memory it has used
 - [ ] 6 removal
 
 ## Discoveries
@@ -101,6 +113,12 @@ turn's ten-minute deadline.
   one-second deadline over a process start: green alone three times of three, red beside the
   other fifteen tests of its suite on this machine.
 
+- The page's bundle is 2.4 MB (0.5 MB compressed), four times what it was: seventeen grammars
+  for colouring code are most of the difference. It is served from this machine.
+- The browser driver waited for the old page's bar of spaces; it waits for the rail now. A
+  driver goes to a place by its address (`#/apps/<server>`, `#/agents/<id>`), as a person
+  with a link does.
+
 ## Decision log
 
 - 2026-09-27: a form's fields and a link's address are not written into the ledger, as they
@@ -121,6 +139,12 @@ turn's ten-minute deadline.
   one waits for an answer; the question is read and answered after nobody looked; a turn is
   stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
   deleted the chat goes on in a fresh one that is given what was said and the transcript.
+- 2026-09-27, step 5b, by hand on a copy of the owner's data root with the real engine: the
+  ledger was copied to `routes.jsonl.v1` and became chats; the earlier chat is read with each
+  message under its sender; a message was sent from the page, the agent was shown working
+  with Stop in the composer, and answered in the same session of the engine with a table and
+  a block of Rust, drawn as a table and as coloured code; both themes. Pictures were taken
+  through the project's own browser driver.
 - 2026-09-27, steps 3b and 3c: `chat_runtime` gains the clock's walk. The editor door's four
   walks of the product gate, each alone against the real binary with the protocol's own client:
   a person works from their editor, the agent reads the file they have open, two windows, and

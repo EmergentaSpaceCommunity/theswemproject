@@ -1,0 +1,79 @@
+/* The Workbench's own page: how the shapes of the kit are laid out in it.
+   Shapes, colours and type are the kit's and the palette's; what is here is
+   where things stand and how wide they are. */
+
+html, body, #workbench-root { height: 100%; }
+.w-shell { display: flex; height: 100vh; min-height: 0; overflow: hidden; }
+.w-shell h1, .w-shell h2, .w-shell h3, .w-shell p { margin: 0; }
+.w-shell a { color: var(--color-text-info); }
+
+/* The primary action is the product's accent, in both themes. */
+.w-shell .k-btn.k-primary, .w-dialog .k-btn.k-primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.w-shell .k-btn.k-primary:disabled, .w-dialog .k-btn.k-primary:disabled { color: var(--color-text-disabled); background: var(--color-background-disabled); border-color: var(--color-border-disabled); }
+.w-shell .k-btn, .w-dialog .k-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; flex: none; }
+.w-shell .k-tab { display: inline-flex; align-items: center; gap: 6px; }
+.w-shell .k-chip { color: var(--color-text-secondary); font-family: var(--font-sans); }
+
+.w-rail { width: 260px; flex: none; }
+.w-brand { display: flex; align-items: center; gap: 10px; padding: 0 4px; font-weight: 800; letter-spacing: .12em; }
+.w-brand-mark { width: 26px; height: 26px; border-radius: var(--border-radius-md); background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+.w-grow { flex: 1 1 auto; }
+.w-you { padding: 10px 4px 0; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-tight { gap: 8px; }
+.w-close { gap: 2px; }
+.w-nowrap { flex-wrap: nowrap; }
+.w-end { justify-content: flex-end; }
+.w-wide { width: 100%; }
+.w-top { align-items: flex-start; }
+.w-one-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+.w-stage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.w-lost { margin: 10px 24px 0; }
+.w-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.w-scroll { overflow: auto; }
+.w-head { display: flex; flex-direction: column; gap: 10px; padding: 14px 24px 0; flex: none;
+  border-bottom: var(--border-width-regular) solid var(--color-border-secondary); background: var(--color-background-secondary); }
+.w-head-plain { padding-bottom: 14px; }
+.w-head .k-tabs { border-bottom: 0; padding: 0; margin-bottom: -1px; }
+.w-head .k-tab.k-active { background: var(--color-background-primary); border-bottom: var(--border-width-regular) solid var(--color-background-primary); }
+.w-h1 { font: var(--font-weight-semibold) var(--font-heading-lg-size) / var(--font-heading-lg-line-height) var(--font-sans); letter-spacing: var(--k-tracking-display); }
+.w-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.w-chip-button { cursor: pointer; background: transparent; }
+
+.w-body { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
+.w-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.w-side { width: 272px; flex: none; display: flex; flex-direction: column; gap: 12px; padding: 14px; overflow: auto;
+  background: var(--color-background-secondary); border-right: var(--border-width-regular) solid var(--color-border-secondary); }
+
+.w-thread { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.w-stream { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow: auto;
+  padding: 22px max(32px, calc((100% - 860px) / 2)) 12px; }
+.w-earlier { align-self: center; }
+.w-msg { display: flex; gap: 10px; align-items: flex-start; }
+.w-msg > .w-col { flex: 1 1 auto; }
+.w-from { display: flex; align-items: baseline; gap: 8px; }
+.w-mine { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(100%, 620px); }
+.w-said-by-nobody { display: flex; flex-direction: column; gap: 8px; }
+.w-thought { font-style: italic; white-space: pre-wrap; }
+.w-plan { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; }
+.w-plan-dot { margin: 0 4px; }
+.w-ask { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+
+.w-composer { flex: none; margin: 0 max(32px, calc((100% - 860px) / 2)) 20px; display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border-radius: var(--border-radius-xl); border: var(--border-width-regular) solid var(--color-border-secondary);
+  background: var(--color-background-secondary); }
+.w-composer:focus-within { border-color: var(--color-border-primary); }
+.w-composer-input { width: 100%; max-height: 40vh; border: 0; outline: 0; resize: none; padding: 0;
+  font: inherit; color: var(--color-text-primary); background: transparent; }
+.w-chip-x { display: inline-flex; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
+
+.w-scrim { position: fixed; inset: 0; z-index: 30; background: var(--k-scrim); }
+.w-dialog { position: fixed; z-index: 31; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(480px, calc(100% - 36px)); max-height: calc(100vh - 36px); overflow: auto;
+  display: flex; flex-direction: column; gap: 14px; }
+.w-fieldset { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; border: 0; }
+
+@media (max-width: 900px) {
+  .w-rail { width: 220px; }
+  .w-side { display: none; }
+}

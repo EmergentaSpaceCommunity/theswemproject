@@ -534,8 +534,7 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
   await b.waitFor("production Workbench renderer", async () => b.evaluate(`
     window.__SWEM_WORKBENCH_WEB__ === "react-19" &&
     document.getElementById("workbench-root")?.dataset.renderer === "react" &&
-    document.querySelector('[data-workbench-space="agent"]') !== null &&
-    document.getElementById("space-agent") !== null
+    document.querySelector('nav[aria-label="Workbench"]') !== null
   `));
   return b;
 }

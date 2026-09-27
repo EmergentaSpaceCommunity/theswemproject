@@ -1,0 +1,82 @@
+// Where in the product a person is. Kept in the address after the hash, so
+// coming back, reloading and sending somebody the address all lead to the
+// same place.
+
+import { useSyncExternalStore } from "react";
+
+export type AgentTab = "chat" | "files" | "terminal" | "settings";
+
+export type Place =
+  | { at: "home" }
+  | { at: "agent"; agent: string; tab: AgentTab; chat?: string }
+  | { at: "chat"; chat: string }
+  | { at: "new-agent" }
+  | { at: "store" }
+  | { at: "app"; server: string };
+
+const TABS: AgentTab[] = ["chat", "files", "terminal", "settings"];
+
+export function read(hash: string): Place {
+  const [first, second, third, fourth] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  if (first === "agents" && second === "new") return { at: "new-agent" };
+  if (first === "agents" && second) {
+    if (third === "chats" && fourth) return { at: "agent", agent: second, tab: "chat", chat: fourth };
+    const tab = TABS.find((one) => one === third) ?? "chat";
+    return { at: "agent", agent: second, tab };
+  }
+  if (first === "chats" && second) return { at: "chat", chat: second };
+  if (first === "store") return { at: "store" };
+  if (first === "apps" && second) return { at: "app", server: second };
+  return { at: "home" };
+}
+
+export function address(place: Place): string {
+  const part = encodeURIComponent;
+  switch (place.at) {
+    case "agent":
+      if (place.tab === "chat") return place.chat ? `#/agents/${part(place.agent)}/chats/${part(place.chat)}` : `#/agents/${part(place.agent)}`;
+      return `#/agents/${part(place.agent)}/${place.tab}`;
+    case "chat":
+      return `#/chats/${part(place.chat)}`;
+    case "new-agent":
+      return "#/agents/new";
+    case "store":
+      return "#/store";
+    case "app":
+      return `#/apps/${part(place.server)}`;
+    default:
+      return "#/";
+  }
+}
+
+const listeners = new Set<() => void>();
+let current: Place = typeof window === "undefined" ? { at: "home" } : read(window.location.hash);
+let currentHash = typeof window === "undefined" ? "" : window.location.hash;
+
+if (typeof window !== "undefined") {
+  window.addEventListener("hashchange", () => {
+    if (window.location.hash === currentHash) return;
+    currentHash = window.location.hash;
+    current = read(currentHash);
+    for (const listener of listeners) listener();
+  });
+}
+
+export function go(place: Place): void {
+  const next = address(place);
+  if (next === currentHash) return;
+  currentHash = next;
+  current = place;
+  window.history.pushState(null, "", next);
+  for (const listener of listeners) listener();
+}
+
+export function usePlace(): Place {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    () => current,
+  );
+}

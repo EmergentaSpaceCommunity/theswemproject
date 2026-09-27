@@ -38,6 +38,8 @@ const FREE = new Set([
   'wrap', 'nowrap', 'center', 'start', 'end', 'space-between', 'stretch', 'baseline',
   'left', 'right', 'pointer', 'default', 'not-allowed', 'uppercase', 'anywhere',
   'solid', 'dashed', '0', '100%', 'true', 'false',
+  // How text and boxes overflow, wrap and collapse: behaviour, not a value.
+  'hidden', 'ellipsis', 'pre-wrap', 'collapse',
 ]);
 
 /// A length that is a pure ratio or a zero, plus the two em-based letter-spacing
