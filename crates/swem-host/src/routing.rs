@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::{NativeSessionEvent, SurfaceEventSource};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -391,13 +391,52 @@ fn project_native_session_events_inner(
     Ok(NativeRouteProjection { task })
 }
 
+const ROUTES_SCHEMA: &str = "
+  CREATE TABLE IF NOT EXISTS routes (
+    route_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    agent_profile_id TEXT NOT NULL,
+    native_session_id TEXT NOT NULL,
+    environment_profile_id TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    attachments_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS surface_cursors (
+    route_id TEXT NOT NULL REFERENCES routes(route_id),
+    surface_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL,
+    PRIMARY KEY(route_id, surface_id)
+  );";
+
+/// One sequence orders everything that happens: what an engine said on a
+/// route, and what was said in a chat by anyone. An event of a route also
+/// names its chat, so one cursor follows a chat whatever session it is in.
+const EVENTS_SCHEMA: &str = "
+  CREATE TABLE events (
+    sequence INTEGER PRIMARY KEY,
+    route_id TEXT REFERENCES routes(route_id),
+    chat_id TEXT REFERENCES chats(chat_id),
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    at_ms INTEGER,
+    CHECK (route_id IS NOT NULL OR chat_id IS NOT NULL)
+  );
+  CREATE UNIQUE INDEX events_route_event
+    ON events(route_id, event_id) WHERE route_id IS NOT NULL;
+  CREATE UNIQUE INDEX events_chat_event
+    ON events(chat_id, event_id) WHERE route_id IS NULL;
+  CREATE INDEX events_route_sequence ON events(route_id, sequence);
+  CREATE INDEX events_chat_sequence ON events(chat_id, sequence);";
+
 /// `SQLite` implementation of the minimal host-owned routing ledger.
 ///
 /// `SQLite` is an implementation choice, not a public interchange format. WAL,
 /// foreign keys and FULL synchronous commits are enabled so independent host
 /// processes observe committed route/event/cursor transitions after a crash.
 pub struct RoutingLedger {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl RoutingLedger {
@@ -424,56 +463,97 @@ impl RoutingLedger {
              CREATE TABLE IF NOT EXISTS ledger_meta (
                key TEXT PRIMARY KEY,
                value INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS routes (
-               route_id TEXT PRIMARY KEY,
-               agent_id TEXT NOT NULL,
-               agent_profile_id TEXT NOT NULL,
-               native_session_id TEXT NOT NULL,
-               environment_profile_id TEXT NOT NULL,
-               workspace TEXT NOT NULL,
-               attachments_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS events (
-               sequence INTEGER PRIMARY KEY,
-               route_id TEXT NOT NULL REFERENCES routes(route_id),
-               event_id TEXT NOT NULL,
-               kind TEXT NOT NULL,
-               source TEXT NOT NULL,
-               payload_json TEXT NOT NULL,
-               UNIQUE(route_id, event_id)
-             );
-             CREATE INDEX IF NOT EXISTS events_route_sequence
-               ON events(route_id, sequence);
-             CREATE TABLE IF NOT EXISTS surface_cursors (
-               route_id TEXT NOT NULL REFERENCES routes(route_id),
-               surface_id TEXT NOT NULL,
-               cursor INTEGER NOT NULL,
-               PRIMARY KEY(route_id, surface_id)
              );",
         )?;
-        let stored_version: Option<i64> = connection
-            .query_row(
-                "SELECT value FROM ledger_meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match stored_version {
-            None => {
-                connection.execute(
-                    "INSERT INTO ledger_meta(key, value) VALUES ('schema_version', ?1)",
-                    [SCHEMA_VERSION],
-                )?;
-            }
+        let mut ledger = Self { connection };
+        match ledger.stored_version()? {
             Some(version) if version == SCHEMA_VERSION => {}
+            None => ledger.create_schema()?,
+            Some(1) => {
+                crate::chat_ledger::keep_a_copy(&ledger.connection, path)?;
+                ledger.migrate_from_routes()?;
+            }
             Some(version) => {
                 return Err(RoutingError::InvalidBinding(format!(
                     "unsupported routing schema version {version}"
                 )));
             }
         }
-        Ok(Self { connection })
+        Ok(ledger)
+    }
+
+    fn stored_version(&self) -> Result<Option<i64>, RoutingError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM ledger_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A ledger nobody has written to yet.
+    fn create_schema(&mut self) -> Result<(), RoutingError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: Option<i64> = transaction
+            .query_row(
+                "SELECT value FROM ledger_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored.is_none() {
+            transaction.execute_batch(ROUTES_SCHEMA)?;
+            transaction.execute_batch(crate::chat_ledger::CHATS_SCHEMA)?;
+            transaction.execute_batch(EVENTS_SCHEMA)?;
+            transaction.execute_batch(crate::chat_ledger::MESSAGES_SCHEMA)?;
+            transaction.execute(
+                "INSERT INTO ledger_meta(key, value) VALUES ('schema_version', ?1)",
+                [SCHEMA_VERSION],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// A ledger of routes becomes a ledger of chats: every route a chat of the
+    /// owner and that route's agent, with what was said read out of what was
+    /// recorded. One transaction; the file was copied beside itself first.
+    fn migrate_from_routes(&mut self) -> Result<(), RoutingError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: i64 = transaction.query_row(
+            "SELECT value FROM ledger_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        // Another process may have done it between the read and the lock.
+        if stored == 1 {
+            transaction.execute_batch(crate::chat_ledger::CHATS_SCHEMA)?;
+            transaction.execute_batch(
+                "ALTER TABLE events RENAME TO events_v1;
+                 DROP INDEX IF EXISTS events_route_sequence;",
+            )?;
+            transaction.execute_batch(EVENTS_SCHEMA)?;
+            transaction.execute_batch(
+                "INSERT INTO events(sequence, route_id, event_id, kind, source, payload_json)
+                   SELECT sequence, route_id, event_id, kind, source, payload_json
+                   FROM events_v1 ORDER BY sequence;
+                 DROP TABLE events_v1;",
+            )?;
+            transaction.execute_batch(crate::chat_ledger::MESSAGES_SCHEMA)?;
+            crate::chat_ledger::chats_from_routes(&transaction)?;
+            transaction.execute(
+                "UPDATE ledger_meta SET value = ?1 WHERE key = 'schema_version'",
+                [SCHEMA_VERSION],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Insert a route binding, or prove a retry names the same route.
@@ -506,7 +586,63 @@ impl RoutingLedger {
                 attachments,
             ],
         )?;
-        self.require_identity(&binding.identity())
+        self.require_identity(&binding.identity())?;
+        self.chat_of_route(binding)?;
+        Ok(())
+    }
+
+    /// Bind a route as its agent's session in a chat that already exists.
+    /// The session the agent had there, if any, becomes an earlier one, with
+    /// why it ended. Met again, the same route in the same chat passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError::BindingDrift`] as [`Self::bind_route`] does,
+    /// and [`RoutingError::InvalidBinding`] for a route that is already a
+    /// session of another chat.
+    pub fn bind_route_in_chat(
+        &mut self,
+        binding: &SessionRouteBinding,
+        chat_id: &str,
+        why_the_last_ended: &str,
+    ) -> Result<crate::ChatSession, RoutingError> {
+        let attachments = serde_json::to_string(&binding.attachments)?;
+        let workspace = binding.workspace.to_str().ok_or_else(|| {
+            RoutingError::InvalidBinding("workspace is not valid Unicode for ACP/SQLite".into())
+        })?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO routes(
+               route_id, agent_id, agent_profile_id, native_session_id,
+               environment_profile_id, workspace, attachments_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                binding.route_id,
+                binding.agent_id,
+                binding.agent_profile_id,
+                binding.native_session_id,
+                binding.environment_profile_id,
+                workspace,
+                attachments,
+            ],
+        )?;
+        self.require_identity(&binding.identity())?;
+        if let Some(session) = self.session_of_route(&binding.route_id)? {
+            return if session.chat_id == chat_id {
+                Ok(session)
+            } else {
+                Err(RoutingError::InvalidBinding(format!(
+                    "route {} is a session of another chat",
+                    binding.route_id
+                )))
+            };
+        }
+        let agent = self.agent_of_profile(&binding.agent_profile_id)?;
+        self.begin_session(
+            chat_id,
+            &agent.participant_id,
+            &binding.route_id,
+            why_the_last_ended,
+        )
     }
 
     /// Read one exact route.
@@ -720,10 +856,25 @@ impl RoutingLedger {
             transaction.commit()?;
             return sqlite_to_cursor(sequence);
         }
+        let chat_id: Option<String> = transaction
+            .query_row(
+                "SELECT chat_id FROM sessions WHERE route_id = ?1",
+                [route_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         transaction.execute(
-            "INSERT INTO events(route_id, event_id, kind, source, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![route_id, event_id, kind, source, payload],
+            "INSERT INTO events(route_id, chat_id, event_id, kind, source, payload_json, at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                route_id,
+                chat_id,
+                event_id,
+                kind,
+                source,
+                payload,
+                crate::chat_ledger::now_ms()
+            ],
         )?;
         let sequence = transaction.last_insert_rowid();
         transaction.commit()?;

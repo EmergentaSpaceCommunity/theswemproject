@@ -20,6 +20,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub mod agent_setup;
+mod chat_ledger;
 mod distribution;
 mod editor_door;
 mod environment;
@@ -38,6 +39,7 @@ mod workbench_files;
 mod workbench_observation;
 pub mod workbench_shell;
 
+pub use chat_ledger::*;
 pub use distribution::*;
 pub use editor_door::*;
 pub use environment::*;
