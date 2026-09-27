@@ -20,14 +20,16 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    ErrorData, Implementation, JsonObject, ListResourcesResult, MetaObject, PaginatedRequestParams,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    Implementation, JsonObject, ListResourcesResult, ListToolsResult, MetaObject,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::{Json, ServerHandler, ServiceExt as _, schemars, tool, tool_handler, tool_router};
+use rmcp::{Json, ServerHandler, ServiceExt as _, schemars, tool, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -159,9 +161,16 @@ struct NotesServer {
     /// `--home`: the notes View is this server's home App, marked on the
     /// resource so a host shows it as a space of its own.
     home: bool,
+    /// `--late-tool <file>`: once the file exists the server declares one
+    /// more tool, `late_note` - a server that gains a tool while it runs,
+    /// as a hub does when a package is installed through it.
+    late_tool: Option<PathBuf>,
     notes: Mutex<Vec<(String, String)>>,
     tool_router: ToolRouter<Self>,
 }
+
+/// The tool a `--late-tool` server declares once its file exists.
+const LATE_TOOL: &str = "late_note";
 
 impl NotesServer {
     #[allow(
@@ -178,6 +187,7 @@ impl NotesServer {
         hostile: bool,
         omit_resource_listing: bool,
         home: bool,
+        late_tool: Option<PathBuf>,
     ) -> Self {
         Self {
             receipt,
@@ -190,6 +200,7 @@ impl NotesServer {
             hostile,
             omit_resource_listing,
             home,
+            late_tool,
             notes: Mutex::new(Vec::new()),
             tool_router: Self::tool_router(),
         }
@@ -402,8 +413,50 @@ impl NotesServer {
     }
 }
 
-#[tool_handler(router = self.tool_router)]
+impl NotesServer {
+    fn late_tool_arrived(&self) -> bool {
+        self.late_tool.as_ref().is_some_and(|path| path.is_file())
+    }
+}
+
 impl ServerHandler for NotesServer {
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let mut tools = self.tool_router.list_all();
+        if self.late_tool_arrived() {
+            tools.push(Tool::new(
+                LATE_TOOL,
+                "A tool this server declared after it was dialled",
+                std::sync::Arc::new(
+                    json!({"type": "object", "properties": {}})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            ));
+        }
+        Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        if request.name == LATE_TOOL {
+            return Ok(CallToolResponse::Complete(if self.late_tool_arrived() {
+                CallToolResult::success(vec![ContentBlock::text("the late tool answered")])
+            } else {
+                CallToolResult::error(vec![ContentBlock::text("no such tool yet")])
+            }));
+        }
+        let call = ToolCallContext::new(self, request, context);
+        self.tool_router.call(call).await
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
@@ -591,6 +644,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let hostile = arguments.iter().any(|argument| argument == "--hostile");
     let home = arguments.iter().any(|argument| argument == "--home");
+    let late_tool = arguments
+        .iter()
+        .position(|argument| argument == "--late-tool")
+        .and_then(|index| arguments.get(index + 1))
+        .map(PathBuf::from);
     let omit_resource_listing = arguments
         .iter()
         .any(|argument| argument == "--omit-resource-listing");
@@ -622,6 +680,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hostile,
         omit_resource_listing,
         home,
+        late_tool,
     )
     .serve(rmcp::transport::stdio())
     .await?

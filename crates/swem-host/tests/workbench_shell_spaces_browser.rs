@@ -55,11 +55,13 @@ async fn a_real_browser_opens_a_servers_home_app_as_a_space() {
         })
         .expect("declare the fixture");
     let state = Arc::new(state);
-    let handle = serve_workbench_http_with_apps(Arc::clone(&state), ([127, 0, 0, 1], 0).into(), None)
-        .await
-        .expect("serve");
+    let handle =
+        serve_workbench_http_with_apps(Arc::clone(&state), ([127, 0, 0, 1], 0).into(), None)
+            .await
+            .expect("serve");
     let url = format!("http://127.0.0.1:{}/", handle.local_addr.port());
-    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/workbench_shell_spaces_cdp_driver.mjs");
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/workbench_shell_spaces_cdp_driver.mjs");
     let output = tokio::process::Command::new("node")
         .arg(driver)
         .arg(&browser)
@@ -74,7 +76,10 @@ async fn a_real_browser_opens_a_servers_home_app_as_a_space() {
         "driver failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("spaces OK"), "the driver did not reach the end");
+    assert!(
+        stdout.contains("spaces OK"),
+        "the driver did not reach the end"
+    );
     state.project_app_close("p1").await.ok();
     std::fs::remove_dir_all(&root).ok();
 }

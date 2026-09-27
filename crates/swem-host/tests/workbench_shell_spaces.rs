@@ -37,13 +37,19 @@ fn shell_with_fixture(root: &std::path::Path, name: &str, home: bool) -> Arc<Wor
         .expect("the catalogue");
     let mut args = vec![
         "--receipt".to_owned(),
-        root.join(format!("{name}-receipt.json")).display().to_string(),
+        root.join(format!("{name}-receipt.json"))
+            .display()
+            .to_string(),
         "--poison".to_owned(),
-        root.join(format!("{name}-poison.json")).display().to_string(),
+        root.join(format!("{name}-poison.json"))
+            .display()
+            .to_string(),
     ];
     if home {
         args.push("--home".to_owned());
     }
+    args.push("--late-tool".to_owned());
+    args.push(root.join(format!("{name}-late-tool")).display().to_string());
     state
         .declare_mcp_server(&DeclareMcpServerBody {
             name: name.to_owned(),
@@ -66,7 +72,10 @@ async fn a_server_with_a_home_app_is_a_space_and_one_without_is_not() {
     assert_eq!(spaces.len(), 1, "{spaces:?}");
     assert_eq!(spaces[0].server, "notes");
     assert_eq!(spaces[0].uri, "ui://apps-fixture/notes");
-    assert_eq!(spaces[0].description.as_deref(), Some("Note board MCP App view"));
+    assert_eq!(
+        spaces[0].description.as_deref(),
+        Some("Note board MCP App view")
+    );
 
     // Opening the space hands the page the App, as a project's App is handed.
     let opened = state
@@ -74,12 +83,19 @@ async fn a_server_with_a_home_app_is_a_space_and_one_without_is_not() {
         .await
         .expect("the space opens");
     assert_eq!(opened.server_name, "notes");
-    assert!(opened.html.contains("<html") || opened.html.contains("<!doctype"), "{}", &opened.html[..80.min(opened.html.len())]);
+    assert!(
+        opened.html.contains("<html") || opened.html.contains("<!doctype"),
+        "{}",
+        &opened.html[..80.min(opened.html.len())]
+    );
     let refused = state
         .space_open("notes", "ui://apps-fixture/nothing")
         .await
         .unwrap_err();
-    assert!(refused.to_string().contains("declares no home App"), "{refused}");
+    assert!(
+        refused.to_string().contains("declares no home App"),
+        "{refused}"
+    );
     state.project_app_close(&opened.app_id).await.ok();
 
     // The same server without the marker is an ordinary server: no space.
@@ -89,5 +105,52 @@ async fn a_server_with_a_home_app_is_a_space_and_one_without_is_not() {
         .space_open("notes", "ui://apps-fixture/notes")
         .await
         .unwrap_err();
-    assert!(refused.to_string().contains("declares no home App"), "{refused}");
+    assert!(
+        refused.to_string().contains("declares no home App"),
+        "{refused}"
+    );
+}
+
+/// A server may gain a tool while it runs - a hub installs a package - and
+/// the gate is on what the server declares, not on when the host looked.
+#[tokio::test]
+async fn an_app_may_call_a_tool_its_server_declared_after_it_was_dialled() {
+    let root = fresh_root("late-tool");
+    let state = shell_with_fixture(&root, "notes", true);
+    let opened = state
+        .space_open("notes", "ui://apps-fixture/notes")
+        .await
+        .expect("the space opens");
+    let call = |id: u64| {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "late_note", "arguments": {}}
+        })
+    };
+    // Not declared yet: asked of the server once more, and refused.
+    let before = state
+        .project_app_rpc(&opened.app_id, call(1))
+        .await
+        .expect("the relay answers");
+    assert_eq!(before["error"]["code"], -32602, "{before}");
+    assert!(
+        before["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("late_note"),
+        "{before}"
+    );
+
+    // The server declares it; the same call goes through.
+    std::fs::write(root.join("notes-late-tool"), b"arrived").expect("the tool arrives");
+    let after = state
+        .project_app_rpc(&opened.app_id, call(2))
+        .await
+        .expect("the relay answers");
+    assert!(after.get("error").is_none(), "{after}");
+    assert_eq!(
+        after["result"]["content"][0]["text"], "the late tool answered",
+        "{after}"
+    );
+    state.project_app_close(&opened.app_id).await.ok();
 }

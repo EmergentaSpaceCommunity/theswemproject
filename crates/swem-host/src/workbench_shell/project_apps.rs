@@ -479,8 +479,12 @@ impl WorkbenchShellState {
             return Ok(Value::Null);
         };
         let params = message.get("params").cloned().unwrap_or(Value::Null);
-        if let Err(refusal) =
-            workbench_apps::allow_relay(&entry, method, params.get("name").and_then(Value::as_str))
+        if let Err(refusal) = workbench_apps::allow_relay_now(
+            &entry,
+            method,
+            params.get("name").and_then(Value::as_str),
+        )
+        .await
         {
             let code = match refusal {
                 RelayRefusal::MethodNotAllowed(_) => -32601,

@@ -135,6 +135,11 @@ pub(crate) struct AppAttachmentEntry {
     client: Option<Arc<HostClient>>,
     exit: Option<ManagedStdioExit>,
     pub tools: Vec<DiscoveredAppTool>,
+    /// Tools the server declared after it was dialled, as the relay found
+    /// them when an App called one: a server may gain tools while it runs
+    /// (a hub installs a package), and `tools` is what it listed at the
+    /// start.
+    late_tools: std::sync::Mutex<Vec<DiscoveredAppTool>>,
     pub apps: Vec<DiscoveredAppResource>,
     /// Where bytes an App of this server uploads land: the server's own
     /// workspace, as the host that declared the server knows it. `None`
@@ -685,6 +690,7 @@ pub(crate) async fn discover_server(
             client: None,
             exit: None,
             tools: Vec::new(),
+            late_tools: std::sync::Mutex::default(),
             apps: Vec::new(),
             upload_root,
         };
@@ -713,6 +719,7 @@ pub(crate) async fn discover_server(
         client,
         exit,
         tools,
+        late_tools: std::sync::Mutex::default(),
         apps,
         upload_root,
     }
@@ -1191,9 +1198,14 @@ pub(crate) fn allow_relay(
         "tools/list" | "resources/read" => Ok(()),
         "tools/call" => {
             let tool_name = tool_name.unwrap_or_default();
+            let late = entry
+                .late_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let tool = entry
                 .tools
                 .iter()
+                .chain(late.iter())
                 .find(|tool| tool.name == tool_name)
                 .ok_or_else(|| RelayRefusal::ToolNotDeclared(tool_name.to_owned()))?;
             if tool.visibility.iter().any(|entry| entry == "app") {
@@ -1204,6 +1216,37 @@ pub(crate) fn allow_relay(
         }
         other => Err(RelayRefusal::MethodNotAllowed(other.to_owned())),
     }
+}
+
+/// The same gate, for a server that may have gained tools since it was
+/// dialled. A tool the host has not seen is asked of the server once more
+/// before it is refused: what the server lists now is what it declares, and
+/// the gate is on what the server declares, not on when the host looked.
+pub(crate) async fn allow_relay_now(
+    entry: &AppAttachmentEntry,
+    method: &str,
+    tool_name: Option<&str>,
+) -> Result<(), RelayRefusal> {
+    let refusal = match allow_relay(entry, method, tool_name) {
+        Err(RelayRefusal::ToolNotDeclared(name)) => RelayRefusal::ToolNotDeclared(name),
+        decided => return decided,
+    };
+    let Ok(client) = entry.relay_client() else {
+        return Err(refusal);
+    };
+    let Ok(listed) = client.list_all_tools().await else {
+        return Err(refusal);
+    };
+    let arrived: Vec<DiscoveredAppTool> = listed
+        .iter()
+        .map(tool_view)
+        .filter(|tool| !entry.tools.iter().any(|known| known.name == tool.name))
+        .collect();
+    *entry
+        .late_tools
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = arrived;
+    allow_relay(entry, method, tool_name)
 }
 
 /// How long the relay waits on one long operation before giving up. A render
@@ -1434,6 +1477,7 @@ mod tests {
                     visibility: vec!["model".into()],
                 },
             ],
+            late_tools: std::sync::Mutex::default(),
             apps: Vec::new(),
             upload_root: None,
         };

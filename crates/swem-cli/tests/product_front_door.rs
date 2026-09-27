@@ -1906,8 +1906,8 @@ fn a_person_installs_a_server_with_a_home_app_and_opens_its_space() {
     // The server was installed under the install root, once, and declared
     // from there: nothing beside the product was written by hand.
     assert!(
-        find_directory(&data_root, "notes").is_some_and(|dir| under_install_root(&dir, &data_root, "servers", "notes")),
+        find_directory(&data_root, "notes")
+            .is_some_and(|dir| under_install_root(&dir, &data_root, "servers", "notes")),
         "the server did not land under the install root"
     );
 }
-

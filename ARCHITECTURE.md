@@ -41,7 +41,10 @@ A library plus test fixtures. It owns:
   stream a page long-polls; the MCP catalogue (`mcp_servers.rs`), model providers
   (`model_providers.rs`), schedules, terminals, the editor door (`editor_door.rs`: the same product
   answered over stdio to an editor that speaks ACP), and MCP Apps (`workbench_apps.rs`: a server's
-  surface rendered in a sandboxed origin, its calls relayed through the host).
+  surface rendered in a sandboxed origin, its calls relayed through the host: `tools/call` of a
+  tool its server declares as App-visible, and `resources/read`; a tool the host has not seen is
+  asked of the server once more before it is refused, because a server may gain tools while it
+  runs).
 - **The Project space's host side** (`workbench_project.rs`, `workbench_content.rs`): reading a
   project server's resources and calling its tools on behalf of the page, and creating a project
   through a `ProjectFactory` the product hands it. The host reads what the server publishes; it
