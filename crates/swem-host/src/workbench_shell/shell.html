@@ -30,6 +30,10 @@
   .space-bar button { padding:.4rem .8rem; }
   .space-bar button[aria-pressed="true"] { color:var(--on-accent); background:var(--accent2); border-color:var(--accent2); font-weight:700; }
   .space { flex:1; min-height:0; }
+  /* A server's space is its App, and the App owns the whole area: the frame
+     fills it, and the App's own page lays itself out inside. */
+  .server-space { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; }
+  .server-space > .domain-app { flex:1 1 auto; min-height:0; }
   /* The single row is pinned to the space height: columns scroll inside
      themselves and never grow with the conversation, so an App frame keeps its
      measured position while the agent's answer is still arriving. */
