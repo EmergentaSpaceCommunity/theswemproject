@@ -451,6 +451,11 @@ impl Assembled {
         self.state
             .enable_schedules(&self.root.schedules())
             .map_err(|error| error.to_string())?;
+        // What the chats were left owing when the product last stopped.
+        self.state
+            .take_up_chats()
+            .await
+            .map_err(|error| error.to_string())?;
         let handle = crate::serve_workbench_http_with_apps_at(
             Arc::clone(&self.state),
             bind,

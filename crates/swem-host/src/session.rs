@@ -766,6 +766,35 @@ struct NativeSessionControlInner {
     /// surface reads this to offer content the agent can actually use rather
     /// than to find out by having a turn refused.
     prompt_capabilities: Mutex<Option<PromptCapabilities>>,
+    /// How many questions wait for a person right now. A turn's deadline
+    /// does not run while this is more than none: the time a person takes
+    /// to answer is theirs, not the agent's.
+    waiting_tx: watch::Sender<usize>,
+}
+
+/// Held while a question waits for a person; the count falls when it is
+/// dropped, however the wait ended.
+struct WaitsForAPerson {
+    inner: Arc<NativeSessionControlInner>,
+}
+
+impl Drop for WaitsForAPerson {
+    fn drop(&mut self) {
+        self.inner
+            .waiting_tx
+            .send_modify(|waiting| *waiting = waiting.saturating_sub(1));
+    }
+}
+
+/// The next change in how many questions wait; never, for a session that
+/// has no control to ask through.
+async fn questions_waiting(receiver: &mut Option<watch::Receiver<usize>>) -> usize {
+    if let Some(receiver) = receiver
+        && receiver.changed().await.is_ok()
+    {
+        return *receiver.borrow_and_update();
+    }
+    std::future::pending().await
 }
 
 /// Surface-neutral handle for signalling an in-flight ACP prompt turn.
@@ -798,6 +827,7 @@ impl NativeSessionControl {
         let (elicitation_tx, elicitation_rx) = mpsc::unbounded_channel();
         let (file_tx, file_rx) = mpsc::unbounded_channel();
         let (surface_event_tx, surface_event_rx) = mpsc::unbounded_channel();
+        let (waiting_tx, _) = watch::channel(0);
         Self {
             inner: Arc::new(NativeSessionControlInner {
                 phase: Mutex::new(initial),
@@ -823,8 +853,20 @@ impl NativeSessionControl {
                 surface_event_rx: Mutex::new(Some(surface_event_rx)),
                 surface_events_enabled: AtomicBool::new(false),
                 prompt_capabilities: Mutex::new(None),
+                waiting_tx,
             }),
         }
+    }
+
+    fn waits_for_a_person(&self) -> WaitsForAPerson {
+        self.inner.waiting_tx.send_modify(|waiting| *waiting += 1);
+        WaitsForAPerson {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    fn subscribe_waiting(&self) -> watch::Receiver<usize> {
+        self.inner.waiting_tx.subscribe()
     }
 
     /// What this connection's agent advertised it can take in a turn, or
@@ -1193,6 +1235,7 @@ impl NativeSessionControl {
             );
             received
         };
+        let _waiting = self.waits_for_a_person();
         response.await.unwrap_or(None)
     }
 
@@ -1347,6 +1390,7 @@ impl NativeSessionControl {
             );
             received
         };
+        let _waiting = self.waits_for_a_person();
         response.await.unwrap_or(None)
     }
 
@@ -1552,7 +1596,10 @@ impl NativeSessionControl {
             );
             (received, url_id)
         };
-        let action = response.0.await.unwrap_or(ElicitationAction::Cancel);
+        let action = {
+            let _waiting = self.waits_for_a_person();
+            response.0.await.unwrap_or(ElicitationAction::Cancel)
+        };
         if matches!(action, ElicitationAction::Accept(_))
             && let Some(url_id) = response.1
             && let Ok(mut open) = self.inner.open_url_elicitations.lock()
@@ -4610,12 +4657,35 @@ async fn run_native_session_core_inner(
                 let mut cancel_sent = false;
                 let operation_deadline = tokio::time::sleep(operation_timeout);
                 tokio::pin!(operation_deadline);
+                // The deadline is the agent's. While a question waits for a
+                // person it stands still, and goes on from where it stood
+                // once every question has its answer.
+                let mut waiting = session_control
+                    .as_ref()
+                    .map(NativeSessionControl::subscribe_waiting);
+                let mut stood_still_since = waiting
+                    .as_mut()
+                    .is_some_and(|waiting| *waiting.borrow_and_update() > 0)
+                    .then(tokio::time::Instant::now);
                 let response = if let Some(receiver) = cancellation.as_mut() {
                     loop {
                         tokio::select! {
                             biased;
                             result = &mut response => break result?,
-                            () = &mut operation_deadline => {
+                            count = questions_waiting(&mut waiting) => {
+                                match (count, stood_still_since) {
+                                    (0, Some(since)) => {
+                                        let goes_on = operation_deadline.deadline() + since.elapsed();
+                                        operation_deadline.as_mut().reset(goes_on);
+                                        stood_still_since = None;
+                                    }
+                                    (1.., None) => {
+                                        stood_still_since = Some(tokio::time::Instant::now());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            () = &mut operation_deadline, if stood_still_since.is_none() => {
                                 if let Some(sender) = prompt_result_sender.take() {
                                     let _ = sender.send(Err(SupplyError::OperationTimeout {
                                         operation: "session/prompt".into(),

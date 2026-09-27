@@ -543,120 +543,209 @@ pub(crate) fn chats_from_routes(transaction: &Transaction<'_>) -> Result<(), Rou
         let agent = agent_in(transaction, &profile_id)?;
         let chat = chat_in(transaction, "", &owner, &[&owner, &agent], None)?;
         session_in(transaction, &chat, &agent, &route_id, None, "")?;
-        spoken_on_route(transaction, &chat, &route_id, &owner, &agent)?;
+        spoken_on_route(transaction, &chat, &route_id)?;
     }
     Ok(())
 }
 
 /// What was said on a route, read out of its events into messages.
-///
-/// A person's message is the prompt that was submitted, without the line the
-/// host used to append about who wrote it. An agent's message is what it said
-/// in one turn, whole. What an engine replayed when a session was loaded is
-/// the same words a second time and is left out.
 fn spoken_on_route(
     transaction: &Transaction<'_>,
     chat_id: &str,
     route_id: &str,
-    owner: &str,
-    agent: &str,
 ) -> Result<(), RoutingError> {
     let events: Vec<(i64, String, String, String)> = {
         let mut statement = transaction.prepare(
             "SELECT sequence, kind, source, payload_json FROM events
-             WHERE route_id = ?1 ORDER BY sequence",
+             WHERE route_id = ?1 AND kind IN ('host/prompt_submitted', 'acp/prompt_response')
+             ORDER BY sequence",
         )?;
         let rows = statement.query_map([route_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
         rows.collect::<Result<_, _>>()?
     };
-    let mut writer: Option<Value> = None;
-    let mut said = String::new();
     for (sequence, kind, source, payload) in events {
-        if source.contains("native_replay") {
-            continue;
-        }
-        let payload: Value = serde_json::from_str(&payload)?;
-        match kind.as_str() {
-            "host/turn_written" => writer = payload.get("correspondent").cloned(),
-            "host/prompt_submitted" => {
-                said.clear();
-                let mut blocks = payload
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let surface = writer
-                    .as_ref()
-                    .and_then(|writer| writer.get("surface"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("workbench-browser")
-                    .to_owned();
-                // The line about who wrote it was the last block, and was the
-                // host's, not the person's.
-                if writer.take().is_some()
-                    && blocks.last().is_some_and(|block| {
-                        block
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .is_some_and(|text| text.starts_with('[') && text.ends_with(']'))
-                    })
-                {
-                    blocks.pop();
-                }
-                let channel = match surface.as_str() {
-                    "schedule" => CHANNEL_SCHEDULE,
-                    "editor" => CHANNEL_EDITOR,
-                    _ => CHANNEL_WORKBENCH,
-                };
-                message_in(
-                    transaction,
-                    &Said {
-                        chat_id,
-                        sender_id: owner,
-                        channel,
-                        channel_ref: None,
-                        content: &Value::Array(blocks),
-                        sequence,
-                        created_ms: None,
-                    },
-                )?;
-            }
-            "acp/session_update" => {
-                let update = payload.get("update");
-                if update
-                    .and_then(|update| update.get("sessionUpdate"))
-                    .and_then(Value::as_str)
-                    == Some("agent_message_chunk")
-                    && let Some(text) = update
-                        .and_then(|update| update.get("content"))
-                        .and_then(|content| content.get("text"))
-                        .and_then(Value::as_str)
-                {
-                    said.push_str(text);
-                }
-            }
-            "acp/prompt_response" => {
-                if !said.trim().is_empty() {
-                    message_in(
-                        transaction,
-                        &Said {
-                            chat_id,
-                            sender_id: agent,
-                            channel: CHANNEL_AGENT,
-                            channel_ref: None,
-                            content: &json!([{ "type": "text", "text": said }]),
-                            sequence,
-                            created_ms: None,
-                        },
-                    )?;
-                }
-                said.clear();
-            }
-            _ => {}
+        spoken_by_event(
+            transaction,
+            &Happened {
+                route_id,
+                chat_id,
+                sequence,
+                kind: &kind,
+                source: &source,
+                payload: &serde_json::from_str(&payload)?,
+                at_ms: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// How the block the host ends a turn with begins. A prompt that carries it
+/// is a message of the chat being given to an agent, and was kept when it
+/// was said.
+pub(crate) const BLOCK_OPENS: &str = "<swem:turn k=\"";
+
+/// An event of a route, as the one who keeps messages reads it.
+pub(crate) struct Happened<'a> {
+    pub route_id: &'a str,
+    pub chat_id: &'a str,
+    pub sequence: i64,
+    pub kind: &'a str,
+    /// As the ledger stores it: a JSON string.
+    pub source: &'a str,
+    pub payload: &'a Value,
+    pub at_ms: Option<i64>,
+}
+
+/// What an event of a route says was said, kept as a message at the event's
+/// own place.
+///
+/// A person's message is the prompt that was submitted, without the line the
+/// host used to append about who wrote it. An agent's message is what it said
+/// in one turn, whole, kept when the turn ends. What an engine replayed when
+/// a session was loaded is the same words a second time and is left out.
+pub(crate) fn spoken_by_event(
+    transaction: &Transaction<'_>,
+    happened: &Happened<'_>,
+) -> Result<(), RoutingError> {
+    if happened.source.contains("native_replay") {
+        return Ok(());
+    }
+    // Where this turn began: after the last prompt or the last answer.
+    let since: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM events
+         WHERE route_id = ?1 AND sequence < ?2
+           AND kind IN ('host/prompt_submitted', 'acp/prompt_response')",
+        params![happened.route_id, happened.sequence],
+        |row| row.get(0),
+    )?;
+    match happened.kind {
+        "host/prompt_submitted" => a_persons_prompt(transaction, happened, since),
+        "acp/prompt_response" => an_agents_turn(transaction, happened, since),
+        _ => Ok(()),
+    }
+}
+
+fn a_persons_prompt(
+    transaction: &Transaction<'_>,
+    happened: &Happened<'_>,
+    since: i64,
+) -> Result<(), RoutingError> {
+    let mut blocks = happened
+        .payload
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let last = blocks
+        .last()
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if last.starts_with(BLOCK_OPENS) {
+        return Ok(());
+    }
+    let writer: Option<Value> = transaction
+        .query_row(
+            "SELECT payload_json FROM events
+             WHERE route_id = ?1 AND kind = 'host/turn_written'
+               AND sequence > ?2 AND sequence < ?3
+             ORDER BY sequence DESC LIMIT 1",
+            params![happened.route_id, since, happened.sequence],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<Value>(&payload))
+        .transpose()?
+        .and_then(|payload| payload.get("correspondent").cloned());
+    let channel = match writer
+        .as_ref()
+        .and_then(|writer| writer.get("surface"))
+        .and_then(Value::as_str)
+    {
+        Some("schedule") => CHANNEL_SCHEDULE,
+        Some("editor") => CHANNEL_EDITOR,
+        _ => CHANNEL_WORKBENCH,
+    };
+    // The line about who wrote it was the last block, and was the host's,
+    // not the person's.
+    if writer.is_some() && last.starts_with('[') && last.ends_with(']') {
+        blocks.pop();
+    }
+    let owner = owner_in(transaction)?;
+    message_in(
+        transaction,
+        &Said {
+            chat_id: happened.chat_id,
+            sender_id: &owner,
+            channel,
+            channel_ref: None,
+            content: &Value::Array(blocks),
+            sequence: happened.sequence,
+            created_ms: happened.at_ms,
+        },
+    )?;
+    Ok(())
+}
+
+fn an_agents_turn(
+    transaction: &Transaction<'_>,
+    happened: &Happened<'_>,
+    since: i64,
+) -> Result<(), RoutingError> {
+    let chunks: Vec<String> = {
+        let mut statement = transaction.prepare(
+            "SELECT payload_json FROM events
+             WHERE route_id = ?1 AND kind = 'acp/session_update'
+               AND source NOT LIKE '%native_replay%'
+               AND sequence > ?2 AND sequence < ?3
+             ORDER BY sequence",
+        )?;
+        let rows = statement.query_map(
+            params![happened.route_id, since, happened.sequence],
+            |row| row.get(0),
+        )?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut said = String::new();
+    for chunk in chunks {
+        let chunk: Value = serde_json::from_str(&chunk)?;
+        let update = chunk.get("update");
+        if update
+            .and_then(|update| update.get("sessionUpdate"))
+            .and_then(Value::as_str)
+            == Some("agent_message_chunk")
+            && let Some(text) = update
+                .and_then(|update| update.get("content"))
+                .and_then(|content| content.get("text"))
+                .and_then(Value::as_str)
+        {
+            said.push_str(text);
         }
     }
+    if said.trim().is_empty() {
+        return Ok(());
+    }
+    let agent: String = transaction.query_row(
+        "SELECT agent_id FROM sessions WHERE route_id = ?1",
+        [happened.route_id],
+        |row| row.get(0),
+    )?;
+    message_in(
+        transaction,
+        &Said {
+            chat_id: happened.chat_id,
+            sender_id: &agent,
+            channel: CHANNEL_AGENT,
+            channel_ref: None,
+            content: &json!([{ "type": "text", "text": said }]),
+            sequence: happened.sequence,
+            created_ms: happened.at_ms,
+        },
+    )?;
     Ok(())
 }
 
@@ -1157,6 +1246,13 @@ impl RoutingLedger {
             transaction.commit()?;
             return self.message(&said);
         }
+        // A person has written: agents may answer each other again.
+        transaction.execute(
+            "UPDATE chats SET agent_replies = 0
+             WHERE chat_id = ?1 AND NOT EXISTS (
+               SELECT 1 FROM participants WHERE participant_id = ?2 AND kind = 'agent')",
+            params![chat_id, sender_id],
+        )?;
         let now = now_ms();
         let event_id = new_id("e")?;
         transaction.execute(
@@ -1191,52 +1287,6 @@ impl RoutingLedger {
         )?;
         transaction.commit()?;
         self.message(&message)
-    }
-
-    /// Keep what an agent said in a turn as its message, placed where the
-    /// turn ended. Said twice for the same place, it is the same message.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RoutingError`] when the place is not an event of that chat.
-    pub fn keep_what_was_said(
-        &mut self,
-        chat_id: &str,
-        agent_id: &str,
-        sequence: u64,
-        text: &str,
-    ) -> Result<Option<Message>, RoutingError> {
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        let place = i64::try_from(sequence).map_err(|_| RoutingError::CursorOverflow(sequence))?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let kept = transaction
-            .query_row(
-                "SELECT message_id FROM messages WHERE sequence = ?1",
-                [place],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let message = match kept {
-            Some(message) => message,
-            None => message_in(
-                &transaction,
-                &Said {
-                    chat_id,
-                    sender_id: agent_id,
-                    channel: CHANNEL_AGENT,
-                    channel_ref: None,
-                    content: &json!([{ "type": "text", "text": text }]),
-                    sequence: place,
-                    created_ms: Some(now_ms()),
-                },
-            )?,
-        };
-        transaction.commit()?;
-        self.message(&message).map(Some)
     }
 
     /// One message by id.

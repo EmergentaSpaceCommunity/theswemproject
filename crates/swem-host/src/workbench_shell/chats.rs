@@ -1,0 +1,400 @@
+//! Chats as a person and a door use them: start one, read one, say
+//! something in one, stop what is running, answer what waits.
+//!
+//! Who a message is for is decided here by one pure function,
+//! [`recipients`]; carrying a message to an agent is `runtime`'s.
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::{WorkbenchShellError, WorkbenchShellState};
+use crate::{
+    CHANNEL_WORKBENCH, Chat, ChatEvent, Delivery, Message, Participant, ParticipantKind, Question,
+    RoutingError,
+};
+
+/// What is asked for when a chat is started.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct StartChatBody {
+    /// What the person calls it; empty, it is known by its first words.
+    #[serde(default)]
+    pub title: String,
+    /// The profiles of the agents in it.
+    pub agents: Vec<String>,
+}
+
+/// What is said.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Saying {
+    pub text: String,
+    /// What was handed over with it, by the id the content store gave.
+    #[serde(default)]
+    pub content_refs: Vec<String>,
+    /// The sender's own name for this message, so that saying it again
+    /// after a lost answer is not a second message.
+    #[serde(default)]
+    pub client_ref: Option<String>,
+}
+
+/// A stretch of a chat with what the chat owes and waits for.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChatPage {
+    pub chat: Chat,
+    pub events: Vec<ChatEvent>,
+    pub messages: Vec<Message>,
+    /// Whether there is more before this stretch.
+    pub more: bool,
+    pub deliveries: Vec<Delivery>,
+    pub questions: Vec<Question>,
+}
+
+/// What came of saying something.
+#[derive(Clone, Debug, Serialize)]
+pub struct SaidInChat {
+    pub message: Message,
+    pub deliveries: Vec<Delivery>,
+}
+
+/// One a message is for, and why.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Recipient {
+    pub agent_id: String,
+    pub why: String,
+}
+
+/// Who a message is for.
+///
+/// One agent in a chat answers everything a person says there. Several
+/// answer when they are named. What an agent says is for the agents it
+/// names and nobody else, so two agents do not answer each other for ever
+/// by being in the same room.
+pub(crate) fn recipients(chat: &Chat, sender: &Participant, named: &[String]) -> Vec<Recipient> {
+    let agents: Vec<&Participant> = chat
+        .members
+        .iter()
+        .filter(|member| {
+            member.kind == ParticipantKind::Agent
+                && !member.retired
+                && member.participant_id != sender.participant_id
+        })
+        .collect();
+    let by_name = |agents: &[&Participant]| -> Vec<Recipient> {
+        agents
+            .iter()
+            .filter(|agent| {
+                named
+                    .iter()
+                    .any(|handle| handle.eq_ignore_ascii_case(&agent.handle))
+            })
+            .map(|agent| Recipient {
+                agent_id: agent.participant_id.clone(),
+                why: format!("named by @{}", sender.handle),
+            })
+            .collect()
+    };
+    if sender.kind == ParticipantKind::Agent {
+        return by_name(&agents);
+    }
+    match agents.as_slice() {
+        [only] => vec![Recipient {
+            agent_id: only.participant_id.clone(),
+            why: "the only agent in the chat".to_owned(),
+        }],
+        several => by_name(several),
+    }
+}
+
+/// A refusal of the ledger as the shell says it.
+pub(super) fn ledger_refusal(error: RoutingError) -> WorkbenchShellError {
+    match error {
+        RoutingError::InvalidBinding(said)
+            if said.starts_with("there is no ") || said.starts_with("nobody is ") =>
+        {
+            WorkbenchShellError::NotFound(said)
+        }
+        RoutingError::InvalidBinding(said) => WorkbenchShellError::Invalid(said),
+        RoutingError::RouteNotFound(route) => {
+            WorkbenchShellError::NotFound(format!("unknown route {route}"))
+        }
+        other => WorkbenchShellError::Failed(other.to_string()),
+    }
+}
+
+impl WorkbenchShellState {
+    /// The person this Workbench is, and everybody it knows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub async fn chat_people(&self) -> Result<Value, WorkbenchShellError> {
+        // Every profile is an agent a person can talk to, whether or not
+        // it has been talked to yet.
+        let profiles: Vec<String> = self
+            .profiles()?
+            .into_iter()
+            .map(|profile| profile.profile_id)
+            .collect();
+        self.with_ledger(move |ledger| {
+            let owner = ledger.owner()?;
+            for profile_id in &profiles {
+                ledger.agent_of_profile(profile_id)?;
+            }
+            Ok(json!({ "owner": owner, "participants": ledger.participants()? }))
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// The chats of the person this Workbench is, the one that moved last
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub async fn chats(&self) -> Result<Vec<Chat>, WorkbenchShellError> {
+        self.with_ledger(|ledger| {
+            let owner = ledger.owner()?;
+            ledger.chats_of(&owner.participant_id)
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// Start a chat between the person and the agents they name.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a chat with no agent and an agent that is no profile.
+    pub async fn start_chat(&self, body: StartChatBody) -> Result<Chat, WorkbenchShellError> {
+        if body.agents.is_empty() {
+            return Err(WorkbenchShellError::Invalid(
+                "a chat is started with at least one agent".into(),
+            ));
+        }
+        if body.title.chars().count() > 160 || body.title.chars().any(char::is_control) {
+            return Err(WorkbenchShellError::Invalid(
+                "a chat's name is one line of at most a hundred and sixty characters".into(),
+            ));
+        }
+        for profile_id in &body.agents {
+            self.inventory
+                .select(profile_id)
+                .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        }
+        self.with_ledger(move |ledger| {
+            let owner = ledger.owner()?;
+            let mut agents = Vec::new();
+            for profile_id in &body.agents {
+                agents.push(ledger.agent_of_profile(profile_id)?.participant_id);
+            }
+            ledger.start_chat(&body.title, &owner.participant_id, &agents)
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// A stretch of a chat ending before a place, or at its end, with what
+    /// the chat owes and waits for now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] for a chat that does not
+    /// exist.
+    pub async fn chat_page(
+        &self,
+        chat_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ChatPage, WorkbenchShellError> {
+        let chat_id = chat_id.to_owned();
+        self.with_ledger(move |ledger| {
+            let chat = ledger.chat(&chat_id)?;
+            let (events, messages, more) = ledger.timeline(&chat_id, before, limit)?;
+            Ok(ChatPage {
+                chat,
+                events,
+                messages,
+                more,
+                deliveries: ledger.deliveries_open(Some(&chat_id))?,
+                questions: ledger.questions_waiting(Some(&chat_id))?,
+            })
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// Say something in a chat as the person this Workbench is, through the
+    /// page.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::say_in_chat_as`].
+    pub async fn say_in_chat(
+        self: &Arc<Self>,
+        chat_id: &str,
+        saying: Saying,
+    ) -> Result<SaidInChat, WorkbenchShellError> {
+        self.say_in_chat_as(chat_id, None, CHANNEL_WORKBENCH, saying)
+            .await
+    }
+
+    /// Say something in a chat. The message is kept, owed to the agents it
+    /// is for, and those agents are set to work; the answer is not waited
+    /// for.
+    ///
+    /// `sender` is a participant of the chat; absent, it is the person this
+    /// Workbench is.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an empty message, an unknown chat, a sender who is not in
+    /// the chat, and content that was never handed over.
+    pub async fn say_in_chat_as(
+        self: &Arc<Self>,
+        chat_id: &str,
+        sender: Option<String>,
+        channel: &str,
+        saying: Saying,
+    ) -> Result<SaidInChat, WorkbenchShellError> {
+        if saying.text.trim().is_empty() && saying.content_refs.is_empty() {
+            return Err(WorkbenchShellError::Invalid(
+                "there is nothing to say".into(),
+            ));
+        }
+        let mut content = Vec::new();
+        if !saying.text.is_empty() {
+            content.push(json!({ "type": "text", "text": saying.text }));
+        }
+        for descriptor_id in &saying.content_refs {
+            let descriptor = self.content.load(descriptor_id).await?;
+            content.push(json!({
+                "type": "attachment",
+                "content_ref": descriptor.descriptor_id,
+                "name": descriptor.name,
+                "media_type": descriptor.media_type,
+                "byte_length": descriptor.byte_length,
+            }));
+        }
+        let content = Value::Array(content);
+        let chat_id = chat_id.to_owned();
+        let channel = channel.to_owned();
+        let said = self
+            .with_ledger(move |ledger| {
+                let chat = ledger.chat(&chat_id)?;
+                let sender = match sender {
+                    Some(sender) => ledger.participant(&sender)?,
+                    None => ledger.owner()?,
+                };
+                let message = ledger.say(
+                    &chat_id,
+                    &sender.participant_id,
+                    &channel,
+                    saying.client_ref.as_deref(),
+                    &content,
+                )?;
+                let agents: Vec<String> = recipients(&chat, &sender, &message.named)
+                    .into_iter()
+                    .map(|recipient| recipient.agent_id)
+                    .collect();
+                let deliveries = ledger.deliver(&message.message_id, &agents)?;
+                Ok(SaidInChat {
+                    message,
+                    deliveries,
+                })
+            })
+            .await
+            .map_err(ledger_refusal)?;
+        for delivery in &said.deliveries {
+            self.set_to_work(&delivery.agent_id);
+        }
+        Ok(said)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn participant(handle: &str, kind: ParticipantKind) -> Participant {
+        Participant {
+            participant_id: format!("p_{handle}"),
+            kind,
+            handle: handle.to_owned(),
+            name: handle.to_owned(),
+            colour: None,
+            profile_id: None,
+            made_by: None,
+            retired: false,
+        }
+    }
+
+    fn chat(members: Vec<Participant>) -> Chat {
+        Chat {
+            chat_id: "c_1".into(),
+            title: "Release".into(),
+            created_by: "p_ada".into(),
+            answer_rule: "named".into(),
+            reply_limit: 4,
+            agent_replies: 0,
+            members,
+            last_sequence: None,
+            last_at_ms: None,
+        }
+    }
+
+    fn named(handles: &[&str]) -> Vec<String> {
+        handles.iter().map(|handle| (*handle).to_owned()).collect()
+    }
+
+    fn ids(recipients: &[Recipient]) -> Vec<&str> {
+        recipients
+            .iter()
+            .map(|recipient| recipient.agent_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn one_agent_answers_everything_a_person_says() {
+        let ada = participant("ada", ParticipantKind::Person);
+        let coder = participant("coder", ParticipantKind::Agent);
+        let chat = chat(vec![ada.clone(), coder]);
+        let for_whom = recipients(&chat, &ada, &[]);
+        assert_eq!(ids(&for_whom), vec!["p_coder"]);
+        assert_eq!(for_whom[0].why, "the only agent in the chat");
+    }
+
+    #[test]
+    fn several_agents_answer_when_they_are_named() {
+        let ada = participant("ada", ParticipantKind::Person);
+        let coder = participant("coder", ParticipantKind::Agent);
+        let reviewer = participant("reviewer", ParticipantKind::Agent);
+        let mut gone = participant("gone", ParticipantKind::Agent);
+        gone.retired = true;
+        let chat = chat(vec![ada.clone(), coder.clone(), reviewer, gone]);
+        assert!(recipients(&chat, &ada, &[]).is_empty());
+        let for_whom = recipients(&chat, &ada, &named(&["Reviewer", "gone", "nobody"]));
+        assert_eq!(ids(&for_whom), vec!["p_reviewer"]);
+        assert_eq!(for_whom[0].why, "named by @ada");
+        assert_eq!(
+            ids(&recipients(&chat, &ada, &named(&["coder", "reviewer"]))),
+            vec!["p_coder", "p_reviewer"]
+        );
+        // What an agent says is for those it names, never for itself.
+        assert!(recipients(&chat, &coder, &[]).is_empty());
+        assert_eq!(
+            ids(&recipients(&chat, &coder, &named(&["coder", "reviewer"]))),
+            vec!["p_reviewer"]
+        );
+    }
+
+    #[test]
+    fn an_agent_alone_with_another_is_not_answered_unless_it_names_it() {
+        let ada = participant("ada", ParticipantKind::Person);
+        let coder = participant("coder", ParticipantKind::Agent);
+        let reviewer = participant("reviewer", ParticipantKind::Agent);
+        let chat = chat(vec![ada, coder.clone(), reviewer]);
+        assert!(recipients(&chat, &coder, &[]).is_empty());
+    }
+}

@@ -52,6 +52,11 @@ pub use server_apps::SpaceView;
 #[path = "workbench_shell/model_context.rs"]
 mod model_context;
 pub use model_context::{BindModelContextBody, ModelContext, ModelContextBlock};
+#[path = "workbench_shell/chats.rs"]
+mod chats;
+#[path = "workbench_shell/runtime.rs"]
+mod runtime;
+pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
 #[path = "workbench_shell/schedules.rs"]
 mod schedules;
 mod store;
@@ -787,6 +792,38 @@ pub struct WorkbenchShellState {
     /// runs a command a person can watch. Shared, because a session holds it
     /// for as long as it is connected.
     terminals: Arc<Terminals>,
+    /// What the chats of this Workbench are doing now: which agents are at
+    /// work, which connection a chat's agent is live on, what waits for an
+    /// answer. The ledger is the record; this is the process's own hands.
+    chat_runtime: runtime::ChatRuntime,
+}
+
+/// Where a session that is being opened belongs: a chat that already exists.
+#[derive(Clone, Debug)]
+pub(crate) struct ChatPlace {
+    pub chat_id: String,
+    /// Why the session the agent had there ended, when it had one.
+    pub why_the_last_ended: String,
+}
+
+/// Everything that is said when a connection is asked for.
+pub(crate) struct Opening {
+    pub profile_id: String,
+    pub mode: ShellConnectionMode,
+    pub route_id: Option<String>,
+    pub requested_connection_id: Option<String>,
+    pub auth_method_id: Option<String>,
+    pub file_callbacks: Option<FileSystemCapabilities>,
+    pub place: Option<ChatPlace>,
+}
+
+/// What the host puts after what was written, so the engine knows who wrote.
+pub(crate) enum Closing {
+    Nothing,
+    /// The line the old road appends; it leaves with that road.
+    Line(crate::Correspondent),
+    /// The block of a turn given from a chat.
+    Block(String),
 }
 
 /// What a person changed about a profile since a chat began with it, in
@@ -969,6 +1006,7 @@ impl WorkbenchShellState {
             store: std::sync::OnceLock::new(),
             schedules: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
+            chat_runtime: runtime::ChatRuntime::default(),
         })
     }
 
@@ -1559,10 +1597,6 @@ impl WorkbenchShellState {
     ///
     /// Has the same fail-closed conditions as [`Self::open_connection`], plus
     /// malformed or already-active requested handles.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear open transaction keeps resolve, early control registration, start, bind and projection ordering auditable"
-    )]
     pub async fn open_connection_with_id(
         &self,
         profile_id: &str,
@@ -1572,6 +1606,38 @@ impl WorkbenchShellState {
         auth_method_id: Option<String>,
         file_callbacks: Option<FileSystemCapabilities>,
     ) -> Result<(String, String, String), WorkbenchShellError> {
+        self.open_as(Opening {
+            profile_id: profile_id.to_owned(),
+            mode,
+            route_id,
+            requested_connection_id,
+            auth_method_id,
+            file_callbacks,
+            place: None,
+        })
+        .await
+    }
+
+    /// Open a connection, in a chat when one is named: a new session there
+    /// becomes the agent's current one in that chat.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear open transaction keeps resolve, early control registration, start, bind and projection ordering auditable"
+    )]
+    pub(crate) async fn open_as(
+        &self,
+        opening: Opening,
+    ) -> Result<(String, String, String), WorkbenchShellError> {
+        let Opening {
+            profile_id,
+            mode,
+            route_id,
+            requested_connection_id,
+            auth_method_id,
+            file_callbacks,
+            place,
+        } = opening;
+        let profile_id = profile_id.as_str();
         let profile = self
             .inventory
             .select(profile_id)
@@ -1706,8 +1772,13 @@ impl WorkbenchShellState {
                 Some(id) => Some(self.model_provider_book()?.get(id)?),
                 None => None,
             };
-            let materialised = crate::agent_setup::materialise_profile(&profile, provider.as_ref())
-                .map_err(WorkbenchShellError::Failed)?;
+            let standing = self.standing_of(&profile.profile_id).await?;
+            let materialised = crate::agent_setup::materialise_profile(
+                &profile,
+                provider.as_ref(),
+                Some(&standing),
+            )
+            .map_err(WorkbenchShellError::Failed)?;
             crate::agent_setup::write_materialised(&materialised)
                 .map_err(WorkbenchShellError::Failed)?;
             materialised
@@ -2021,7 +2092,12 @@ impl WorkbenchShellState {
             }
         };
         if let Err(error) = self
-            .with_ledger(move |ledger| ledger.bind_route(&binding))
+            .with_ledger(move |ledger| match place {
+                Some(place) => ledger
+                    .bind_route_in_chat(&binding, &place.chat_id, &place.why_the_last_ended)
+                    .map(|_| ()),
+                None => ledger.bind_route(&binding),
+            })
             .await
         {
             let _ = registered.control.disconnect().await;
@@ -2089,6 +2165,30 @@ impl WorkbenchShellState {
             })
     }
 
+    /// Who a profile's agent is in chats and whose it is, as the ledger
+    /// knows them; both are made the first time they are asked for.
+    async fn standing_of(
+        &self,
+        profile_id: &str,
+    ) -> Result<crate::agent_setup::Standing, WorkbenchShellError> {
+        let path = self.ledger_path.clone();
+        let profile_id = profile_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut ledger = RoutingLedger::open(&path)?;
+            let principal = ledger.owner()?;
+            let agent = ledger.agent_of_profile(&profile_id)?;
+            Ok::<_, crate::RoutingError>(crate::agent_setup::Standing {
+                name: agent.name,
+                handle: agent.handle,
+                principal_name: principal.name,
+                principal_handle: principal.handle,
+            })
+        })
+        .await
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
+    }
+
     /// Submit the next exact ACP content turn and return its outcome.
     ///
     /// # Errors
@@ -2118,7 +2218,11 @@ impl WorkbenchShellState {
     ) -> Result<NativeTurnOutcome, WorkbenchShellError> {
         let connection = self.connection(connection_id).await?;
         let content = self
-            .name_who_is_writing(&connection, content, correspondent.as_ref())
+            .name_who_is_writing(
+                &connection,
+                content,
+                correspondent.map_or(Closing::Nothing, Closing::Line),
+            )
             .await?;
         connection
             .control
@@ -2146,10 +2250,20 @@ impl WorkbenchShellState {
         &self,
         connection: &WorkbenchConnection,
         mut content: Vec<ContentBlock>,
-        correspondent: Option<&crate::Correspondent>,
+        closing: Closing,
     ) -> Result<Vec<ContentBlock>, WorkbenchShellError> {
-        let Some(correspondent) = correspondent else {
-            return Ok(content);
+        let correspondent = match closing {
+            Closing::Nothing => return Ok(content),
+            // The block is the last thing of the turn, after what was
+            // written and whatever rides along with it. The chat's own
+            // record says who wrote; nothing more is appended for it.
+            Closing::Block(block) => {
+                content.push(ContentBlock::Text(
+                    agent_client_protocol::schema::v1::TextContent::new(block),
+                ));
+                return Ok(content);
+            }
+            Closing::Line(correspondent) => correspondent,
         };
         correspondent
             .validate()
@@ -2178,7 +2292,7 @@ impl WorkbenchShellState {
         connection_id: &str,
         mut content: Vec<ContentBlock>,
         content_refs: Vec<String>,
-        correspondent: Option<crate::Correspondent>,
+        closing: Closing,
     ) -> Result<WorkbenchPromptResponse, WorkbenchShellError> {
         let connection = self.connection(connection_id).await?;
         let workspace = connection
@@ -2247,7 +2361,7 @@ impl WorkbenchShellState {
             content.extend(model_context::context_content(context));
         }
         let content = self
-            .name_who_is_writing(&connection, content, correspondent.as_ref())
+            .name_who_is_writing(&connection, content, closing)
             .await?;
         let outcome = match connection.control.submit_prompt(content).await {
             Ok(outcome) => outcome,
@@ -4493,7 +4607,7 @@ async fn route_shell(
                         &connection_id,
                         body.content,
                         body.content_refs,
-                        body.correspondent,
+                        body.correspondent.map_or(Closing::Nothing, Closing::Line),
                     )
                     .await,
             )

@@ -40,6 +40,16 @@ pub const SKILL_MARKER: &str = ".swem-skill";
 /// The key an `opencode.json` carries when this module wrote it.
 const OPENCODE_OWNED: &str = "swem";
 
+/// Who an agent is in chats and whose it is: the names the instructions use
+/// when they explain how the agent is told who speaks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Standing {
+    pub name: String,
+    pub handle: String,
+    pub principal_name: String,
+    pub principal_handle: String,
+}
+
 /// What one profile amounts to on disk and in the process environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Materialised {
@@ -122,6 +132,7 @@ fn layout_of(agent_id: &str) -> Layout {
 pub fn materialise_profile(
     profile: &PersonalAgentProfile,
     provider: Option<&ModelProvider>,
+    standing: Option<&Standing>,
 ) -> Result<Materialised, String> {
     let layout = layout_of(&profile.agent_id);
     let workspace = &profile.workspace;
@@ -132,7 +143,7 @@ pub fn materialise_profile(
     // stale role from an earlier profile out of it.
     let path = workspace.join(layout.instructions);
     let existing = read_if_present(&path)?;
-    let block = instruction_block(profile);
+    let block = instruction_block(profile, standing);
     out.files
         .push((path, merged_instructions(existing.as_deref(), &block)));
     if !profile.role.trim().is_empty() {
@@ -254,22 +265,40 @@ fn read_if_present(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-/// SWEM's span of the instruction file: who the agent is, where it works,
-/// and the role the person wrote.
-fn instruction_block(profile: &PersonalAgentProfile) -> String {
+/// SWEM's span of the instruction file: who the agent is and how it is told
+/// who speaks, where it works, and the role the person wrote.
+fn instruction_block(profile: &PersonalAgentProfile, standing: Option<&Standing>) -> String {
     let mut block = String::new();
     block.push_str(SYSTEM_MARKER);
     block.push('\n');
-    let _ = writeln!(
-        block,
-        "You are `{}`, an agent a person runs through SWEM. Your working directory is `{}`; \
-         the projects you are attached to are reached through your tools.",
-        profile.profile_id,
-        profile.workspace.display()
-    );
+    if let Some(standing) = standing {
+        block.push_str(&crate::standing_explanation(
+            &standing.name,
+            &standing.handle,
+            &standing.principal_name,
+            &standing.principal_handle,
+        ));
+        let _ = writeln!(
+            block,
+            "\n## Where you work\n\nYour working directory is `{}`; the projects you are \
+             attached to are reached through your tools.",
+            profile.workspace.display()
+        );
+    } else {
+        let _ = writeln!(
+            block,
+            "You are `{}`, an agent a person runs through SWEM. Your working directory is `{}`; \
+             the projects you are attached to are reached through your tools.",
+            profile.profile_id,
+            profile.workspace.display()
+        );
+    }
     let role = profile.role.trim_end();
     if !role.is_empty() {
         block.push('\n');
+        if standing.is_some() {
+            block.push_str("## Your role\n\n");
+        }
         block.push_str(role);
         block.push('\n');
     }

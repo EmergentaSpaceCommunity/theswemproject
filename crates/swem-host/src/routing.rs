@@ -863,20 +863,28 @@ impl RoutingLedger {
                 |row| row.get(0),
             )
             .optional()?;
+        let at_ms = crate::chat_ledger::now_ms();
         transaction.execute(
             "INSERT INTO events(route_id, chat_id, event_id, kind, source, payload_json, at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                route_id,
-                chat_id,
-                event_id,
-                kind,
-                source,
-                payload,
-                crate::chat_ledger::now_ms()
-            ],
+            params![route_id, chat_id, event_id, kind, source, payload, at_ms],
         )?;
         let sequence = transaction.last_insert_rowid();
+        // What was said is kept as it is said, by whatever road it came.
+        if let Some(chat_id) = &chat_id {
+            crate::chat_ledger::spoken_by_event(
+                &transaction,
+                &crate::chat_ledger::Happened {
+                    route_id,
+                    chat_id,
+                    sequence,
+                    kind,
+                    source: &source,
+                    payload: &serde_json::from_str(&payload)?,
+                    at_ms: Some(at_ms),
+                },
+            )?;
+        }
         transaction.commit()?;
         sqlite_to_cursor(sequence)
     }

@@ -113,7 +113,7 @@ pub(super) fn in_a_container(
         None => None,
     };
     spec.environment =
-        crate::agent_setup::materialise_profile(profile, provider.as_ref())?.environment;
+        crate::agent_setup::materialise_profile(profile, provider.as_ref(), None)?.environment;
 
     let lease_id = format!(
         "workbench-container-{}-{}",

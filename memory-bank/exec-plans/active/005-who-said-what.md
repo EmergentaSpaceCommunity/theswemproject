@@ -58,24 +58,56 @@ turn's ten-minute deadline.
 ## Progress
 
 - [x] 1 ledger: participants, chats, members, messages, sessions; every route a chat; checked on a copy of a real ledger (eight messages, each with its sender)
-- [ ] 2 envelope
+- [x] 2 envelope: the block (`envelope.rs`), named anew every turn by a value nothing said in the turn holds; the standing explanation written into the agent's instruction file at every open. `Correspondent` still stands: it leaves with its last callers in steps 3 and 6
 - [ ] 3 chats and runtime
+  - [x] 3a in the serving process: a message is owed to the agents it is for (`chats.rs`,
+    `recipients`), one worker per agent under the agent's turn lock (`runtime.rs`), the session
+    continued or a fresh one given the history and a transcript file, questions kept and
+    answered from the ledger, stop, the deadline standing still while a question waits
+    (`session.rs`), what was left running settled when the product starts
+  - [ ] 3b the clock says its message into a chat as a schedule
+  - [ ] 3c the editor door says its message into a chat and carries out its own delivery
 - [ ] 4 stream and routes
 - [ ] 5 page
 - [ ] 6 removal
 
 ## Discoveries
 
-(none yet)
+- The old page, the editor door and the clock all reach the engine through
+  `submit_workbench_prompt` with a `Correspondent`. It cannot leave before a message into a chat
+  has another road (step 3), so step 2 adds the block and the explanation and removes nothing.
+- The explanation says that a turn with no block was written by the principal. That is true of
+  every turn the old road gives, so the instructions are right before and after step 3.
+- The hub App's node suite needs `NODE_OPTIONS=--experimental-strip-types` on Node 22.17, as
+  `scripts/suites.sh` of the Cycle sets it; run bare it fails on the first `.ts` import.
+
+- An agent's message is kept by the ledger when the turn's `acp/prompt_response` is appended,
+  and a person's when a prompt without the host's block is: one reader (`spoken_by_event`)
+  serves the migration and both roads, so a chat written to through the old page has its
+  messages too.
+- `File::lock` is stable since Rust 1.89; the workspace said 1.88 and builds on 1.95 only
+  (`rust-toolchain.toml`). `rust-version` is 1.89 now.
 
 ## Decision log
 
+- 2026-09-27: a form's fields and a link's address are not written into the ledger, as they
+  are not written into the route's events: the ledger keeps that a form or a link is asked
+  and the page reads the rest from the session while the question waits.
+- 2026-09-27: agents answering each other are counted per chat and held at the chat's limit
+  from this slice on, so a chat of two agents cannot run away before A6 draws the limit.
+- 2026-09-27: stopping a chat ends what waits behind the running turn as well.
 - 2026-09-27: A2 and A3 of the roadmap land together. The page is built once, on the
   libraries, rather than once on the old parts and again on the new.
 
 ## Validation
 
-(none yet)
+- 2026-09-27, steps 1-3a: `cargo clippy --workspace --all-targets -- -D warnings` clean;
+  `cargo test -p swem-host --no-fail-fast`: 48 targets green, `callback_authority` red as
+  before this plan (macOS). `chat_runtime` (six walks over the echo engine): a message is
+  answered and each has its sender; the same session goes on; two agents work at once while
+  one waits for an answer; the question is read and answered after nobody looked; a turn is
+  stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
+  deleted the chat goes on in a fresh one that is given what was said and the transcript.
 
 ## Outcome / remaining gaps
 

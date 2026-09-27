@@ -21,8 +21,10 @@ use thiserror::Error;
 
 pub mod agent_setup;
 mod chat_ledger;
+mod chat_work;
 mod distribution;
 mod editor_door;
+mod envelope;
 mod environment;
 mod environment_profile;
 mod install;
@@ -40,8 +42,13 @@ mod workbench_observation;
 pub mod workbench_shell;
 
 pub use chat_ledger::*;
+pub use chat_work::*;
 pub use distribution::*;
 pub use editor_door::*;
+pub use envelope::{
+    Fitting, Said, Speaker, Trust, Turn, envelope, fitted, fitted_within, sealed,
+    standing_explanation,
+};
 pub use environment::*;
 pub use environment_profile::*;
 pub use install::*;
@@ -69,16 +76,16 @@ pub use workbench_files::{HandedFile, INBOX, OUTBOX};
 pub use workbench_observation::ObservedAppCall;
 pub use workbench_shell::{
     ACP_REGISTRY_CACHE, AddIndexBody, AmendProfileBody, ArchiveDistribution, BinaryDistribution,
-    BindModelContextBody, CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry,
+    BindModelContextBody, CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry, ChatPage,
     DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, McpServerOrigin, McpServerView,
     ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
     OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
-    ResolvedDirectAgentConnection, SCHEDULE_SURFACE, Schedule, ScheduleBook, SetScheduleBody,
-    ShellConnectionMode, StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreView,
-    TerminalInputBody, TerminalOutput, TerminalSizeBody, TerminalView, WorkbenchAgentOption,
-    WorkbenchOnboarding, WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState,
-    credential_environment, mint_session_token, serve_workbench_http,
-    serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
+    ResolvedDirectAgentConnection, SCHEDULE_SURFACE, SaidInChat, Saying, Schedule, ScheduleBook,
+    SetScheduleBody, ShellConnectionMode, StartChatBody, StoreEntry, StoreIndexView,
+    StoreInstallBody, StorePlanBody, StoreView, TerminalInputBody, TerminalOutput,
+    TerminalSizeBody, TerminalView, WorkbenchAgentOption, WorkbenchOnboarding, WorkbenchShellError,
+    WorkbenchShellHandle, WorkbenchShellState, credential_environment, mint_session_token,
+    serve_workbench_http, serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
 };
 
 pub const ACP_REGISTRY_INDEX: &str =

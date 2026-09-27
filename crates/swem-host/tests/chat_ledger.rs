@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde_json::json;
 use swem_host::{
-    AttachmentBinding, AttachmentTransport, CHANNEL_AGENT, CHANNEL_WORKBENCH, ParticipantKind,
-    RoutingLedger, SessionRouteBinding, SurfaceEventSource,
+    AttachmentBinding, AttachmentTransport, CHANNEL_AGENT, CHANNEL_WORKBENCH, DeliveryState,
+    ParticipantKind, QuestionState, RoutingLedger, SessionRouteBinding, SurfaceEventSource,
 };
 
 fn fixture_root(name: &str) -> PathBuf {
@@ -331,6 +331,10 @@ fn a_chat_with_ada(name: &str) -> ChatWithAda {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one turn from the message to the answer, in the order it happens"
+)]
 fn what_an_engine_says_in_a_session_is_the_chats() {
     let ChatWithAda {
         root,
@@ -352,28 +356,61 @@ fn what_an_engine_says_in_a_session_is_the_chats() {
             .session_id,
         session.session_id
     );
-    let place = ledger
-        .append_event(
-            "route-a",
-            "e1",
-            "acp/prompt_response",
-            SurfaceEventSource::NativeLive,
-            &json!({ "stop_reason": "end_turn" }),
-        )
-        .expect("event");
-    assert!(place > first.sequence);
-    let kept = ledger
-        .keep_what_was_said(&chat.chat_id, &ada.participant_id, place, "Drafted.")
-        .expect("keep")
-        .expect("a message");
-    assert_eq!(
-        ledger
-            .keep_what_was_said(&chat.chat_id, &ada.participant_id, place, "Drafted.")
-            .expect("keep again")
-            .expect("a message")
-            .message_id,
-        kept.message_id
+    // The message is given to the agent: the prompt carries the host's block,
+    // so it is not kept a second time. What the agent answers is kept when
+    // its turn ends, whole, as the agent's.
+    let mut append =
+        |id: &str, kind: &str, source: SurfaceEventSource, payload: serde_json::Value| {
+            ledger
+                .append_event("route-a", id, kind, source, &payload)
+                .expect("event")
+        };
+    append(
+        "e1",
+        "host/prompt_submitted",
+        SurfaceEventSource::Host,
+        json!({ "turn": 0, "content": [
+            { "type": "text", "text": "@ada draft it" },
+            { "type": "text", "text": "<swem:turn k=\"9f2c4e1ab07d\">\n</swem:turn k=\"9f2c4e1ab07d\">" } ] }),
     );
+    let chunk = |text: &str| {
+        json!({ "update": { "sessionUpdate": "agent_message_chunk",
+                            "content": { "type": "text", "text": text } } })
+    };
+    append(
+        "e2",
+        "acp/session_update",
+        SurfaceEventSource::NativeLive,
+        chunk("Draf"),
+    );
+    append(
+        "e3",
+        "acp/session_update",
+        SurfaceEventSource::NativeLive,
+        chunk("ted."),
+    );
+    let place = append(
+        "e4",
+        "acp/prompt_response",
+        SurfaceEventSource::NativeLive,
+        json!({ "turn": 0, "stop_reason": "end_turn" }),
+    );
+    assert!(place > first.sequence);
+    let said = ledger.said_after(&chat.chat_id, 0, 10).expect("messages");
+    assert_eq!(
+        said.iter()
+            .map(|message| (
+                message.sender_id.as_str(),
+                message.text.as_str(),
+                message.sequence
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (chat.created_by.as_str(), "@ada draft it", first.sequence),
+            (ada.participant_id.as_str(), "Drafted.", place),
+        ]
+    );
+    assert!(said[1].created_ms.is_some());
 
     let happened = ledger.happened_after(0, 100).expect("everything");
     assert_eq!(
@@ -381,11 +418,19 @@ fn what_an_engine_says_in_a_session_is_the_chats() {
             .iter()
             .map(|event| event.kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["chat/message", "acp/prompt_response"]
+        vec![
+            "chat/message",
+            "host/prompt_submitted",
+            "acp/session_update",
+            "acp/session_update",
+            "acp/prompt_response"
+        ]
     );
-    assert_eq!(
-        happened[1].agent_id.as_deref(),
-        Some(ada.participant_id.as_str())
+    assert!(happened[0].agent_id.is_none());
+    assert!(
+        happened[1..]
+            .iter()
+            .all(|event| event.agent_id.as_deref() == Some(ada.participant_id.as_str()))
     );
     assert!(happened.iter().all(|event| event.at_ms.is_some()));
     assert_eq!(ledger.head().expect("head"), place);
@@ -452,6 +497,176 @@ fn a_chat_outlives_the_session_an_agent_had_in_it() {
             .bind_route_in_chat(&alone, &chat.chat_id, "")
             .is_err(),
         "a route is a session of one chat"
+    );
+    fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk through every state of a delivery and a question, in order"
+)]
+fn what_a_chat_owes_and_waits_for_outlives_the_page_and_the_workbench() {
+    let ChatWithAda {
+        root,
+        mut ledger,
+        ada,
+        chat,
+        first,
+    } = a_chat_with_ada("work");
+    let agents = std::slice::from_ref(&ada.participant_id);
+
+    let owed = ledger.deliver(&first.message_id, agents).expect("deliver");
+    assert_eq!(owed.len(), 1);
+    assert_eq!(owed[0].state, DeliveryState::Queued);
+    assert_eq!(
+        ledger.deliver(&first.message_id, agents).expect("again")[0].delivery_id,
+        owed[0].delivery_id,
+        "owed twice, it is the same debt"
+    );
+    assert!(
+        ledger
+            .deliver(&first.message_id, std::slice::from_ref(&chat.created_by))
+            .is_err(),
+        "a message is owed to agents of its chat"
+    );
+    assert_eq!(ledger.agents_owed().expect("owed"), agents.to_vec());
+
+    // A second message waits its turn behind the first.
+    let second = ledger
+        .say(
+            &chat.chat_id,
+            &chat.created_by,
+            CHANNEL_WORKBENCH,
+            None,
+            &json!([{ "type": "text", "text": "and then publish" }]),
+        )
+        .expect("say");
+    ledger.deliver(&second.message_id, agents).expect("deliver");
+    let running = ledger
+        .take_next_delivery(&ada.participant_id)
+        .expect("take")
+        .expect("the first");
+    assert_eq!(running.message_id, first.message_id);
+    assert_eq!(running.state, DeliveryState::Running);
+    assert!(running.started_ms.is_some());
+
+    // The agent asks; the question waits in the ledger.
+    let asked = json!({ "title": "Run cargo publish", "options": [
+        { "id": "run-once", "name": "Run it" }, { "id": "do-not-run", "name": "Not this time" } ] });
+    let question = ledger
+        .ask(
+            &chat.chat_id,
+            &ada.participant_id,
+            Some(&running.delivery_id),
+            "permission",
+            &asked,
+        )
+        .expect("ask");
+    drop(ledger);
+    let mut ledger = RoutingLedger::open(&root.join("routes.jsonl")).expect("the page came back");
+    let waiting = ledger
+        .questions_waiting(Some(&chat.chat_id))
+        .expect("waiting");
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].asked, asked);
+    let answered = ledger
+        .answer_question(
+            &question.question_id,
+            &json!({ "option": "run-once" }),
+            &chat.created_by,
+        )
+        .expect("answer");
+    assert_eq!(answered.state, QuestionState::Answered);
+    assert!(
+        ledger
+            .answer_question(
+                &question.question_id,
+                &json!({ "option": "do-not-run" }),
+                &chat.created_by
+            )
+            .is_err(),
+        "a question is answered once"
+    );
+
+    // A second question is left waiting when the Workbench stops.
+    let left = ledger
+        .ask(
+            &chat.chat_id,
+            &ada.participant_id,
+            Some(&running.delivery_id),
+            "permission",
+            &asked,
+        )
+        .expect("ask again");
+    assert_eq!(ledger.agents_running().expect("running"), agents.to_vec());
+    assert_eq!(ledger.settle_what_was_running(&[]).expect("settle"), 0);
+    assert_eq!(ledger.settle_what_was_running(agents).expect("settle"), 1);
+    assert_eq!(
+        ledger
+            .delivery(&running.delivery_id)
+            .expect("delivery")
+            .state,
+        DeliveryState::Interrupted
+    );
+    assert_eq!(
+        ledger.question(&left.question_id).expect("question").state,
+        QuestionState::Lapsed
+    );
+    assert!(ledger.questions_waiting(None).expect("waiting").is_empty());
+    // What was queued is still owed, and ends as it ends.
+    let next = ledger
+        .take_next_delivery(&ada.participant_id)
+        .expect("take")
+        .expect("the second");
+    assert_eq!(next.message_id, second.message_id);
+    let done = ledger
+        .end_delivery(&next.delivery_id, DeliveryState::Done, None)
+        .expect("end");
+    assert!(done.ended_ms.is_some());
+    assert_eq!(
+        ledger
+            .end_delivery(&next.delivery_id, DeliveryState::Failed, Some("late"))
+            .expect("ended already")
+            .state,
+        DeliveryState::Done
+    );
+    assert!(
+        ledger
+            .take_next_delivery(&ada.participant_id)
+            .expect("take")
+            .is_none()
+    );
+    assert!(ledger.deliveries_open(None).expect("open").is_empty());
+
+    // Every move is an event of the chat, in the one order.
+    let kinds: Vec<String> = ledger
+        .happened_after(first.sequence, 100)
+        .expect("events")
+        .into_iter()
+        .map(|event| {
+            format!(
+                "{} {}",
+                event.kind,
+                event.payload["state"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "chat/delivery queued",
+            "chat/message ",
+            "chat/delivery queued",
+            "chat/delivery running",
+            "chat/question waiting",
+            "chat/question answered",
+            "chat/question waiting",
+            "chat/question lapsed",
+            "chat/delivery interrupted",
+            "chat/delivery running",
+            "chat/delivery done",
+        ]
     );
     fs::remove_dir_all(root).expect("remove fixture");
 }

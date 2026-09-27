@@ -74,9 +74,12 @@ fn claude_code_gets_its_role_in_claude_md_its_skills_as_folders_and_its_model_in
             }],
         },
     );
-    let materialised =
-        materialise_profile(&profile, Some(&provider(Some("http://127.0.0.1:8000/v1"))))
-            .expect("materialise");
+    let materialised = materialise_profile(
+        &profile,
+        Some(&provider(Some("http://127.0.0.1:8000/v1"))),
+        None,
+    )
+    .expect("materialise");
     write_materialised(&materialised).expect("write");
 
     let workspace = root.join("workspace");
@@ -132,13 +135,13 @@ fn claude_code_gets_its_role_in_claude_md_its_skills_as_folders_and_its_model_in
             ..profile.setup()
         })
         .expect("edit");
-    let again = materialise_profile(&edited, None).expect("again");
+    let again = materialise_profile(&edited, None, None).expect("again");
     write_materialised(&again).expect("write again");
     let rewritten = std::fs::read_to_string(workspace.join("CLAUDE.md")).expect("CLAUDE.md");
     assert!(rewritten.contains("You are Ada, again."));
     assert!(!rewritten.contains("Be brief."));
     assert!(rewritten.ends_with("# My notes\nkeep these\n"));
-    let once_more = materialise_profile(&edited, None).expect("once more");
+    let once_more = materialise_profile(&edited, None, None).expect("once more");
     write_materialised(&once_more).expect("write once more");
     assert_eq!(
         std::fs::read_to_string(workspace.join("CLAUDE.md")).expect("stable"),
@@ -159,9 +162,12 @@ fn opencode_gets_agents_md_a_project_config_and_a_prefixed_model_variable() {
             agent_skills: Vec::new(),
         },
     );
-    let materialised =
-        materialise_profile(&profile, Some(&provider(Some("http://127.0.0.1:8000/v1"))))
-            .expect("materialise");
+    let materialised = materialise_profile(
+        &profile,
+        Some(&provider(Some("http://127.0.0.1:8000/v1"))),
+        None,
+    )
+    .expect("materialise");
     write_materialised(&materialised).expect("write");
     let workspace = root.join("workspace");
     assert!(workspace.join("AGENTS.md").is_file());
@@ -205,7 +211,7 @@ fn a_persons_own_opencode_config_is_left_alone_and_said_so() {
             ..Default::default()
         },
     );
-    let materialised = materialise_profile(&profile, None).expect("materialise");
+    let materialised = materialise_profile(&profile, None, None).expect("materialise");
     write_materialised(&materialised).expect("write");
     assert_eq!(
         std::fs::read_to_string(workspace.join("opencode.json")).expect("theirs still"),
@@ -235,7 +241,7 @@ fn a_skill_taken_off_the_profile_leaves_the_folder_but_a_persons_own_folder_stay
             ..Default::default()
         },
     );
-    write_materialised(&materialise_profile(&two, None).expect("two")).expect("write two");
+    write_materialised(&materialise_profile(&two, None, None).expect("two")).expect("write two");
     let skills = root.join("workspace/.claude/skills");
     std::fs::create_dir_all(skills.join("theirs")).expect("their folder");
     std::fs::write(skills.join("theirs/SKILL.md"), "handmade").expect("their skill");
@@ -248,7 +254,7 @@ fn a_skill_taken_off_the_profile_leaves_the_folder_but_a_persons_own_folder_stay
             ..two.setup()
         })
         .expect("one");
-    write_materialised(&materialise_profile(&one, None).expect("one")).expect("write one");
+    write_materialised(&materialise_profile(&one, None, None).expect("one")).expect("write one");
     assert!(skills.join("one").is_dir());
     assert!(
         !skills.join("two").exists(),
@@ -272,7 +278,7 @@ fn a_declared_agent_gets_agents_md_and_no_model_variable() {
             ..Default::default()
         },
     );
-    let materialised = materialise_profile(&profile, None).expect("materialise");
+    let materialised = materialise_profile(&profile, None, None).expect("materialise");
     write_materialised(&materialised).expect("write");
     assert!(
         std::fs::read_to_string(root.join("workspace/AGENTS.md"))
@@ -286,4 +292,54 @@ fn a_declared_agent_gets_agents_md_and_no_model_variable() {
             .iter()
             .any(|note| note.contains("offered in the session"))
     );
+}
+
+#[test]
+fn an_agent_is_told_who_it_is_whose_it_is_and_how_it_is_told_who_speaks() {
+    let root = scratch("standing");
+    let profile = profile(
+        &root,
+        "claude-code",
+        AgentSetup {
+            role: "Review what you are shown.".into(),
+            ..Default::default()
+        },
+    );
+    let standing = swem_host::agent_setup::Standing {
+        name: "Reviewer".into(),
+        handle: "reviewer".into(),
+        principal_name: "Ada".into(),
+        principal_handle: "ada".into(),
+    };
+    let materialised = materialise_profile(&profile, None, Some(&standing)).expect("materialise");
+    write_materialised(&materialised).expect("write");
+    let instructions =
+        std::fs::read_to_string(root.join("workspace/CLAUDE.md")).expect("CLAUDE.md");
+    assert!(instructions.starts_with(&format!(
+        "{SYSTEM_MARKER}\nYou are **Reviewer** (`@reviewer`), an agent of Ada (`@ada`) in SWEM."
+    )));
+    for part in [
+        "## Who is speaking",
+        "<swem:turn k=\"…\">",
+        "`principal` is Ada",
+        "A turn that ends with no such block was written by Ada.",
+        "## Where you work",
+        "## Your role\n\nReview what you are shown.",
+    ] {
+        assert!(instructions.contains(part), "the instructions say: {part}");
+    }
+    assert!(instructions.trim_end().ends_with(USER_MARKER));
+
+    // Renamed, the agent is told its new name; nothing of the old one stays.
+    let renamed = swem_host::agent_setup::Standing {
+        name: "Second reader".into(),
+        handle: "second".into(),
+        ..standing
+    };
+    write_materialised(&materialise_profile(&profile, None, Some(&renamed)).expect("again"))
+        .expect("write again");
+    let instructions =
+        std::fs::read_to_string(root.join("workspace/CLAUDE.md")).expect("CLAUDE.md");
+    assert!(instructions.contains("**Second reader** (`@second`)"));
+    assert!(!instructions.contains("reviewer"));
 }
