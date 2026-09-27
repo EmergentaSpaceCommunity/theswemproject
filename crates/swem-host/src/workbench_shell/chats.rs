@@ -28,7 +28,12 @@ pub struct StartChatBody {
 /// What is said.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Saying {
+    #[serde(default)]
     pub text: String,
+    /// What was put beside the words, as content blocks of the protocol:
+    /// an image, a link to a file, a file itself.
+    #[serde(default)]
+    pub blocks: Vec<Value>,
     /// What was handed over with it, by the id the content store gave.
     #[serde(default)]
     pub content_refs: Vec<String>,
@@ -195,6 +200,40 @@ impl WorkbenchShellState {
         .map_err(ledger_refusal)
     }
 
+    /// The chat somebody names, by its own id or by the id of a session of
+    /// an engine it holds: an editor that kept the id of a conversation from
+    /// before there were chats comes back to the chat it became.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::NotFound`] when the id names neither.
+    pub async fn chat_named(&self, id: &str) -> Result<Chat, WorkbenchShellError> {
+        let id = id.to_owned();
+        self.with_ledger(move |ledger| match ledger.session_of_route(&id)? {
+            Some(session) => ledger.chat(&session.chat_id),
+            None => ledger.chat(&id),
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// What happened in a chat after a place, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub async fn happened_in_chat(
+        &self,
+        chat_id: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<ChatEvent>, WorkbenchShellError> {
+        let chat_id = chat_id.to_owned();
+        self.with_ledger(move |ledger| ledger.happened_in_chat_after(&chat_id, after, limit))
+            .await
+            .map_err(ledger_refusal)
+    }
+
     /// A stretch of a chat ending before a place, or at its end, with what
     /// the chat owes and waits for now.
     ///
@@ -258,7 +297,10 @@ impl WorkbenchShellState {
         channel: &str,
         saying: Saying,
     ) -> Result<SaidInChat, WorkbenchShellError> {
-        if saying.text.trim().is_empty() && saying.content_refs.is_empty() {
+        if saying.text.trim().is_empty()
+            && saying.content_refs.is_empty()
+            && saying.blocks.is_empty()
+        {
             return Err(WorkbenchShellError::Invalid(
                 "there is nothing to say".into(),
             ));
@@ -266,6 +308,17 @@ impl WorkbenchShellState {
         let mut content = Vec::new();
         if !saying.text.is_empty() {
             content.push(json!({ "type": "text", "text": saying.text }));
+        }
+        for block in &saying.blocks {
+            serde_json::from_value::<agent_client_protocol::schema::v1::ContentBlock>(
+                block.clone(),
+            )
+            .map_err(|error| {
+                WorkbenchShellError::Invalid(format!(
+                    "what was put beside the words is not content of the protocol: {error}"
+                ))
+            })?;
+            content.push(block.clone());
         }
         for descriptor_id in &saying.content_refs {
             let descriptor = self.content.load(descriptor_id).await?;

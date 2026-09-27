@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ElicitationAction, ElicitationMode, TextContent,
+    ContentBlock, ElicitationAction, ElicitationMode, FileSystemCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -32,8 +32,12 @@ use super::{
 };
 use crate::{
     Chat, ChatSession, Delivery, DeliveryState, Message, NativeSessionControl, NativeSessionPhase,
-    NativeTurnControlOutcome, Participant, ParticipantKind, Question, Said, Speaker, Trust, Turn,
+    NativeTurnControlOutcome, Participant, ParticipantKind, Question, QuestionState, Said, Speaker,
+    Trust, Turn,
 };
+
+/// How often the ledger is asked whether a question has its answer.
+const LOOK: Duration = Duration::from_millis(150);
 
 /// How long an agent's sessions are kept open after its last turn.
 const IDLE: Duration = Duration::from_secs(600);
@@ -46,16 +50,14 @@ const HISTORY: crate::Fitting = crate::Fitting {
     all: 48_000,
 };
 
-/// Where a question is answered.
+/// Where a form or a link is answered: in the session that asked, in this
+/// process. What is typed into a form is never written down, so it cannot
+/// be answered through the ledger as a permission is.
 #[derive(Clone, Debug)]
 struct Asked {
     connection_id: String,
     delivery_id: String,
     sequence: u64,
-    /// The options of a permission question, by id; none for a form or a
-    /// link.
-    options: BTreeMap<String, String>,
-    form: bool,
 }
 
 /// What runs now.
@@ -77,8 +79,17 @@ pub(super) struct ChatRuntime {
     live: tokio::sync::Mutex<BTreeMap<(String, String), String>>,
     /// The deliveries that run, by id.
     running: tokio::sync::Mutex<BTreeMap<String, Running>>,
-    /// The questions that can be answered, by id.
+    /// The forms and links that can be answered here, by question.
     asked: tokio::sync::Mutex<BTreeMap<String, Asked>>,
+    /// The editor this process is the door of, when it is one.
+    editor: std::sync::OnceLock<Editor>,
+}
+
+/// An editor's door: what it says is carried out here, with the files the
+/// editor offered.
+struct Editor {
+    door: String,
+    files: std::sync::Mutex<Option<FileSystemCapabilities>>,
 }
 
 /// Everything a turn is made of, read from the ledger at once.
@@ -98,7 +109,8 @@ struct Prepared {
 
 /// How a turn that was given ended.
 enum Given {
-    Done,
+    /// By itself, for the reason the engine gave.
+    Done(String),
     Stopped,
 }
 
@@ -136,6 +148,53 @@ fn transcript(chat: &Chat, before: &[(Message, Participant)]) -> String {
 }
 
 impl WorkbenchShellState {
+    /// Make this process an editor's door: it carries out what that editor
+    /// says and nothing else. Returns the door's name, which begins the
+    /// name of every message said through it.
+    ///
+    /// # Errors
+    ///
+    /// When this machine gives no random bytes, and when this process is a
+    /// door already.
+    pub fn carry_for_an_editor(&self) -> Result<String, WorkbenchShellError> {
+        let door = crate::new_id("door")
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        self.chat_runtime
+            .editor
+            .set(Editor {
+                door: door.clone(),
+                files: std::sync::Mutex::new(None),
+            })
+            .map_err(|_| WorkbenchShellError::Conflict("this process is a door already".into()))?;
+        Ok(door)
+    }
+
+    /// What the editor behind this door offered to do with files.
+    pub fn editor_offers_files(&self, offered: Option<FileSystemCapabilities>) {
+        if let Some(editor) = self.chat_runtime.editor.get()
+            && let Ok(mut files) = editor.files.lock()
+        {
+            *files = offered;
+        }
+    }
+
+    fn door(&self) -> Option<String> {
+        self.chat_runtime
+            .editor
+            .get()
+            .map(|editor| editor.door.clone())
+    }
+
+    /// The connection a delivery runs on, while it runs here.
+    pub async fn connection_of(&self, delivery_id: &str) -> Option<String> {
+        self.chat_runtime
+            .running
+            .lock()
+            .await
+            .get(delivery_id)
+            .map(|running| running.connection.clone())
+    }
+
     /// Take up what the chats were left owing. A turn the ledger has as
     /// running while nobody holds that agent's turn was interrupted when a
     /// Workbench stopped, and is said to have been; one that another
@@ -162,10 +221,11 @@ impl WorkbenchShellState {
                 left.push(agent_id);
             }
         }
+        let door = self.door();
         let owed = self
             .with_ledger(move |ledger| {
                 ledger.settle_what_was_running(&left)?;
-                ledger.agents_owed()
+                ledger.agents_owed(door.as_deref())
             })
             .await
             .map_err(ledger_refusal)?;
@@ -213,8 +273,9 @@ impl WorkbenchShellState {
                     self.let_go_of(Some(&agent_id)).await;
                     // Something may have been owed between the last look and
                     // the leaving.
+                    let door = self.door();
                     let owed = self
-                        .with_ledger(|ledger| ledger.agents_owed())
+                        .with_ledger(move |ledger| ledger.agents_owed(door.as_deref()))
                         .await
                         .is_ok_and(|owed| owed.contains(&agent_id));
                     if owed {
@@ -241,8 +302,12 @@ impl WorkbenchShellState {
         &self,
         agent_id: &str,
     ) -> Result<Option<(Delivery, std::fs::File)>, WorkbenchShellError> {
+        let door = self.door();
         let owed = self
-            .with_ledger(|ledger| ledger.agents_owed())
+            .with_ledger({
+                let door = door.clone();
+                move |ledger| ledger.agents_owed(door.as_deref())
+            })
             .await
             .map_err(ledger_refusal)?;
         if !owed.iter().any(|owed| owed == agent_id) {
@@ -269,7 +334,12 @@ impl WorkbenchShellState {
         })?;
         let agent = agent_id.to_owned();
         let delivery = self
-            .with_ledger(move |ledger| ledger.take_next_delivery(&agent))
+            .with_ledger(move |ledger| {
+                // The turn is held here, so a turn the ledger still has as
+                // running is one whose process is gone.
+                ledger.settle_what_was_running(std::slice::from_ref(&agent))?;
+                ledger.take_next_delivery(&agent, door.as_deref())
+            })
             .await
             .map_err(ledger_refusal)?;
         Ok(delivery.map(|delivery| (delivery, turn_lock)))
@@ -279,7 +349,11 @@ impl WorkbenchShellState {
     /// here is lost: it is how the delivery ended, in words.
     async fn carry_out(self: &Arc<Self>, delivery: &Delivery) {
         let (state, outcome) = match self.give(delivery).await {
-            Ok(Given::Done) => (DeliveryState::Done, None),
+            // How a turn ended is said when it is not the ordinary end.
+            Ok(Given::Done(reason)) => (
+                DeliveryState::Done,
+                (reason != "end_turn").then_some(reason),
+            ),
             Ok(Given::Stopped) => (DeliveryState::Stopped, None),
             Err(refusal) => (DeliveryState::Failed, Some(refusal.to_string())),
         };
@@ -377,13 +451,19 @@ impl WorkbenchShellState {
             }
             self.chat_runtime.live.lock().await.remove(&key);
         }
+        // An editor has the files the person is looking at; a page has none.
+        let files = self
+            .chat_runtime
+            .editor
+            .get()
+            .and_then(|editor| editor.files.lock().ok().and_then(|files| files.clone()));
         let opening = |mode, route_id, why: &str| Opening {
             profile_id: profile_id.to_owned(),
             mode,
             route_id,
             requested_connection_id: None,
             auth_method_id: None,
-            file_callbacks: None,
+            file_callbacks: files.clone(),
             place: Some(ChatPlace {
                 chat_id: prepared.chat.chat_id.clone(),
                 why_the_last_ended: why.to_owned(),
@@ -507,20 +587,17 @@ impl WorkbenchShellState {
         let mut above = Vec::new();
         let mut handed_over = Vec::new();
         for block in prepared.message.content.as_array().into_iter().flatten() {
-            match block.get("type").and_then(Value::as_str) {
-                // A principal's words are the turn, as they were typed.
-                // Anybody else's are in the block, as data.
-                Some("text") if trust == Trust::Principal => {
-                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                        above.push(ContentBlock::Text(TextContent::new(text)));
-                    }
+            if block.get("type").and_then(Value::as_str) == Some("attachment") {
+                if let Some(id) = block.get("content_ref").and_then(Value::as_str) {
+                    handed_over.push(id.to_owned());
                 }
-                Some("attachment") => {
-                    if let Some(id) = block.get("content_ref").and_then(Value::as_str) {
-                        handed_over.push(id.to_owned());
-                    }
-                }
-                _ => {}
+            } else if trust == Trust::Principal
+                && let Ok(typed) = serde_json::from_value::<ContentBlock>(block.clone())
+            {
+                // A principal's words are the turn, as they were typed, and
+                // so is what they put beside them. Anybody else's words are
+                // in the block, as data.
+                above.push(typed);
             }
         }
         let typed = if trust == Trust::Principal {
@@ -557,11 +634,10 @@ impl WorkbenchShellState {
             },
         );
         let keepers = [
-            tokio::spawn(Arc::clone(self).keep_permission_questions(
-                connection_id.clone(),
-                connection.control.clone(),
-                delivery.clone(),
-            )),
+            tokio::spawn(
+                Arc::clone(self)
+                    .keep_permission_questions(connection.control.clone(), delivery.clone()),
+            ),
             tokio::spawn(Arc::clone(self).keep_form_questions(
                 connection_id.clone(),
                 connection.control.clone(),
@@ -602,7 +678,7 @@ impl WorkbenchShellState {
             if answered.control_outcome == NativeTurnControlOutcome::Cancelled {
                 Given::Stopped
             } else {
-                Given::Done
+                Given::Done(answered.stop_reason)
             },
         )
     }
@@ -650,13 +726,16 @@ impl WorkbenchShellState {
         Ok(())
     }
 
+    /// Keep what the agent asks before it does something, and carry the
+    /// answer back when the ledger has one. The ledger is where a question
+    /// and its answer meet, because who answers may be another process.
     async fn keep_permission_questions(
         self: Arc<Self>,
-        connection_id: String,
         control: NativeSessionControl,
         delivery: Delivery,
     ) {
         let mut after = 0;
+        let mut waiting = tokio::task::JoinSet::new();
         while let Some(request) = control.permission_request_after(after).await {
             after = request.sequence;
             let tool_call = serde_json::to_value(&request.tool_call).unwrap_or(Value::Null);
@@ -666,25 +745,51 @@ impl WorkbenchShellState {
                 .map(|option| serde_json::to_value(option).unwrap_or(Value::Null))
                 .collect();
             let asked = json!({
+                "sequence": request.sequence,
                 "title": tool_call.get("title"),
                 "tool_kind": tool_call.get("kind"),
                 "tool_call_id": tool_call.get("toolCallId"),
                 "asked_by": request.provenance,
                 "options": options,
             });
-            let kept = Asked {
-                connection_id: connection_id.clone(),
-                delivery_id: delivery.delivery_id.clone(),
-                sequence: request.sequence,
-                options: request
-                    .options
-                    .iter()
-                    .map(|option| (option.option_id.0.to_string(), option.name.clone()))
-                    .collect(),
-                form: false,
+            let Some(question) = self.keep_question(&delivery, "permission", asked).await else {
+                continue;
             };
-            self.keep_question(&delivery, "permission", asked, kept)
-                .await;
+            waiting.spawn(Arc::clone(&self).carry_answer_back(
+                control.clone(),
+                question.question_id,
+                request.sequence,
+            ));
+        }
+    }
+
+    async fn carry_answer_back(
+        self: Arc<Self>,
+        control: NativeSessionControl,
+        question_id: String,
+        sequence: u64,
+    ) {
+        loop {
+            tokio::time::sleep(LOOK).await;
+            let id = question_id.clone();
+            let Ok(question) = self.with_ledger(move |ledger| ledger.question(&id)).await else {
+                continue;
+            };
+            match question.state {
+                QuestionState::Waiting => {}
+                QuestionState::Answered => {
+                    if let Some(option) = question
+                        .answer
+                        .as_ref()
+                        .and_then(|answer| answer.get("option"))
+                        .and_then(Value::as_str)
+                    {
+                        let _ = control.select_permission(sequence, option);
+                    }
+                    return;
+                }
+                QuestionState::Lapsed => return,
+            }
         }
     }
 
@@ -704,14 +809,16 @@ impl WorkbenchShellState {
                 ElicitationMode::Url(_) => "link",
                 _ => "form",
             };
-            let kept = Asked {
-                connection_id: connection_id.clone(),
-                delivery_id: delivery.delivery_id.clone(),
-                sequence: request.sequence,
-                options: BTreeMap::new(),
-                form: true,
-            };
-            self.keep_question(&delivery, kind, json!({}), kept).await;
+            if let Some(question) = self.keep_question(&delivery, kind, json!({})).await {
+                self.chat_runtime.asked.lock().await.insert(
+                    question.question_id,
+                    Asked {
+                        connection_id: connection_id.clone(),
+                        delivery_id: delivery.delivery_id.clone(),
+                        sequence: request.sequence,
+                    },
+                );
+            }
         }
     }
 
@@ -720,25 +827,17 @@ impl WorkbenchShellState {
         delivery: &Delivery,
         kind: &'static str,
         asked: Value,
-        kept: Asked,
-    ) {
+    ) -> Option<Question> {
         let (chat_id, agent_id, delivery_id) = (
             delivery.chat_id.clone(),
             delivery.agent_id.clone(),
             delivery.delivery_id.clone(),
         );
-        let question = self
-            .with_ledger(move |ledger| {
-                ledger.ask(&chat_id, &agent_id, Some(&delivery_id), kind, &asked)
-            })
-            .await;
-        if let Ok(question) = question {
-            self.chat_runtime
-                .asked
-                .lock()
-                .await
-                .insert(question.question_id, kept);
-        }
+        self.with_ledger(move |ledger| {
+            ledger.ask(&chat_id, &agent_id, Some(&delivery_id), kind, &asked)
+        })
+        .await
+        .ok()
     }
 
     /// What a form asks or where a link leads, read from the session that
@@ -746,14 +845,11 @@ impl WorkbenchShellState {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkbenchShellError::Conflict`] for a question that can no
-    /// longer be answered.
+    /// Returns [`WorkbenchShellError::Conflict`] for a question that is not
+    /// a form or a link waiting in this process.
     pub async fn question_in_full(&self, question_id: &str) -> Result<Value, WorkbenchShellError> {
         let asked = self.asked(question_id).await?;
         let connection = self.connection(&asked.connection_id).await?;
-        if !asked.form {
-            return Ok(json!({ "options": asked.options }));
-        }
         let waiting = tokio::time::timeout(
             Duration::from_millis(200),
             connection
@@ -770,24 +866,17 @@ impl WorkbenchShellState {
     }
 
     async fn asked(&self, question_id: &str) -> Result<Asked, WorkbenchShellError> {
-        let asked = self
-            .chat_runtime
+        self.chat_runtime
             .asked
             .lock()
             .await
             .get(question_id)
-            .cloned();
-        if let Some(asked) = asked {
-            return Ok(asked);
-        }
-        let id = question_id.to_owned();
-        self.with_ledger(move |ledger| {
-            ledger.question(&id)?;
-            ledger.lapse_question(&id)
-        })
-        .await
-        .map_err(ledger_refusal)?;
-        Err(no_longer(question_id))
+            .cloned()
+            .ok_or_else(|| {
+                WorkbenchShellError::Conflict(format!(
+                    "question {question_id} is answered where its agent runs, while it waits"
+                ))
+            })
     }
 
     /// Answer a question that waits: `{"option": id}` for a permission, the
@@ -795,16 +884,44 @@ impl WorkbenchShellState {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkbenchShellError::Conflict`] for a question that can no
-    /// longer be answered and for an answer that was not offered.
+    /// Returns [`WorkbenchShellError::Conflict`] for a question that no
+    /// longer waits and for an answer that was not offered.
     pub async fn answer_in_chat(
         &self,
         question_id: &str,
         answer: Value,
     ) -> Result<Question, WorkbenchShellError> {
-        let asked = self.asked(question_id).await?;
-        let connection = self.connection(&asked.connection_id).await?;
-        let kept = if asked.form {
+        let id = question_id.to_owned();
+        let question = self
+            .with_ledger(move |ledger| ledger.question(&id))
+            .await
+            .map_err(ledger_refusal)?;
+        if question.state != QuestionState::Waiting {
+            return Err(no_longer(question_id));
+        }
+        let kept = if question.kind == "permission" {
+            let option = answer
+                .get("option")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    WorkbenchShellError::Invalid("an answer names the option chosen".into())
+                })?;
+            let offered = question
+                .asked
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|offered| offered.get("optionId").and_then(Value::as_str) == Some(option))
+                .ok_or_else(|| {
+                    WorkbenchShellError::Conflict(format!(
+                        "`{option}` was not offered for question {question_id}"
+                    ))
+                })?;
+            json!({ "option": option, "name": offered.get("name") })
+        } else {
+            let asked = self.asked(question_id).await?;
+            let connection = self.connection(&asked.connection_id).await?;
             let action: ElicitationAction = serde_json::from_value(answer)
                 .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
             let word = match &action {
@@ -816,30 +933,76 @@ impl WorkbenchShellState {
                 .control
                 .answer_elicitation(asked.sequence, action)
                 .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))?;
+            self.chat_runtime.asked.lock().await.remove(question_id);
             // What was typed into a form stays between the person and the
             // engine.
             json!({ "action": word })
-        } else {
-            let option = answer
-                .get("option")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    WorkbenchShellError::Invalid("an answer names the option chosen".into())
-                })?;
-            connection
-                .control
-                .select_permission(asked.sequence, option)
-                .map_err(|error| WorkbenchShellError::Conflict(error.to_string()))?;
-            json!({ "option": option, "name": asked.options.get(option) })
         };
-        self.chat_runtime.asked.lock().await.remove(question_id);
         let id = question_id.to_owned();
         self.with_ledger(move |ledger| {
             let owner = ledger.owner()?;
             ledger.answer_question(&id, &kept, &owner.participant_id)
         })
         .await
-        .map_err(ledger_refusal)
+        .map_err(|error| match error {
+            // Somebody answered between the look and the answer.
+            crate::RoutingError::InvalidBinding(said) if said.contains("cannot be answered") => {
+                WorkbenchShellError::Conflict(said)
+            }
+            other => ledger_refusal(other),
+        })
+    }
+
+    /// Answer what an agent asked, from where its turn runs: the session
+    /// is told at once, and the question the ledger keeps for it is kept
+    /// as answered. An editor answers this way; it is where the person is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError::Conflict`] for a question that no
+    /// longer waits and for an option that was not offered.
+    pub async fn answer_where_it_runs(
+        &self,
+        delivery_id: &str,
+        sequence: u64,
+        option: &str,
+    ) -> Result<(), WorkbenchShellError> {
+        let connection_id = self
+            .connection_of(delivery_id)
+            .await
+            .ok_or_else(|| no_longer(delivery_id))?;
+        self.select_permission(&connection_id, sequence, option)
+            .await?;
+        // The question is written down a moment after it is asked.
+        for _ in 0..20 {
+            let (id, chosen) = (delivery_id.to_owned(), option.to_owned());
+            let kept = self
+                .with_ledger(move |ledger| {
+                    let Some(question) =
+                        ledger.questions_waiting(None)?.into_iter().find(|asked| {
+                            asked.delivery_id.as_deref() == Some(id.as_str())
+                                && asked.asked.get("sequence").and_then(Value::as_u64)
+                                    == Some(sequence)
+                        })
+                    else {
+                        return Ok(false);
+                    };
+                    let owner = ledger.owner()?;
+                    ledger.answer_question(
+                        &question.question_id,
+                        &json!({ "option": chosen }),
+                        &owner.participant_id,
+                    )?;
+                    Ok(true)
+                })
+                .await
+                .unwrap_or(true);
+            if kept {
+                break;
+            }
+            tokio::time::sleep(LOOK).await;
+        }
+        Ok(())
     }
 
     /// Stop what an agent is doing in a chat, or what every agent is: the
@@ -878,6 +1041,43 @@ impl WorkbenchShellState {
             }
         }
         Ok(json!({ "stopped": stopped, "not_begun": not_begun.len() }))
+    }
+
+    /// Close the sessions this process holds open for one chat.
+    pub async fn let_go_of_chat(&self, chat_id: &str) {
+        let gone: Vec<String> = {
+            let mut live = self.chat_runtime.live.lock().await;
+            let keys: Vec<(String, String)> = live
+                .keys()
+                .filter(|(chat, _)| chat == chat_id)
+                .cloned()
+                .collect();
+            keys.iter().filter_map(|key| live.remove(key)).collect()
+        };
+        for connection_id in gone {
+            let _ = self.disconnect(&connection_id).await;
+        }
+    }
+
+    /// Wait until a delivery has ended, and say how. It ends by itself, by
+    /// being stopped, or by the turn's own deadline; a question that waits
+    /// holds it open, as it holds the turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for a delivery that does not exist.
+    pub async fn ended(&self, delivery_id: &str) -> Result<Delivery, WorkbenchShellError> {
+        loop {
+            let id = delivery_id.to_owned();
+            let delivery = self
+                .with_ledger(move |ledger| ledger.delivery(&id))
+                .await
+                .map_err(ledger_refusal)?;
+            if delivery.state.ended() {
+                return Ok(delivery);
+            }
+            tokio::time::sleep(LOOK).await;
+        }
     }
 
     /// Close the sessions this process holds open for chats: an agent's, or

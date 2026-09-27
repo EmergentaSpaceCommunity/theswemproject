@@ -187,6 +187,10 @@ pub struct Message {
     pub chat_id: String,
     pub sender_id: String,
     pub channel: String,
+    /// The channel's own name for the message: what an editor called
+    /// itself, the window a schedule claimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_ref: Option<String>,
     pub content: Value,
     pub text: String,
     /// The handles named in it.
@@ -833,6 +837,7 @@ fn message_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Message, String, Str
             chat_id: row.get(2)?,
             sender_id: row.get(3)?,
             channel: row.get(4)?,
+            channel_ref: row.get(9)?,
             content: Value::Null,
             text: row.get(6)?,
             named: Vec::new(),
@@ -845,8 +850,8 @@ fn message_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Message, String, Str
     ))
 }
 
-const MESSAGE_COLUMNS: &str =
-    "message_id, sequence, chat_id, sender_id, channel, content_json, text, named_json, created_ms";
+const MESSAGE_COLUMNS: &str = "message_id, sequence, chat_id, sender_id, channel, content_json, text, named_json, \
+     created_ms, channel_ref";
 
 impl RoutingLedger {
     fn participants_where(
@@ -893,6 +898,77 @@ impl RoutingLedger {
         let agent = agent_in(&transaction, profile_id)?;
         transaction.commit()?;
         self.participant(&agent)
+    }
+
+    /// The participant a schedule is, made the first time it is met: it
+    /// speaks with the trust of whoever made it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] for a maker nobody is.
+    pub fn schedule_participant(
+        &mut self,
+        name: &str,
+        made_by: &str,
+    ) -> Result<Participant, RoutingError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let known: Option<String> = transaction
+            .query_row(
+                "SELECT participant_id FROM participants
+                 WHERE kind = 'schedule' AND name = ?1 AND made_by = ?2",
+                params![name, made_by],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let schedule = if let Some(known) = known {
+            known
+        } else {
+            let schedule = new_id("p")?;
+            transaction.execute(
+                "INSERT INTO participants(participant_id, kind, handle, name, made_by, created_ms)
+                 VALUES (?1, 'schedule', ?2, ?3, ?4, ?5)",
+                params![
+                    schedule,
+                    free_handle(&transaction, &handle_from(name))?,
+                    name,
+                    made_by,
+                    now_ms()
+                ],
+            )?;
+            schedule
+        };
+        transaction.commit()?;
+        self.participant(&schedule)
+    }
+
+    /// Bring a participant into a chat. One who is in it already stays as
+    /// they were; one who had left is in it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] for an unknown chat or participant.
+    pub fn join_chat(&mut self, chat_id: &str, participant_id: &str) -> Result<Chat, RoutingError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let joined = transaction.execute(
+            "INSERT INTO chat_members(chat_id, participant_id, joined_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(chat_id, participant_id) DO UPDATE SET left_ms = NULL
+             WHERE left_ms IS NOT NULL",
+            params![chat_id, participant_id, now_ms()],
+        )?;
+        if joined > 0 {
+            chat_event_in(
+                &transaction,
+                chat_id,
+                "chat/joined",
+                &json!({ "participant_id": participant_id }),
+            )?;
+        }
+        transaction.commit()?;
+        self.chat(chat_id)
     }
 
     /// One participant by id.
@@ -1442,6 +1518,25 @@ impl RoutingLedger {
             &[&chat_id, &from, &before],
         )?;
         Ok((events, messages, more))
+    }
+
+    /// What happened in one chat after a place, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] when the ledger cannot be read.
+    pub fn happened_in_chat_after(
+        &self,
+        chat_id: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<ChatEvent>, RoutingError> {
+        let after = i64::try_from(after).map_err(|_| RoutingError::CursorOverflow(after))?;
+        let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
+        self.events_where(
+            "WHERE e.chat_id = ?1 AND e.sequence > ?2 ORDER BY e.sequence ASC LIMIT ?3",
+            &[&chat_id, &after, &limit],
+        )
     }
 
     /// Everything that happened after a place, in every chat, oldest first.

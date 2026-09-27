@@ -814,3 +814,82 @@ async fn a_page_follows_every_chat_by_one_stream_and_comes_back_to_its_place() {
     drop(handle);
     fs::remove_dir_all(root).expect("remove fixture root");
 }
+
+#[tokio::test]
+async fn the_clock_says_its_message_into_a_chat_as_a_schedule() {
+    let root = fixture_root("clock");
+    let (state, _ledger) = shell_of_two(&root);
+    state
+        .enable_schedules(&root.join("schedules"))
+        .expect("the clock");
+    state
+        .set_schedule(
+            "coder",
+            &swem_host::SetScheduleBody {
+                schedule_id: "morning".into(),
+                say: "how are we doing".into(),
+                every_minutes: 60,
+            },
+        )
+        .expect("set a schedule");
+
+    // It is due at once; the clock looks every ten seconds.
+    let began = std::time::Instant::now();
+    let chat = loop {
+        let chats = state.chats().await.expect("chats");
+        if let Some(chat) = chats.into_iter().find(|chat| chat.title == "morning") {
+            break chat;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the clock never spoke"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let page = until(&state, &chat.chat_id, "the answer", settled(2)).await;
+    let clock = page
+        .chat
+        .members
+        .iter()
+        .find(|member| member.kind == swem_host::ParticipantKind::Schedule)
+        .expect("the schedule is in the chat it speaks in");
+    assert_eq!(clock.name, "morning");
+    assert_eq!(
+        clock.made_by.as_deref(),
+        Some(page.chat.created_by.as_str())
+    );
+    assert_eq!(page.messages[0].sender_id, clock.participant_id);
+    assert_eq!(page.messages[0].channel, "schedule");
+    assert_eq!(reply(&page, 1)["prompt"], "how are we doing");
+
+    // It speaks with the trust of who made it, and is said to be a schedule.
+    let given = prompts(&page);
+    assert_eq!(given[0][0], "how are we doing");
+    let block = given[0].last().expect("the block");
+    assert!(block.contains("via: \"schedule\""));
+    assert!(
+        block.contains("\"from\":\"morning\",\"name\":\"morning\",\"kind\":\"schedule\",\"trust\":\"principal\""),
+        "{block}"
+    );
+    assert!(block.contains("\"said_above\":true"));
+
+    // The schedule remembers where it spoke and how it went.
+    let began = std::time::Instant::now();
+    loop {
+        let kept = state.profile_schedules("coder").expect("schedules");
+        if let Some(outcome) = &kept[0].last_outcome {
+            assert!(outcome.ends_with("(done)"), "{outcome}");
+            assert_eq!(kept[0].chat_id.as_deref(), Some(chat.chat_id.as_str()));
+            assert!(kept[0].route_id.is_some());
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "no outcome was kept"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    state.forget_schedule("morning").expect("forget");
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}

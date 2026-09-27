@@ -531,7 +531,7 @@ fn what_a_chat_owes_and_waits_for_outlives_the_page_and_the_workbench() {
             .is_err(),
         "a message is owed to agents of its chat"
     );
-    assert_eq!(ledger.agents_owed().expect("owed"), agents.to_vec());
+    assert_eq!(ledger.agents_owed(None).expect("owed"), agents.to_vec());
 
     // A second message waits its turn behind the first.
     let second = ledger
@@ -545,7 +545,7 @@ fn what_a_chat_owes_and_waits_for_outlives_the_page_and_the_workbench() {
         .expect("say");
     ledger.deliver(&second.message_id, agents).expect("deliver");
     let running = ledger
-        .take_next_delivery(&ada.participant_id)
+        .take_next_delivery(&ada.participant_id, None)
         .expect("take")
         .expect("the first");
     assert_eq!(running.message_id, first.message_id);
@@ -617,7 +617,7 @@ fn what_a_chat_owes_and_waits_for_outlives_the_page_and_the_workbench() {
     assert!(ledger.questions_waiting(None).expect("waiting").is_empty());
     // What was queued is still owed, and ends as it ends.
     let next = ledger
-        .take_next_delivery(&ada.participant_id)
+        .take_next_delivery(&ada.participant_id, None)
         .expect("take")
         .expect("the second");
     assert_eq!(next.message_id, second.message_id);
@@ -634,7 +634,7 @@ fn what_a_chat_owes_and_waits_for_outlives_the_page_and_the_workbench() {
     );
     assert!(
         ledger
-            .take_next_delivery(&ada.participant_id)
+            .take_next_delivery(&ada.participant_id, None)
             .expect("take")
             .is_none()
     );

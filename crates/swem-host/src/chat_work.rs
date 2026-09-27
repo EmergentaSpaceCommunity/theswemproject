@@ -143,6 +143,15 @@ fn ms(value: Option<i64>) -> Option<u64> {
     value.and_then(|value| u64::try_from(value).ok())
 }
 
+/// Whose a delivery is to carry out, as a condition on the message `m` it
+/// is of; `?2` is the door that asks, or nothing for the Workbench.
+///
+/// What an editor said is carried out by the door that said it: the editor
+/// has the files the person is looking at and is where they are asked.
+/// Everything else is the Workbench's.
+const CARRIED_BY: &str = "(CASE WHEN ?2 IS NULL THEN m.channel != 'editor'
+        ELSE m.channel = 'editor' AND m.channel_ref LIKE ?2 || ':%' END)";
+
 const DELIVERY_COLUMNS: &str = "delivery_id, chat_id, agent_id, message_id, state, outcome, \
                                 created_ms, started_ms, ended_ms";
 
@@ -413,23 +422,31 @@ impl RoutingLedger {
         Ok(delivery)
     }
 
-    /// The oldest message an agent is owed and has not begun, and takes it:
-    /// the delivery is running when this returns.
+    /// The oldest message an agent is owed and has not begun, of those this
+    /// process carries (`door` names an editor's door; without one it is
+    /// the Workbench), and takes it: the delivery is running when this
+    /// returns.
     ///
     /// # Errors
     ///
     /// Returns [`RoutingError`] when the ledger cannot be read or written.
-    pub fn take_next_delivery(&mut self, agent_id: &str) -> Result<Option<Delivery>, RoutingError> {
+    pub fn take_next_delivery(
+        &mut self,
+        agent_id: &str,
+        door: Option<&str>,
+    ) -> Result<Option<Delivery>, RoutingError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let next: Option<String> = transaction
             .query_row(
-                "SELECT d.delivery_id FROM deliveries d
-                 JOIN messages m ON m.message_id = d.message_id
-                 WHERE d.agent_id = ?1 AND d.state = 'queued'
-                 ORDER BY m.sequence LIMIT 1",
-                [agent_id],
+                &format!(
+                    "SELECT d.delivery_id FROM deliveries d
+                     JOIN messages m ON m.message_id = d.message_id
+                     WHERE d.agent_id = ?1 AND d.state = 'queued' AND {CARRIED_BY}
+                     ORDER BY m.sequence LIMIT 1"
+                ),
+                params![agent_id, door],
                 |row| row.get(0),
             )
             .optional()?;
@@ -501,16 +518,19 @@ impl RoutingLedger {
         rows.map(|row| delivery_of(row?)).collect()
     }
 
-    /// The agents that are owed something and have not begun it.
+    /// The agents that are owed something this process carries and have
+    /// not begun it.
     ///
     /// # Errors
     ///
     /// Returns [`RoutingError`] when the ledger cannot be read.
-    pub fn agents_owed(&self) -> Result<Vec<String>, RoutingError> {
-        let mut statement = self.connection.prepare(
-            "SELECT DISTINCT agent_id FROM deliveries WHERE state = 'queued' ORDER BY agent_id",
-        )?;
-        let rows = statement.query_map([], |row| row.get(0))?;
+    pub fn agents_owed(&self, door: Option<&str>) -> Result<Vec<String>, RoutingError> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT d.agent_id FROM deliveries d
+             JOIN messages m ON m.message_id = d.message_id
+             WHERE d.state = 'queued' AND {CARRIED_BY} ORDER BY d.agent_id"
+        ))?;
+        let rows = statement.query_map(params![Option::<&str>::None, door], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 

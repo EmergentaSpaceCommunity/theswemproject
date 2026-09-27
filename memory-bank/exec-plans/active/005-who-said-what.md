@@ -59,14 +59,18 @@ turn's ten-minute deadline.
 
 - [x] 1 ledger: participants, chats, members, messages, sessions; every route a chat; checked on a copy of a real ledger (eight messages, each with its sender)
 - [x] 2 envelope: the block (`envelope.rs`), named anew every turn by a value nothing said in the turn holds; the standing explanation written into the agent's instruction file at every open. `Correspondent` still stands: it leaves with its last callers in steps 3 and 6
-- [ ] 3 chats and runtime
+- [x] 3 chats and runtime
   - [x] 3a in the serving process: a message is owed to the agents it is for (`chats.rs`,
     `recipients`), one worker per agent under the agent's turn lock (`runtime.rs`), the session
     continued or a fresh one given the history and a transcript file, questions kept and
     answered from the ledger, stop, the deadline standing still while a question waits
     (`session.rs`), what was left running settled when the product starts
-  - [ ] 3b the clock says its message into a chat as a schedule
-  - [ ] 3c the editor door says its message into a chat and carries out its own delivery
+  - [x] 3b the clock says its message into a chat as a schedule: a participant of kind
+    `schedule` made by the owner; each due schedule is followed to its end by itself, so one
+    that waits for an answer holds no other up
+  - [x] 3c the editor door says its message into a chat and carries out its own delivery: the
+    id an editor keeps is the chat's; a delivery is claimed by the door whose name begins the
+    message's; the editor is asked what the agent asks, and the answer is kept in the chat
 - [x] 4 stream and routes: `GET /api/stream` (server-sent events, `Last-Event-ID` or `?cursor=`, `state` whole for a page with no place, `reset` for a place the record never reached); `/api/people`, `/api/chats`, `/api/chats/{id}` (read, rename), `.../messages`, `.../stop`, `/api/questions/{id}` and `.../answer` (`stream.rs`). The old page's routes stand until step 6
 - [ ] 5 page
 - [ ] 6 removal
@@ -88,6 +92,15 @@ turn's ten-minute deadline.
 - `File::lock` is stable since Rust 1.89; the workspace said 1.88 and builds on 1.95 only
   (`rust-toolchain.toml`). `rust-version` is 1.89 now.
 
+- A question is answered by whoever gets there, and that may be another process: the page
+  beside an editor's door. So a permission's answer is written into the ledger and carried to
+  the session by the process that runs the turn; nothing about it is kept in memory.
+- The door's walks drove the old page to read the record. They read `/api/chats` now; what
+  they looked at in the page's session list comes back with the new page.
+- `native_session::cancellation_protocol_failure_and_transport_timeout_remain_distinct` holds a
+  one-second deadline over a process start: green alone three times of three, red beside the
+  other fifteen tests of its suite on this machine.
+
 ## Decision log
 
 - 2026-09-27: a form's fields and a link's address are not written into the ledger, as they
@@ -108,6 +121,10 @@ turn's ten-minute deadline.
   one waits for an answer; the question is read and answered after nobody looked; a turn is
   stopped; a turn outlasts its deadline while its question waits; with the engine's sessions
   deleted the chat goes on in a fresh one that is given what was said and the transcript.
+- 2026-09-27, steps 3b and 3c: `chat_runtime` gains the clock's walk. The editor door's four
+  walks of the product gate, each alone against the real binary with the protocol's own client:
+  a person works from their editor, the agent reads the file they have open, two windows, and
+  closing the editor and coming back to the same conversation - green.
 - 2026-09-27, step 4: `chat_runtime` gains the page's walk over HTTP: the state whole, a chat
   started, a message said, every event on the one stream in order with each message's sender,
   the chat read and renamed beside it, a page coming back to its place, a lost place reset.

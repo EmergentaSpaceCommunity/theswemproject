@@ -28,29 +28,27 @@ await b.evaluate(`(() => {
   picker.dispatchEvent(new Event("change", {bubbles: true}));
 })()`);
 
-// The session the editor opened is this person's session, listed beside any
-// they started themselves.
-await b.waitFor("the editor's session is in the list", async () =>
-  b.evaluate(`document.querySelectorAll("#sessions .session-row").length > 0`), 300);
-const listed = await b.evaluate(
-  `JSON.stringify([...document.querySelectorAll("#sessions .session-row")].map(row => row.dataset.routeId))`,
-).then(JSON.parse);
-step(`the page lists ${listed.length} session(s) for this profile`);
-
-// And the record says who wrote the turn: the editor, by the name it gave at
-// initialize, on the surface an editor writes from.
+// The conversation the editor held is this person's chat, and the record
+// says who said what in it and through what: the person, from their editor,
+// by the name the editor gave at initialize.
 const record = await b.evaluate(`(async () => {
-  const sessions = await (await fetch("/api/profiles/" + encodeURIComponent(${JSON.stringify(profile)}) + "/sessions")).json();
-  const route = (Array.isArray(sessions) ? sessions : sessions.sessions || [])[0]?.route_id;
-  const history = await (await fetch("/api/routes/" + encodeURIComponent(route) + "/history?limit=200")).json();
-  const written = (history.events || []).filter((event) => event.kind === "host/turn_written");
-  return JSON.stringify({route, written});
+  const chats = await (await fetch("/api/chats")).json();
+  const people = await (await fetch("/api/people")).json();
+  const chat = await (await fetch("/api/chats/" + encodeURIComponent(chats[0]?.chat_id))).json();
+  return JSON.stringify({chats: chats.length, owner: people.owner, chat});
 })()`).then(JSON.parse);
-const wrote_it = record.written[0]?.payload?.correspondent;
-if (wrote_it?.surface !== "editor" || wrote_it?.author !== editor) {
-  cleanup(1, `the record does not say the editor wrote the turn: ${JSON.stringify(record)}`);
+step(`the product keeps ${record.chats} chat(s)`);
+const said = (record.chat.messages || [])[0];
+if (said?.channel !== "editor" || said?.sender_id !== record.owner?.participant_id
+    || !String(said?.channel_ref || "").endsWith(":" + editor)) {
+  cleanup(1, `the record does not say the person said it from the editor: ${JSON.stringify(record.chat.messages)}`);
 }
-step(`the lane says who wrote it (${wrote_it.author} from ${wrote_it.surface})`);
+const answered = (record.chat.messages || [])[1];
+const agent = (record.chat.chat.members || []).find((member) => member.kind === "agent");
+if (!agent || agent.profile_id !== profile || answered?.sender_id !== agent.participant_id) {
+  cleanup(1, `the answer is not the agent's: ${JSON.stringify(record.chat.messages)}`);
+}
+step(`the chat says who said what (${editor} through ${said.channel}, answered by @${agent.handle})`);
 
 // The file that turn produced is in the person's own Files, because the agent
 // worked in the profile's directory and not in the one the editor claimed.
@@ -63,5 +61,5 @@ await b.waitFor("the editor's file is listed", async () => {
 step("the file the editor's turn wrote is in the person's Files");
 
 console.log("editor record OK");
-console.log(JSON.stringify({sessions: listed.length, route: record.route, wrote: wrote_it}));
+console.log(JSON.stringify({chats: record.chats, chat: record.chat.chat.chat_id, through: said.channel}));
 cleanup(0, "editor record done");

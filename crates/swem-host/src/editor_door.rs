@@ -28,9 +28,9 @@
 //! - **No secret leaves through it.** This door reads a profile to run it. It
 //!   never serves a profile's secrets, never serves the Workbench's own
 //!   session secret, and offers nothing of the `/api` surface.
-//! - **The turn says where it came from.** Every turn carries a correspondent
-//!   naming this surface and the editor that wrote it, so the record can tell
-//!   an editor's turn from a person's in the page.
+//! - **The message says where it came from.** What is written here is said
+//!   in the chat through the editor's channel, so the record can tell what a
+//!   person wrote in their editor from what they wrote in the page.
 //! - **What needs a person is asked of the person who is there.** A profile
 //!   that asks every time asks the editor, over ACP's own permission request,
 //!   and the person answers where they are working. Holding the question for
@@ -39,16 +39,24 @@
 //!
 //! # One conversation, not one per launch
 //!
-//! The id this door gives an editor is the lane's own id in the record, not a
-//! handle that dies with the process. An editor that kept it — which is what
+//! The id this door gives an editor is the chat's own id in the record, not a
+//! handle that dies with the process, and not the id of a session of the
+//! engine, which the chat outlives. An editor that kept it — which is what
 //! ACP clients do — can hand it back with `session/load` and get the same
-//! conversation: what was said is replayed to it, and what it says next lands
-//! on the same lane the page is reading. The alternative is what this door did
-//! before: a new conversation every time the editor starts, and a record that
-//! grows a lane per launch with nothing tying them together.
+//! conversation: what was said is replayed to it, and what it says next is
+//! said in the same chat the page is reading.
+//!
+//! # The door carries out what it said
+//!
+//! What an editor says is a message in a chat like any other, owed to the
+//! chat's agent like any other. It is this process that pays the debt, not
+//! the Workbench beside it: the editor has the file the person is looking
+//! at, and is where the person answers what the agent asks. The agent's turn
+//! lock is what keeps the two processes from giving one agent two turns.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -64,13 +72,14 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 
-use crate::workbench_shell::{ShellConnectionMode, WorkbenchShellState};
-use crate::{NativeFileAnswer, NativeFileCall};
+use crate::workbench_shell::{Saying, StartChatBody, WorkbenchShellState};
+use crate::{
+    CHANNEL_EDITOR, Chat, DeliveryState, NativeFileAnswer, NativeFileCall, ParticipantKind,
+    SurfaceEventSource,
+};
 
-/// The surface name an editor's turns are recorded under. One name for every
-/// editor: what distinguishes them is the correspondent's author, the way two
-/// people in one channel are two authors on one surface.
-pub const EDITOR_SURFACE: &str = "editor";
+/// The channel what an editor says comes through. One name for every editor.
+pub const EDITOR_SURFACE: &str = CHANNEL_EDITOR;
 
 /// How long the update pump waits on the ledger before looking again.
 const PUMP_WAIT: Duration = Duration::from_millis(250);
@@ -80,11 +89,9 @@ const PUMP_BATCH: usize = 64;
 /// One conversation this door is holding for the editor connected to it.
 #[derive(Clone)]
 struct Open {
-    connection: String,
-    route: String,
-    /// This editor session's own cursor on the route, so its updates are read
-    /// at its own pace and not at the page's.
-    surface: String,
+    chat: String,
+    /// How far this editor has been told what happened in the chat.
+    told_through: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Default)]
@@ -95,13 +102,11 @@ struct Door {
     /// that kept only the last one answered a prompt about the first with
     /// "this prompt names no session this door opened".
     open: Arc<Mutex<BTreeMap<String, Open>>>,
-    /// What the editor called itself at `initialize`. The author of every turn
-    /// that comes through here.
+    /// What the editor called itself at `initialize`. Part of the name of
+    /// every message that comes through here.
     client: Arc<Mutex<Option<String>>>,
-    /// What the editor said at `initialize` it can do with files. Nothing
-    /// until it says so: an agent underneath is told it may read the person's
-    /// files only when the editor holding them offered to be asked.
-    files: Arc<Mutex<FileSystemCapabilities>>,
+    /// How many messages came through here.
+    said: Arc<AtomicU64>,
 }
 
 impl Door {
@@ -124,21 +129,8 @@ impl Door {
             .cloned())
     }
 
-    /// What this editor offered to do with files, for a connection about to
-    /// be opened. Nothing offered is `None`, which is the refusal every other
-    /// door of this host gives: a connection is never told the surface behind
-    /// it has files it never claimed.
-    fn file_callbacks(&self) -> Result<Option<FileSystemCapabilities>, Error> {
-        let offered = self
-            .files
-            .lock()
-            .map_err(|_| refuse("the editor door lost its lock"))?
-            .clone();
-        Ok((offered.read_text_file || offered.write_text_file).then_some(offered))
-    }
-
     /// Stop holding a conversation, because the editor said it is done with
-    /// it. The lane stays in the record and can be loaded again.
+    /// it. The chat stays in the record and can be loaded again.
     fn forget(&self, session: &SessionId) -> Result<Option<Open>, Error> {
         Ok(self
             .open
@@ -167,8 +159,17 @@ pub async fn serve_editor_door(
     state: Arc<WorkbenchShellState>,
     profile_id: String,
 ) -> Result<(), Error> {
+    // This process carries out what its editor says, and only that.
+    let name = state
+        .carry_for_an_editor()
+        .map_err(|error| refuse(error.to_string()))?;
+    state
+        .take_up_chats()
+        .await
+        .map_err(|error| refuse(error.to_string()))?;
     let door = Door::default();
     let initializing = door.clone();
+    let initial_state = Arc::clone(&state);
     let opening = door.clone();
     let loading = door.clone();
     let closing = door.clone();
@@ -195,16 +196,16 @@ pub async fn serve_editor_door(
                         .lock()
                         .map_err(|_| refuse("the editor door lost its lock"))? = Some(name);
                 }
-                // The editor's own `fs/*` capability, kept for the
-                // connections this door opens after it. It is the editor that
-                // has the file the person is looking at - unsaved buffer and
-                // all - so this is the one door of this host where an agent's
-                // file callback has somewhere true to go.
-                *initializing
-                    .files
-                    .lock()
-                    .map_err(|_| refuse("the editor door lost its lock"))? =
-                    request.client_capabilities.fs.clone();
+                // The editor's own `fs/*` capability, kept for the sessions
+                // this door opens after it. It is the editor that has the
+                // file the person is looking at - unsaved buffer and all -
+                // so this is the one door of this host where an agent's
+                // file callback has somewhere true to go. Nothing offered
+                // is nothing claimed.
+                let offered: FileSystemCapabilities = request.client_capabilities.fs.clone();
+                initial_state.editor_offers_files(
+                    (offered.read_text_file || offered.write_text_file).then_some(offered),
+                );
                 // Deliberately modest: this door claims no rich content of its
                 // own. What the profile's agent can take is the profile's
                 // agent's business, and the harness already refuses content an
@@ -235,30 +236,24 @@ pub async fn serve_editor_door(
         )
         .on_receive_request(
             async move |request: NewSessionRequest, responder, connection: ConnectionTo<Client>| {
-                let (connection_id, route_id, _) = open_state
-                    .open_connection_with_id(
-                        &open_profile,
-                        ShellConnectionMode::New,
-                        None,
-                        None,
-                        None,
-                        opening.file_callbacks()?,
-                    )
+                // A chat, and no engine yet: the engine is started by the
+                // first thing said. The id is the chat's, so an editor that
+                // keeps it comes back to the conversation whatever session
+                // of the engine the chat is in by then.
+                let chat = open_state
+                    .start_chat(StartChatBody {
+                        title: String::new(),
+                        agents: vec![open_profile.clone()],
+                    })
                     .await
                     .map_err(|error| refuse(error.to_string()))?;
-                // The lane's id, not this process's handle on it. An editor
-                // keeps what `session/new` returns and offers it back on its
-                // next launch; a handle that dies with the process would make
-                // every launch a new conversation.
-                let session_id = SessionId::new(route_id.clone());
-                let surface_id = format!("{EDITOR_SURFACE}:{connection_id}");
+                let session_id = SessionId::new(chat.chat_id.clone());
                 let workspace = workspace_of(&open_state, &open_profile)?;
                 opening.remember(
                     &session_id,
                     Open {
-                        connection: connection_id,
-                        route: route_id,
-                        surface: surface_id,
+                        told_through: Arc::new(AtomicU64::new(chat.last_sequence.unwrap_or(0))),
+                        chat: chat.chat_id,
                     },
                 )?;
                 // The editor asked for a directory. It does not get to choose
@@ -278,18 +273,15 @@ pub async fn serve_editor_door(
         )
         .on_receive_request(
             async move |request: CloseSessionRequest, responder, _connection| {
-                // A window closing is not the end of a conversation: the lane
-                // stays in the record and loads again. What ends is this
-                // door's hold on it, and with it the agent process it was
-                // running - which, before this, stayed alive until the whole
-                // editor exited, one per window a person had ever opened.
+                // A window closing is not the end of a conversation: the
+                // chat stays in the record and loads again. What ends is
+                // this door's hold on it, and with it the agent process it
+                // was running - which otherwise stays alive for every
+                // window a person had ever opened.
                 let Some(open) = closing.forget(&request.session_id)? else {
                     return Err(refuse("this close names no session this door opened"));
                 };
-                closing_state
-                    .disconnect(&open.connection)
-                    .await
-                    .map_err(|error| refuse(error.to_string()))?;
+                closing_state.let_go_of_chat(&open.chat).await;
                 responder.respond(CloseSessionResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
@@ -309,19 +301,19 @@ pub async fn serve_editor_door(
                     return responder.respond(ListSessionsResponse::new(Vec::new()));
                 }
                 let sessions = listing_state
-                    .profile_sessions(&listing_profile)
+                    .chats()
                     .await
                     .map_err(|error| refuse(error.to_string()))?
                     .into_iter()
-                    .map(|session| {
-                        let info = SessionInfo::new(session.route_id, workspace.clone());
-                        // What was said first, which is how a person finds the
-                        // conversation they mean. ACP's `updatedAt` is left
-                        // unset rather than invented: the ledger records the
-                        // order of what happened and not the hour of it.
-                        match session.opened_with {
-                            Some(title) => info.title(title),
-                            None => info,
+                    .filter(|chat| has_agent(chat, &listing_profile))
+                    .map(|chat| {
+                        let info = SessionInfo::new(chat.chat_id, workspace.clone());
+                        // What it is called, or what was said first, which
+                        // is how a person finds the conversation they mean.
+                        if chat.title.is_empty() {
+                            info
+                        } else {
+                            info.title(chat.title)
                         }
                     })
                     .collect();
@@ -333,32 +325,19 @@ pub async fn serve_editor_door(
             async move |request: LoadSessionRequest,
                         responder,
                         connection: ConnectionTo<Client>| {
-                // The id the editor kept is the lane's id, so continuing is
-                // resuming that lane - the same thing the clock does when a
-                // schedule fires again, and the same thing the page does when
-                // a person opens a session they had.
-                let route_id = request.session_id.0.to_string();
-                let (connection_id, route_id, _) = load_state
-                    .open_connection_with_id(
-                        &load_profile,
-                        ShellConnectionMode::Resume,
-                        Some(route_id),
-                        None,
-                        None,
-                        loading.file_callbacks()?,
-                    )
+                // The id the editor kept is the chat's - or, from before
+                // there were chats, the id of the engine's session the
+                // chat holds. No engine is started by looking.
+                let chat = load_state
+                    .chat_named(request.session_id.0.as_ref())
                     .await
                     .map_err(|error| refuse(error.to_string()))?;
-                let surface_id = format!("{EDITOR_SURFACE}:{connection_id}");
+                if !has_agent(&chat, &load_profile) {
+                    return Err(refuse(format!(
+                        "this conversation belongs to another agent, not to {load_profile}"
+                    )));
+                }
                 let workspace = workspace_of(&load_state, &load_profile)?;
-                loading.remember(
-                    &request.session_id,
-                    Open {
-                        connection: connection_id,
-                        route: route_id.clone(),
-                        surface: surface_id.clone(),
-                    },
-                )?;
                 if elsewhere(&request.cwd, &workspace) {
                     connection.send_notification(boundary_note(
                         &request.session_id,
@@ -370,14 +349,15 @@ pub async fn serve_editor_door(
                 // the conversation as updates before it responds, so the
                 // editor draws the history it would have had if it had never
                 // been closed.
-                replay(
-                    &load_state,
-                    &connection,
+                let told_through =
+                    replay(&load_state, &connection, &request.session_id, &chat).await?;
+                loading.remember(
                     &request.session_id,
-                    &route_id,
-                    &surface_id,
-                )
-                .await?;
+                    Open {
+                        chat: chat.chat_id,
+                        told_through: Arc::new(AtomicU64::new(told_through)),
+                    },
+                )?;
                 responder.respond(LoadSessionResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
@@ -387,98 +367,102 @@ pub async fn serve_editor_door(
                 let open = prompting
                     .find(&request.session_id)?
                     .ok_or_else(|| refuse("this prompt names no session this door opened"))?;
-                let Open {
-                    connection: connection_id,
-                    route: route_id,
-                    surface: surface_id,
-                } = open;
-                let author = prompting
+                let editor = prompting
                     .client
                     .lock()
                     .map_err(|_| refuse("the editor door lost its lock"))?
-                    .clone();
-
-                // The turn's updates, carried out to the editor while the turn
-                // is still running. Without this the editor sits silent for as
-                // long as the agent takes.
-                let pump_state = Arc::clone(&prompt_state);
-                let pump_connection = connection.clone();
-                let pump_session = request.session_id.clone();
-                let pump = tokio::spawn(async move {
-                    carry_updates(
-                        pump_state,
-                        pump_connection,
-                        pump_session,
-                        route_id,
-                        surface_id,
+                    .clone()
+                    .unwrap_or_default();
+                let blocks = request
+                    .prompt
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| refuse(error.to_string()))?;
+                // Said in the chat, as the person this Workbench is, through
+                // the editor's channel. The name of the message begins with
+                // this door's, which is what makes the debt this door's to
+                // pay.
+                let said = prompt_state
+                    .say_in_chat_as(
+                        &open.chat,
+                        None,
+                        CHANNEL_EDITOR,
+                        Saying {
+                            text: String::new(),
+                            blocks,
+                            content_refs: Vec::new(),
+                            client_ref: Some(format!(
+                                "{name}:{}:{editor}",
+                                prompting.said.fetch_add(1, Ordering::SeqCst)
+                            )),
+                        },
                     )
-                    .await;
-                });
+                    .await
+                    .map_err(|error| refuse(error.to_string()))?;
+                let Some(owed) = said.deliveries.first().cloned() else {
+                    return Err(refuse(
+                        "there are several agents in this chat; name the one this is for",
+                    ));
+                };
+                open.told_through
+                    .fetch_max(said.message.sequence, Ordering::SeqCst);
 
-                // And the questions the agent stops on. A profile that asks
-                // every time is the default, so without this the first thing
-                // an agent asks for ends the editor's turn in silence: the
-                // question waits for a surface the person does not have open.
-                let asking_state = Arc::clone(&prompt_state);
-                let asking_connection = connection.clone();
-                let asking_session = request.session_id.clone();
-                let asking_connection_id = connection_id.clone();
-                let asking = tokio::spawn(async move {
-                    carry_questions(
-                        asking_state,
-                        asking_connection,
-                        asking_session,
-                        asking_connection_id,
-                    )
-                    .await;
-                });
+                // What happens in the chat, carried out to the editor while
+                // the turn is still running. Without this the editor sits
+                // silent for as long as the agent takes.
+                let pump = tokio::spawn(carry_updates(
+                    Arc::clone(&prompt_state),
+                    connection.clone(),
+                    request.session_id.clone(),
+                    open.clone(),
+                ));
+                // And the questions the agent stops on, and the files it
+                // reaches for: the editor is where the person is and where
+                // the file is. Both wait in tasks of their own, because an
+                // answer awaited in a request handler would stop this
+                // connection dispatching the answer it is waiting for.
+                let asking = tokio::spawn(carry_questions(
+                    Arc::clone(&prompt_state),
+                    connection.clone(),
+                    request.session_id.clone(),
+                    owed.delivery_id.clone(),
+                ));
+                let reading = tokio::spawn(carry_files(
+                    Arc::clone(&prompt_state),
+                    connection.clone(),
+                    request.session_id.clone(),
+                    owed.delivery_id.clone(),
+                ));
 
-                // And the files the agent reaches for. Same reason and same
-                // shape as the questions: the editor is where the file is,
-                // and a callback answered from a request handler would stop
-                // this connection dispatching the answer it is waiting for.
-                let reading_state = Arc::clone(&prompt_state);
-                let reading_connection = connection.clone();
-                let reading_session = request.session_id.clone();
-                let reading_connection_id = connection_id.clone();
-                let reading = tokio::spawn(async move {
-                    carry_files(
-                        reading_state,
-                        reading_connection,
-                        reading_session,
-                        reading_connection_id,
-                    )
-                    .await;
-                });
-
-                // The turn runs in a task of its own, and this handler
-                // returns at once. Waiting for the turn here would stop this
-                // connection from reading the editor's own messages while it
-                // ran - and the answer to a permission request is one of
-                // them, so an agent that asked anything would never hear the
-                // reply and the turn would never end.
+                // The turn is followed in a task of its own, and this
+                // handler returns at once. Waiting for the turn here would
+                // stop this connection from reading the editor's own
+                // messages while it ran - and the answer to a permission
+                // request is one of them.
                 let turn_state = Arc::clone(&prompt_state);
+                let last_connection = connection.clone();
+                let session_id = request.session_id.clone();
                 connection.spawn(async move {
-                    let outcome = turn_state
-                        .submit_prompt_from(
-                            &connection_id,
-                            request.prompt.clone(),
-                            Some(crate::Correspondent {
-                                surface: EDITOR_SURFACE.to_owned(),
-                                author,
-                                addressed_to: None,
-                            }),
-                        )
-                        .await;
-                    // One last look before the pump stops, so the end of the
-                    // turn is not the one batch that never arrives.
-                    tokio::time::sleep(PUMP_WAIT * 2).await;
+                    let ended = turn_state.ended(&owed.delivery_id).await;
                     pump.abort();
                     asking.abort();
                     reading.abort();
-
-                    let outcome = outcome.map_err(|error| refuse(error.to_string()))?;
-                    responder.respond(PromptResponse::new(stop_reason(&outcome)))
+                    // One last look, so the end of the turn is not the one
+                    // batch that never arrives.
+                    carry_what_happened(&turn_state, &last_connection, &session_id, &open).await;
+                    let ended = ended.map_err(|error| refuse(error.to_string()))?;
+                    match ended.state {
+                        DeliveryState::Done => responder.respond(PromptResponse::new(stop_reason(
+                            ended.outcome.as_deref().unwrap_or("end_turn"),
+                        ))),
+                        DeliveryState::Stopped => {
+                            responder.respond(PromptResponse::new(StopReason::Cancelled))
+                        }
+                        _ => Err(refuse(ended.outcome.unwrap_or_else(|| {
+                            "the turn did not come to its end".to_owned()
+                        }))),
+                    }
                 })?;
                 Ok(())
             },
@@ -486,12 +470,9 @@ pub async fn serve_editor_door(
         )
         .on_receive_notification(
             async move |notification: CancelNotification, _cx| {
-                let connection_id = cancelling
-                    .find(&notification.session_id)?
-                    .map(|open| open.connection);
-                if let Some(connection_id) = connection_id {
+                if let Some(open) = cancelling.find(&notification.session_id)? {
                     cancel_state
-                        .cancel(&connection_id)
+                        .stop_in_chat(&open.chat, None)
                         .await
                         .map_err(|error| refuse(error.to_string()))?;
                 }
@@ -501,6 +482,13 @@ pub async fn serve_editor_door(
         )
         .connect_to(Stdio::new())
         .await
+}
+
+/// Whether the agent of a profile is in a chat.
+fn has_agent(chat: &Chat, profile_id: &str) -> bool {
+    chat.members.iter().any(|member| {
+        member.kind == ParticipantKind::Agent && member.profile_id.as_deref() == Some(profile_id)
+    })
 }
 
 /// Where this profile's agent works. Both doors of a session need it: the
@@ -535,74 +523,74 @@ fn boundary_note(
     )
 }
 
-/// How much of a lane a loading editor is given. Enough that a person reads
-/// what they were doing; a lane longer than this is a lane whose beginning is
+/// How much of a chat a loading editor is given. Enough that a person reads
+/// what they were doing; a chat longer than this is one whose beginning is
 /// not what they came back for.
 const REPLAY_LIMIT: usize = 500;
 
-/// Replay a lane to an editor that has just loaded it, and leave its cursor
-/// past what it has seen.
+/// Replay a chat to an editor that has just loaded it, and say how far it
+/// has been told.
 ///
-/// Both kinds of thing said on a lane are replayed, because both are what the
-/// conversation was: the agent's own recorded updates, and the turns people
-/// wrote into it — from this editor, from the page, or from the clock. Without
-/// the second kind an editor would redraw the agent talking to nobody.
-///
-/// The cursor moves to the end afterwards. This surface is new (its id carries
-/// this connection), so the live pump would otherwise start at zero and send
-/// the whole conversation a second time, on top of the replay.
+/// Both kinds of thing said in a chat are replayed, because both are what
+/// the conversation was: the agents' own recorded updates, and what people
+/// and the clock said - from this editor, from the page, or on time.
+/// Without the second kind an editor would redraw the agent talking to
+/// nobody. What an engine replayed when its session was loaded is the same
+/// words a second time and is left out.
 async fn replay(
     state: &Arc<WorkbenchShellState>,
     connection: &ConnectionTo<Client>,
     session_id: &SessionId,
-    route_id: &str,
-    surface_id: &str,
-) -> Result<(), Error> {
-    let events = state
-        .route_history(route_id, REPLAY_LIMIT)
+    chat: &Chat,
+) -> Result<u64, Error> {
+    let page = state
+        .chat_page(&chat.chat_id, None, REPLAY_LIMIT)
         .await
         .map_err(|error| refuse(error.to_string()))?;
-    let mut last = 0;
-    for event in &events {
-        last = event.sequence;
-        let update = match event.kind.as_str() {
-            "acp/session_update" => {
-                serde_json::from_value::<SessionNotification>(event.payload.clone())
-                    .ok()
-                    .map(|mut update| {
-                        update.session_id = session_id.clone();
-                        update
-                    })
-            }
-            // A turn someone wrote. The provenance line the harness appended
-            // is part of the text, so the editor sees who wrote it for the
-            // same reason the agent did.
-            "host/turn_written" => event
-                .payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .filter(|text| !text.trim().is_empty())
-                .map(|text| {
-                    SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(
-                            TextContent::new(text.to_owned()),
-                        ))),
-                    )
-                }),
-            _ => None,
+    let agents: Vec<&str> = page
+        .chat
+        .members
+        .iter()
+        .filter(|member| member.kind == ParticipantKind::Agent)
+        .map(|member| member.participant_id.as_str())
+        .collect();
+    let mut told_through = 0;
+    for event in &page.events {
+        told_through = event.sequence;
+        let said = page
+            .messages
+            .iter()
+            .find(|message| message.sequence == event.sequence)
+            .filter(|message| !agents.contains(&message.sender_id.as_str()))
+            .filter(|message| !message.text.trim().is_empty());
+        let update = if let Some(said) = said {
+            Some(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(said.text.clone()),
+                ))),
+            ))
+        } else {
+            update_of(event, session_id)
         };
         if let Some(update) = update {
             connection.send_notification(update)?;
         }
     }
-    if last > 0 {
-        state
-            .acknowledge(route_id, surface_id, last)
-            .await
-            .map_err(|error| refuse(error.to_string()))?;
+    Ok(told_through)
+}
+
+/// The engine's own update an event of a chat is, addressed to the
+/// conversation as the editor knows it.
+fn update_of(event: &crate::ChatEvent, session_id: &SessionId) -> Option<SessionNotification> {
+    if event.kind != "acp/session_update" || event.source != SurfaceEventSource::NativeLive {
+        return None;
     }
-    Ok(())
+    let mut update = serde_json::from_value::<SessionNotification>(event.payload.clone()).ok()?;
+    // The event's session id is the engine's own. The editor knows this
+    // conversation by the id this door gave it.
+    update.session_id = session_id.clone();
+    Some(update)
 }
 
 /// True when the editor opened somewhere the profile's agent cannot reach.
@@ -613,51 +601,61 @@ fn elsewhere(asked: &std::path::Path, workspace: &std::path::Path) -> bool {
     !resolve(asked).starts_with(resolve(workspace))
 }
 
-/// Read this editor session's own events off the route and send each session
-/// update on to the editor, until the task is dropped.
+/// Tell the editor what happened in the chat since it was last told.
+/// Returns whether it could be told.
+async fn carry_what_happened(
+    state: &Arc<WorkbenchShellState>,
+    connection: &ConnectionTo<Client>,
+    session_id: &SessionId,
+    open: &Open,
+) -> bool {
+    loop {
+        let after = open.told_through.load(Ordering::SeqCst);
+        let Ok(happened) = state.happened_in_chat(&open.chat, after, PUMP_BATCH).await else {
+            return false;
+        };
+        let Some(last) = happened.last() else {
+            return true;
+        };
+        let last = last.sequence;
+        for event in &happened {
+            if let Some(update) = update_of(event, session_id)
+                && connection.send_notification(update).is_err()
+            {
+                return false;
+            }
+        }
+        open.told_through.fetch_max(last, Ordering::SeqCst);
+        if happened.len() < PUMP_BATCH {
+            return true;
+        }
+    }
+}
+
+/// Carry what happens in the chat to the editor, until the task is dropped.
 ///
-/// The events are the agent's own ACP updates, recorded on the lane as they
-/// happened, so what the editor sees is what the page would have seen — the
-/// same turn, read at this surface's own pace.
+/// The events are the engine's own ACP updates, recorded as they happened,
+/// so what the editor sees is what the page sees - the same turn, read at
+/// this editor's own pace.
 async fn carry_updates(
     state: Arc<WorkbenchShellState>,
     connection: ConnectionTo<Client>,
     session_id: SessionId,
-    route_id: String,
-    surface_id: String,
+    open: Open,
 ) {
+    while carry_what_happened(&state, &connection, &session_id, &open).await {
+        tokio::time::sleep(PUMP_WAIT).await;
+    }
+}
+
+/// The connection a delivery runs on, once it runs; nothing when it ended
+/// before it ran.
+async fn connection_of(state: &Arc<WorkbenchShellState>, delivery_id: &str) -> Option<String> {
     loop {
-        let Ok(batch) = state
-            .events(&route_id, &surface_id, PUMP_BATCH, PUMP_WAIT)
-            .await
-        else {
-            return;
-        };
-        let cursor = batch.next_cursor();
-        for event in &batch.events {
-            if event.kind != "acp/session_update" {
-                continue;
-            }
-            let Ok(mut update) =
-                serde_json::from_value::<SessionNotification>(event.payload.clone())
-            else {
-                continue;
-            };
-            // The lane's session id is the agent's own. The editor knows this
-            // conversation by the id this door gave it.
-            update.session_id = session_id.clone();
-            if connection.send_notification(update).is_err() {
-                return;
-            }
+        if let Some(connection_id) = state.connection_of(delivery_id).await {
+            return Some(connection_id);
         }
-        if cursor > 0
-            && state
-                .acknowledge(&route_id, &surface_id, cursor)
-                .await
-                .is_err()
-        {
-            return;
-        }
+        tokio::time::sleep(PUMP_WAIT).await;
     }
 }
 
@@ -666,13 +664,17 @@ async fn carry_updates(
 ///
 /// The editor is the surface the person is looking at, so this is where ACP's
 /// own `session/request_permission` belongs: the same question the page shows,
-/// asked of whoever is actually there.
+/// asked of whoever is actually there. The question is kept in the chat as
+/// well, so whoever answers first has answered.
 async fn carry_questions(
     state: Arc<WorkbenchShellState>,
     connection: ConnectionTo<Client>,
     session_id: SessionId,
-    connection_id: String,
+    delivery_id: String,
 ) {
+    let Some(connection_id) = connection_of(&state, &delivery_id).await else {
+        return;
+    };
     let mut answered = 0;
     loop {
         let Ok(question) = state
@@ -712,13 +714,11 @@ async fn carry_questions(
                 None => return,
             },
         };
-        if state
-            .select_permission(&connection_id, question.sequence, &chosen)
-            .await
-            .is_err()
-        {
-            return;
-        }
+        // Somebody may have answered in the page meanwhile; then it is
+        // answered, and this answer is nobody's.
+        let _ = state
+            .answer_where_it_runs(&delivery_id, question.sequence, &chosen)
+            .await;
         answered = question.sequence;
     }
 }
@@ -740,8 +740,11 @@ async fn carry_files(
     state: Arc<WorkbenchShellState>,
     connection: ConnectionTo<Client>,
     session_id: SessionId,
-    connection_id: String,
+    delivery_id: String,
 ) {
+    let Some(connection_id) = connection_of(&state, &delivery_id).await else {
+        return;
+    };
     let mut answered = 0;
     loop {
         let Ok(asked) = state
@@ -822,8 +825,8 @@ fn refusal(options: &[agent_client_protocol::schema::v1::PermissionOption]) -> O
 }
 
 /// How the turn ended, in the editor's vocabulary.
-fn stop_reason(outcome: &crate::NativeTurnOutcome) -> StopReason {
-    match outcome.stop_reason.as_str() {
+fn stop_reason(said: &str) -> StopReason {
+    match said {
         "cancelled" => StopReason::Cancelled,
         "max_tokens" => StopReason::MaxTokens,
         "max_turn_requests" => StopReason::MaxTurnRequests,
