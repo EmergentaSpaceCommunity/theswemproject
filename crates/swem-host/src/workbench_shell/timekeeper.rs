@@ -21,7 +21,7 @@ use super::chats::ledger_refusal;
 use super::{Saying, WorkbenchShellError, WorkbenchShellState};
 use crate::time::LeftUnanswered;
 use crate::{
-    DeliveryState, Due, NewTimedMessage, ParticipantKind, RunState, TimedMessage,
+    DeliveryState, Due, KeeperLook, NewTimedMessage, ParticipantKind, RunState, TimedMessage,
     TimedMessageChange, TimedRun, When,
 };
 
@@ -65,6 +65,11 @@ pub struct KeeperStanding {
     /// The profiles of the agents that have schedules.
     pub used_by: Vec<String>,
     pub schedules: usize,
+    /// Everybody who can keep time, each as it stands now.
+    pub keepers: Vec<super::KeeperShown>,
+    /// Who was chosen for which agent, by its profile; an agent that is
+    /// not here follows the default.
+    pub chosen: std::collections::BTreeMap<String, String>,
 }
 
 /// A schedule of the old clock, as its file kept it.
@@ -92,6 +97,47 @@ fn titled(say: &str) -> String {
     line.chars().take(120).collect()
 }
 
+/// The look of a keeper that found nothing to do, written down, so the
+/// product need not be put together to find that out: a Workbench keeps
+/// time over this ledger, or nothing is due. Nothing when there is
+/// something to do, or when that cannot be told from here.
+#[must_use]
+pub fn nothing_for_a_keeper_to_do(ledger: &Path, time: &Path, keeper: &str) -> Option<KeeperLook> {
+    if !ledger.is_file()
+        || time
+            .parent()
+            .is_some_and(|root| root.join("schedules").is_dir())
+    {
+        // No ledger yet, or schedules of the old clock to bring in.
+        return None;
+    }
+    let kept_elsewhere = std::fs::File::open(ledger.with_extension("timekeeper.lock"))
+        .is_ok_and(|lock| lock.try_lock().is_err());
+    let keepers = crate::Keepers::at(time);
+    if !kept_elsewhere {
+        let Ok(profiles) = crate::RoutingLedger::open(ledger)
+            .and_then(|mut ledger| ledger.profiles_with_time_to_keep(now_ms()))
+        else {
+            return None;
+        };
+        if profiles
+            .iter()
+            .any(|profile_id| keepers.keeper_of(profile_id) == keeper)
+        {
+            return None;
+        }
+    }
+    let look = KeeperLook {
+        schema: crate::KEEPER_LOOK_SCHEMA.into(),
+        looked_ms: now_ms(),
+        said: 0,
+        kept_elsewhere,
+        said_last_ms: None,
+    };
+    keepers.looked(keeper, &look).ok()?;
+    Some(look)
+}
+
 impl WorkbenchShellState {
     /// Keep time: bring in what the old clock kept under `kept_in_files`,
     /// take the keeper's lock beside the ledger, and look from now on. A
@@ -107,29 +153,29 @@ impl WorkbenchShellState {
         kept_in_files: &Path,
     ) -> Result<(), WorkbenchShellError> {
         self.bring_in_schedules(kept_in_files).await?;
-        let lock_path = self.ledger_path.with_extension("timekeeper.lock");
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|error| {
-                WorkbenchShellError::Failed(format!("{}: {error}", lock_path.display()))
-            })?;
-        if lock.try_lock().is_err() {
-            // Somebody else keeps time over this ledger.
-            return Ok(());
+        if self.timekeeper.get().is_some() {
+            return Err(WorkbenchShellError::Conflict(
+                "time is kept here already".into(),
+            ));
         }
-        self.timekeeper
-            .set(lock)
-            .map_err(|_| WorkbenchShellError::Conflict("time is kept here already".into()))?;
-        self.follow_runs_left_going().await;
+        if self.take_the_keepers_lock()? {
+            drop(self.follow_runs_left_going(None).await);
+        }
         let state = Arc::clone(self);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(LOOK);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
+                if state.timekeeper.get().is_none() {
+                    // Somebody else keeps time over this ledger: a keeper
+                    // that looks and leaves, or another Workbench. When it
+                    // has left, time is kept here.
+                    if !state.take_the_keepers_lock().unwrap_or(false) {
+                        continue;
+                    }
+                    drop(state.follow_runs_left_going(None).await);
+                }
                 state.refuse_what_nobody_answered(now_ms()).await;
                 for due in state.claim_what_is_due(now_ms()).await {
                     let state = Arc::clone(&state);
@@ -140,6 +186,138 @@ impl WorkbenchShellState {
             }
         });
         Ok(())
+    }
+
+    /// Take the keeper's lock beside the ledger, when nobody holds it.
+    /// Whether this process holds it now.
+    fn take_the_keepers_lock(&self) -> Result<bool, WorkbenchShellError> {
+        if self.timekeeper.get().is_some() {
+            return Ok(true);
+        }
+        let lock_path = self.ledger_path.with_extension("timekeeper.lock");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                WorkbenchShellError::Failed(format!("{}: {error}", lock_path.display()))
+            })?;
+        if lock.try_lock().is_err() {
+            return Ok(false);
+        }
+        Ok(self.timekeeper.set(lock).is_ok())
+    }
+
+    /// Keep time once and leave, as a keeper that starts the product does:
+    /// when nobody else keeps time over this ledger, what is due for the
+    /// agents of `keeper` is said, each turn is followed to its end, and
+    /// what was open is let go of.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the old schedules cannot be brought in, and when the
+    /// ledger cannot be read.
+    pub async fn keep_time_once(
+        self: &Arc<Self>,
+        kept_in_files: &Path,
+        keeper: &str,
+    ) -> Result<KeeperLook, WorkbenchShellError> {
+        self.keep_time_once_at(kept_in_files, keeper, now_ms())
+            .await
+    }
+
+    /// [`Self::keep_time_once`] at a moment: the keeper looks now, a test
+    /// at a moment of its choosing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::keep_time_once`].
+    pub async fn keep_time_once_at(
+        self: &Arc<Self>,
+        kept_in_files: &Path,
+        keeper: &str,
+        at_ms: u64,
+    ) -> Result<KeeperLook, WorkbenchShellError> {
+        let looked = |said, kept_elsewhere| KeeperLook {
+            schema: crate::KEEPER_LOOK_SCHEMA.into(),
+            looked_ms: now_ms(),
+            said,
+            kept_elsewhere,
+            said_last_ms: None,
+        };
+        self.bring_in_schedules(kept_in_files).await?;
+        let look = if self.take_the_keepers_lock()? {
+            let agents = self.agents_kept_by(keeper).await?;
+            let said = self.say_what_is_due_to(agents, at_ms).await?;
+            self.let_go_of(None).await;
+            looked(said, false)
+        } else {
+            looked(0, true)
+        };
+        if let Some(keepers) = self.keepers.get() {
+            keepers
+                .looked(keeper, &look)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        }
+        Ok(look)
+    }
+
+    /// The agents whose time a keeper keeps, as the chats know them.
+    async fn agents_kept_by(&self, keeper: &str) -> Result<Vec<String>, WorkbenchShellError> {
+        let Some(keepers) = self.keepers.get() else {
+            return Ok(Vec::new());
+        };
+        let profiles: Vec<String> = self
+            .profiles()?
+            .into_iter()
+            .map(|profile| profile.profile_id)
+            .filter(|profile_id| keepers.keeper_of(profile_id) == keeper)
+            .collect();
+        self.with_ledger(move |ledger| {
+            profiles
+                .iter()
+                .map(|profile_id| Ok(ledger.agent_of_profile(profile_id)?.participant_id))
+                .collect()
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// Say what is due to these agents and stay until every turn a
+    /// schedule began has ended. How many messages were said.
+    async fn say_what_is_due_to(
+        self: &Arc<Self>,
+        agents: Vec<String>,
+        at_ms: u64,
+    ) -> Result<usize, WorkbenchShellError> {
+        if agents.is_empty() {
+            return Ok(0);
+        }
+        // What a keeper that stopped in the middle left going.
+        self.take_up_chats_of(Some(agents.clone())).await?;
+        let mut going = self.follow_runs_left_going(Some(&agents)).await;
+        self.refuse_what_nobody_answered(now_ms()).await;
+        let due = {
+            let agents = agents.clone();
+            self.with_ledger(move |ledger| ledger.claim_due_of(at_ms, Some(&agents)))
+                .await
+                .map_err(ledger_refusal)?
+        };
+        let said = due.len();
+        for due in due {
+            let state = Arc::clone(self);
+            going.push(tokio::spawn(async move {
+                state.say_what_is_due(due).await;
+            }));
+        }
+        // Nobody is there to answer what an agent asks: what waited long
+        // enough is refused, so a turn ends and this can leave.
+        while going.iter().any(|run| !run.is_finished()) {
+            tokio::time::sleep(LOOK).await;
+            self.refuse_what_nobody_answered(now_ms()).await;
+        }
+        Ok(said)
     }
 
     /// The schedules of the old clock become schedules of the ledger, and
@@ -241,13 +419,20 @@ impl WorkbenchShellState {
 
     /// Runs a keeper that stopped left going: each is followed to the end
     /// of its turn, or ended here when it was never said.
-    async fn follow_runs_left_going(self: &Arc<Self>) {
+    async fn follow_runs_left_going(
+        self: &Arc<Self>,
+        agents: Option<&[String]>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
         let Ok(going) = self.with_ledger(crate::RoutingLedger::runs_going).await else {
-            return;
+            return Vec::new();
         };
+        let mut followed = Vec::new();
         for run in going {
+            if agents.is_some_and(|agents| !agents.contains(&run.agent_id)) {
+                continue;
+            }
             let state = Arc::clone(self);
-            tokio::spawn(async move {
+            followed.push(tokio::spawn(async move {
                 match run.delivery_id.clone() {
                     Some(delivery_id) => {
                         state
@@ -265,8 +450,9 @@ impl WorkbenchShellState {
                             .await;
                     }
                 }
-            });
+            }));
         }
+        followed
     }
 
     /// Take up what is due at a moment. The keeper does it as time passes;
@@ -566,7 +752,10 @@ impl WorkbenchShellState {
             })
             .await
             .map_err(ledger_refusal)?;
+        let (keepers, chosen) = self.keepers_shown().await?;
         Ok(KeeperStanding {
+            keepers,
+            chosen,
             keeping: self.timekeeper.get().is_some(),
             zone: When::zone_here(),
             used_by: agents,

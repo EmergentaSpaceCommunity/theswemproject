@@ -45,7 +45,7 @@ provider that exists, and a provider says which agents stand on it before it can
 | Engine | a coding agent to stand on | the catalogue and the public agent registry | exists: catalogue, discovery, install by plan, receipts; two profiles may share one engine |
 | Model | an address, a kind of key, models, **the key itself** | Anthropic, OpenAI, OpenRouter, Groq, Google, Ollama | built (roadmap A4): the key is the provider's, given once in Providers; an agent may still hold one of its own. An agent in a container is handed none until B1 |
 | Host | a machine for an agent: start it, run the engine in it, reach its files, open a terminal in it, put it to sleep | this machine directly; Docker or Podman; a machine over SSH; Sprites | this machine and Podman here, chosen from a closed list of two; nothing remote |
-| Time | keeps schedules and says when one is due | this SWEM | built (roadmap A5): schedules in the ledger, a time of day and cron, pause, runs kept, an agent's own schedules through a tool; one keeper, the running SWEM |
+| Time | keeps schedules and says when one is due | this SWEM; the system's own scheduler; an outside scheduler | built (roadmap A5, ExecPlan 009): schedules in the ledger, a time of day and cron, pause, runs kept, an agent's own schedules through a tool; two keepers, the running SWEM and the system's scheduler (launchd done by hand, systemd written); an outside scheduler is shown and cannot be added |
 | Channel | a door into chats from outside | the Workbench, the editor door | the two exist as surfaces; a messenger bot does not |
 
 A kind of provider that is not built in arrives as a package from the Store, like any other
@@ -158,6 +158,11 @@ made by whom. It is not a process inside the agent's machine.
 - **Who keeps time is a provider.** By default it is the running SWEM. Time is never kept inside
   an agent's machine: a machine that sleeps between messages costs nothing between runs, and a
   clock inside it would either keep it awake or die with it.
+  Who keeps it differs by what it can do. The running SWEM keeps time only while it runs. The
+  system's own scheduler starts SWEM when the Workbench is closed, and needs the computer to
+  be on. An outside scheduler calls a SWEM that runs where it can be reached, and is what
+  wakes an agent whose machine sleeps elsewhere. Each agent has one keeper: the one chosen
+  for it, or the one agents have when nothing was chosen.
 - **When a schedule is due** the keeper tells the product; the product wakes the agent's machine,
   delivers the message as a turn in the schedule's chat with the schedule as its sender, and lets
   the machine sleep again.
@@ -166,8 +171,8 @@ made by whom. It is not a process inside the agent's machine.
   machine and no token written into it.
 - A run that was missed because the keeper was off runs once when it is back, and says it was late.
 
-What the code has today (2026-09-28, roadmap A5): what is described above, kept by the running
-SWEM. What it had before: a ten-second loop, schedules as files, an interval in minutes, no
+What the code has today (2026-09-28, roadmap A5 and ExecPlan 009): what is described above, kept
+by the running SWEM or by the system's own scheduler; no outside scheduler. What it had before: a ten-second loop, schedules as files, an interval in minutes, no
 pause; an agent could not make one. What the reference had: the clock on the platform for the same reason of cost, a
 command inside the machine that called the platform with a token, cron and one-off times, limits
 (five minutes at least, twenty per agent).

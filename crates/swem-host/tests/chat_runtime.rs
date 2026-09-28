@@ -36,7 +36,6 @@ fn shell_of_two(root: &Path) -> (Arc<WorkbenchShellState>, PathBuf) {
 
 fn shell_with_deadline(root: &Path, deadline: Duration) -> (Arc<WorkbenchShellState>, PathBuf) {
     let inventory = root.join("inventory");
-    let ledger = root.join("routes.sqlite3");
     let store = PersonalAgentProfileStore::open(&inventory).expect("open profile inventory");
     for profile_id in ["coder", "reviewer"] {
         let workspace = root.join(profile_id);
@@ -64,6 +63,14 @@ fn shell_with_deadline(root: &Path, deadline: Duration) -> (Arc<WorkbenchShellSt
             )
             .expect("persist fixture profile");
     }
+    another_shell(root, deadline)
+}
+
+/// A product over what is under `root` already: the same agents and the
+/// same ledger, as a second process has them.
+fn another_shell(root: &Path, deadline: Duration) -> (Arc<WorkbenchShellState>, PathBuf) {
+    let inventory = root.join("inventory");
+    let ledger = root.join("routes.sqlite3");
     let receipt = root.join("mcp-receipt.json");
     let state = WorkbenchShellState::open(&inventory, &ledger, deadline, move |_profile| {
         let executable = PathBuf::from(env!("CARGO_BIN_EXE_swem-echo-agent"));
@@ -917,6 +924,118 @@ async fn what_the_old_clock_kept_is_said_on_time_by_the_schedule() {
         .expect("turn it off");
     assert!(state.claim_what_is_due(u64::MAX / 4).await.is_empty());
     state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}
+
+/// A keeper that starts the product, looks and leaves says what is due
+/// to the agents it keeps time for and to nobody else, stays until it is
+/// answered, and finds nothing to do where somebody keeps time already.
+#[tokio::test]
+async fn time_is_kept_once_for_the_agents_of_a_keeper() {
+    let root = fixture_root("kept-once");
+    let (state, _ledger) = shell_of_two(&root);
+    let time = root.join("time");
+    state.enable_keepers(&time).expect("keep who keeps time");
+    let keepers = swem_host::Keepers::at(&time);
+    keepers
+        .choose_for("coder", Some(swem_host::KEPT_BY_THE_SYSTEM))
+        .expect("the system keeps the coder's time");
+
+    let people = state.chat_people().await.expect("people");
+    let agent_of = |profile: &str| {
+        people["participants"]
+            .as_array()
+            .expect("participants")
+            .iter()
+            .find(|one| one["profile_id"] == profile)
+            .expect("the agent")["participant_id"]
+            .as_str()
+            .expect("an id")
+            .to_owned()
+    };
+    let mut due_at = 0;
+    for profile in ["coder", "reviewer"] {
+        let made = state
+            .make_schedule(swem_host::workbench_shell::NewScheduleBody {
+                agent_id: agent_of(profile),
+                chat_id: None,
+                say: format!("how are we doing, {profile}"),
+                when: swem_host::When::Every { minutes: 30 },
+            })
+            .await
+            .expect("make a schedule");
+        due_at = due_at.max(next_due(&state, &made.schedule.schedule_id).await);
+    }
+
+    let look = state
+        .keep_time_once_at(
+            &root.join("schedules"),
+            swem_host::KEPT_BY_THE_SYSTEM,
+            due_at,
+        )
+        .await
+        .expect("keep time once");
+    assert_eq!(look.said, 1, "only the coder's time is the system's");
+    assert!(!look.kept_elsewhere);
+    let written = keepers
+        .last_look(swem_host::KEPT_BY_THE_SYSTEM)
+        .expect("the look is written down");
+    assert_eq!(written.said, 1);
+    assert_eq!(written.said_last_ms, Some(written.looked_ms));
+
+    // It left when the turn had ended: the run is answered, not going.
+    let (schedules, runs) = state.schedules_shown(None).await.expect("schedules");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, swem_host::RunState::Answered);
+    assert_eq!(runs[0].agent_id, agent_of("coder"));
+    let chat_id = runs[0].chat_id.clone().expect("the chat it was said in");
+    let page = until(&state, &chat_id, "the answer", settled(2)).await;
+    assert_eq!(reply(&page, 1)["prompt"], "how are we doing, coder");
+    // The reviewer's is still due, for whoever keeps the reviewer's time.
+    let waiting = schedules
+        .iter()
+        .find(|shown| shown.schedule.agent_id == agent_of("reviewer"))
+        .expect("the reviewer's schedule");
+    assert!(
+        waiting
+            .schedule
+            .next_due_ms
+            .is_some_and(|due| due <= due_at)
+    );
+
+    // Somebody keeps time over this ledger: another finds nothing to do.
+    let (other, _) = another_shell(&root, Duration::from_secs(20));
+    other.enable_keepers(&time).expect("keep who keeps time");
+    let look = other
+        .keep_time_once_at(
+            &root.join("schedules"),
+            swem_host::KEPT_BY_THE_SYSTEM,
+            due_at + 31 * 60_000,
+        )
+        .await
+        .expect("look once");
+    assert!(look.kept_elsewhere);
+    assert_eq!(look.said, 0);
+
+    // Who keeps whose time is said to the page.
+    let standing = state.keeper().await.expect("who keeps time");
+    let by = |id: &str| {
+        standing
+            .keepers
+            .iter()
+            .find(|keeper| keeper.id == id)
+            .unwrap_or_else(|| panic!("{id} is shown"))
+    };
+    assert_eq!(by("swem").used_by, ["reviewer"]);
+    assert!(by("swem").default);
+    assert_eq!(by("system").used_by, ["coder"]);
+    assert!(by("system").last_look.is_some());
+    assert!(!by("outside").available);
+    assert_eq!(
+        standing.chosen.get("coder").map(String::as_str),
+        Some("system")
+    );
+
     fs::remove_dir_all(root).expect("remove fixture root");
 }
 

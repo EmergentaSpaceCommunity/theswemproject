@@ -37,7 +37,28 @@ enum Command {
     Environments(Environments),
     Mcp(Mcp),
     Profiles(Profiles),
+    Time(Time),
     Workbench(Workbench),
+}
+
+#[derive(Debug, Args)]
+struct Time {
+    #[command(subcommand)]
+    command: TimeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TimeCommand {
+    /// Keep time once and leave: say what is due to the agents whose time
+    /// the system's scheduler keeps, have it answered, and stop. The
+    /// system's scheduler starts this when it was turned on under
+    /// Providers, Time; a Workbench that is open keeps time itself, and
+    /// this leaves at once.
+    Keep {
+        /// Deadline for each individual ACP operation.
+        #[arg(long, default_value_t = 600)]
+        operation_timeout_secs: u64,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -342,6 +363,7 @@ async fn main() -> Result<()> {
         .unwrap_or(Command::Workbench(Workbench { command: None }));
     match command {
         Command::Agents(agents) => run_agents(agents).await,
+        Command::Time(time) => run_time(time).await,
         Command::Environments(environments) => run_environments(environments),
         Command::Mcp(mcp) => run_mcp(mcp).await,
         Command::Profiles(profiles) => run_profiles(profiles),
@@ -414,6 +436,30 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
     }
 }
 
+async fn run_time(time: Time) -> Result<()> {
+    match time.command {
+        TimeCommand::Keep {
+            operation_timeout_secs,
+        } => {
+            // Most looks find nothing: that is told from the ledger alone.
+            let root = DataRoot::for_this_machine().map_err(anyhow::Error::msg)?;
+            if root.nothing_to_keep().is_some() {
+                return Ok(());
+            }
+            let look = product(None, None, operation_timeout_secs, &[], None, None)?
+                .assemble()
+                .map_err(anyhow::Error::msg)?
+                .keep_time_once()
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if look.said > 0 {
+                println!("said {} on time", look.said);
+            }
+            Ok(())
+        }
+    }
+}
+
 /// The product this binary is: the harness crate's builder over this
 /// machine's data root, with what this distribution adds - its shipped
 /// catalog, the observer command, and the Cycle hub beside it when there is
@@ -445,7 +491,9 @@ fn product(
         .time_tools(
             std::env::current_exe()?,
             vec!["mcp".into(), "time-tools".into()],
-        );
+        )
+        // And what the system's scheduler starts to keep time once.
+        .keep_time(std::env::current_exe()?, vec!["time".into(), "keep".into()]);
     // Projects are served by the Cycle, which is not this binary: it is the
     // `swem-cycle` hub installed from the Store, beside this binary, or on
     // PATH. When there is one it is a server of this product like any other:

@@ -63,10 +63,13 @@ mod runtime;
 #[path = "workbench_shell/stream.rs"]
 mod stream;
 pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
+#[path = "workbench_shell/keepers.rs"]
+mod keepers;
 mod store;
+pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
 #[path = "workbench_shell/timekeeper.rs"]
 mod timekeeper;
-pub use timekeeper::{KeeperStanding, NewScheduleBody, ScheduleShown};
+pub use timekeeper::{KeeperStanding, NewScheduleBody, ScheduleShown, nothing_for_a_keeper_to_do};
 #[path = "workbench_shell/terminal.rs"]
 mod terminal;
 use crate::workbench_content::{WorkbenchContentSource, WorkbenchContentStore};
@@ -800,6 +803,10 @@ pub struct WorkbenchShellState {
     time_tools: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The keeper's lock, held for as long as this process keeps time.
     timekeeper: std::sync::OnceLock<std::fs::File>,
+    /// Who keeps time for whom, as it was chosen.
+    keepers: std::sync::OnceLock<crate::Keepers>,
+    /// The command the system's scheduler starts to keep time once.
+    keep_time_command: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The terminals open on this host. A terminal runs in the environment of
     /// one profile, which is how an agent that signs in at a prompt is signed
     /// in at all - and, since a session may open one over ACP, how an agent
@@ -1015,6 +1022,8 @@ impl WorkbenchShellState {
             store: std::sync::OnceLock::new(),
             time_tools: std::sync::OnceLock::new(),
             timekeeper: std::sync::OnceLock::new(),
+            keepers: std::sync::OnceLock::new(),
+            keep_time_command: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
             chat_runtime: runtime::ChatRuntime::default(),
         })
@@ -4252,6 +4261,47 @@ async fn route_shell(
                 .map(|()| json!({ "forgotten": schedule_id })),
         ),
         (&Method::GET, ["api", "time"]) => json_result(state.keeper().await),
+        // Who keeps time: the system's scheduler is turned on and off, a
+        // keeper is made the one agents have, and one is chosen for an
+        // agent.
+        (&Method::POST, ["api", "time", "keepers", "system", "on"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<TurnOnBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            match state.turn_the_system_on(body).await {
+                Ok(()) => json_result(state.keeper().await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "time", "keepers", "system", "off"]) => {
+            match state.turn_the_system_off().await {
+                Ok(()) => json_result(state.keeper().await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::POST, ["api", "time", "keepers", keeper, "default"]) => {
+            match state.make_default_keeper(keeper).await {
+                Ok(()) => json_result(state.keeper().await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::PUT, ["api", "time", "agents", profile_id]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<ChooseKeeperBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            match state.choose_keeper(profile_id, body).await {
+                Ok(()) => json_result(state.keeper().await),
+                Err(error) => error_response(&error),
+            }
+        }
         (&Method::GET, ["api", "profiles", profile_id, "files"]) => {
             json_result(state.profile_files(profile_id).await)
         }

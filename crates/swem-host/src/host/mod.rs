@@ -4,6 +4,7 @@
 //! Nothing is offered that was not looked at. This module holds the first
 //! look, at the machine the Workbench itself runs on.
 
+pub mod system_scheduler;
 mod this_machine;
 
 pub use this_machine::{ContainerEngineLook, EngineStanding, MachineLook};

@@ -678,6 +678,44 @@ impl RoutingLedger {
     ///
     /// Returns [`RoutingError`] when the ledger cannot be read or written.
     pub fn claim_due(&mut self, now_ms: u64) -> Result<Vec<Due>, RoutingError> {
+        self.claim_due_of(now_ms, None)
+    }
+
+    /// The agents a keeper would have something to do for at a moment,
+    /// by their profiles: something of theirs is due, or a run of theirs
+    /// was left going.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] when the ledger cannot be read.
+    pub fn profiles_with_time_to_keep(&mut self, now_ms: u64) -> Result<Vec<String>, RoutingError> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT p.profile_id FROM participants p
+             WHERE p.profile_id IS NOT NULL AND (
+                 EXISTS(SELECT 1 FROM schedules s
+                        WHERE s.agent_id = p.participant_id AND s.enabled = 1
+                          AND s.next_due_ms IS NOT NULL AND s.next_due_ms <= ?1)
+                 OR EXISTS(SELECT 1 FROM schedule_runs r
+                           WHERE r.agent_id = p.participant_id AND r.state = 'running'))
+             ORDER BY p.profile_id",
+        )?;
+        let profiles = statement
+            .query_map([signed(now_ms)], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(profiles)
+    }
+
+    /// Claim what is due for the agents a keeper keeps time for, and leave
+    /// the rest to whoever keeps theirs; every agent when none is named.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError`] when the ledger cannot be read or written.
+    pub fn claim_due_of(
+        &mut self,
+        now_ms: u64,
+        agents: Option<&[String]>,
+    ) -> Result<Vec<Due>, RoutingError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -697,6 +735,9 @@ impl RoutingLedger {
             let Some(due_ms) = schedule.next_due_ms else {
                 continue;
             };
+            if agents.is_some_and(|agents| !agents.contains(&schedule.agent_id)) {
+                continue;
+            }
             let going: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM schedule_runs
                                WHERE schedule_id = ?1 AND state = 'running')",

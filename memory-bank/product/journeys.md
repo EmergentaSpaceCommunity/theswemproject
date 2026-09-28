@@ -46,6 +46,15 @@ They read the last runs. Asked to check back, the agent makes a schedule itself,
 person switches it off. Providers says who keeps time. Walk:
 `product_front_door::a_person_leaves_a_standing_instruction_and_the_product_carries_it_out`.
 
+Under Providers, Time a person reads who can keep time and what each cannot do. They turn the
+system's own scheduler on, after reading what is put on the computer, and choose in an agent's
+Schedules who keeps its time. With the Workbench closed the computer starts SWEM when
+something of that agent's is due; it is said and answered, and SWEM leaves. Opened again, the
+Workbench keeps time itself and Time says when the scheduler looked last. Turned off, nothing
+of it is left on the computer. Proven by
+`chat_runtime::time_is_kept_once_for_the_agents_of_a_keeper`, `keepers`, and by hand with
+launchd and a real engine; a systemd timer is written and not yet done on a machine.
+
 ## GJ-12 — A chat of several
 
 A person starts a chat with two agents from the rail. What they write is for who it names: they

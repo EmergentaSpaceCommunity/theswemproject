@@ -141,6 +141,24 @@ impl DataRoot {
         self.root.join("agent-homes")
     }
 
+    /// The look of the system's keeper when it has nothing to do here,
+    /// found without putting the product together; nothing when there is
+    /// something to do.
+    #[must_use]
+    pub fn nothing_to_keep(&self) -> Option<crate::KeeperLook> {
+        crate::workbench_shell::nothing_for_a_keeper_to_do(
+            &self.routes(),
+            &self.time(),
+            crate::KEPT_BY_THE_SYSTEM,
+        )
+    }
+
+    /// Who keeps time for whom, and when a keeper looked last.
+    #[must_use]
+    pub fn time(&self) -> PathBuf {
+        self.root.join("time")
+    }
+
     /// Where the clock before the ledger's kept its schedules: they are
     /// brought into the ledger and the directory is set aside.
     #[must_use]
@@ -175,6 +193,7 @@ pub struct Product {
     agent_in_image: String,
     mcp_observer: Option<(PathBuf, Vec<String>)>,
     time_tools: Option<(PathBuf, Vec<String>)>,
+    keep_time: Option<(PathBuf, Vec<String>)>,
 }
 
 impl Product {
@@ -195,6 +214,7 @@ impl Product {
             agent_in_image: AGENT_IN_THE_IMAGE.to_owned(),
             mcp_observer: None,
             time_tools: None,
+            keep_time: None,
         }
     }
 
@@ -272,6 +292,15 @@ impl Product {
     #[must_use]
     pub fn time_tools(mut self, executable: PathBuf, args: Vec<String>) -> Self {
         self.time_tools = Some((executable, args));
+        self
+    }
+
+    /// The command the system's scheduler starts when it keeps time for
+    /// this product: an executable that, given these arguments, assembles
+    /// the same product and calls [`Assembled::keep_time_once`].
+    #[must_use]
+    pub fn keep_time(mut self, executable: PathBuf, args: Vec<String>) -> Self {
+        self.keep_time = Some((executable, args));
         self
     }
 
@@ -435,6 +464,12 @@ impl Product {
         if let Some((executable, args)) = self.time_tools {
             state.set_time_tools_command(executable, args);
         }
+        state
+            .enable_keepers(&root.time())
+            .map_err(|error| error.to_string())?;
+        if let Some((executable, args)) = self.keep_time {
+            state.set_keep_time_command(executable, args);
+        }
         Ok(Assembled {
             state: Arc::new(state),
             root,
@@ -500,6 +535,21 @@ impl Assembled {
             handle.local_addr.port()
         );
         Ok(Served { handle, url, token })
+    }
+
+    /// Keep time once and leave, as the system's scheduler has it done:
+    /// what is due for the agents it keeps time for is said and answered,
+    /// and nothing is left running. A Workbench that is open keeps time
+    /// itself, and this leaves at once.
+    ///
+    /// # Errors
+    ///
+    /// The schedules or the ledger cannot be read.
+    pub async fn keep_time_once(self) -> Result<crate::KeeperLook, String> {
+        self.state
+            .keep_time_once(&self.root.schedules(), crate::KEPT_BY_THE_SYSTEM)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Open the editor door: answer as the agent of `profile` over this

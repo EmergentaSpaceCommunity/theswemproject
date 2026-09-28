@@ -27,8 +27,9 @@ mod editor_door;
 mod envelope;
 mod environment;
 mod environment_profile;
-mod host;
+pub mod host;
 mod install;
+mod keepers;
 mod keys;
 pub mod mcp_observer;
 mod permission_profile;
@@ -57,6 +58,10 @@ pub use environment::*;
 pub use environment_profile::*;
 pub use host::{ContainerEngineLook, EngineStanding, MachineLook};
 pub use install::*;
+pub use keepers::{
+    KEEPER_LOOK_SCHEMA, KEEPERS_SCHEMA, KEPT_BY_SWEM, KEPT_BY_THE_SYSTEM, KeeperLook, Keepers,
+    KeepersError,
+};
 pub use keys::{KeyError, KeyHeld, KeyStore, PROVIDER_KEY_SCHEMA, ProviderKey};
 pub use permission_profile::*;
 pub use profile::*;

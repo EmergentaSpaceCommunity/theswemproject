@@ -32,11 +32,48 @@ export interface Run {
   note?: string | null;
 }
 
+/// One look of a keeper that starts SWEM, looks and leaves.
+export interface KeeperLook {
+  looked_ms: number;
+  said: number;
+  kept_elsewhere: boolean;
+  said_last_ms?: number | null;
+}
+
+/// One who can keep time, as it stands now.
+export interface KeeperShown {
+  id: "swem" | "system" | "outside";
+  available: boolean;
+  on: boolean;
+  default: boolean;
+  used_by: string[];
+  called?: string;
+  last_look?: KeeperLook | null;
+  said?: string;
+}
+
 export interface Keeper {
   keeping: boolean;
   zone: string;
   used_by: string[];
   schedules: number;
+  keepers: KeeperShown[];
+  /// Who was chosen for which agent, by its profile.
+  chosen: Record<string, string>;
+}
+
+/// What a keeper is called on the page.
+export const KEEPER_NAMES: Record<KeeperShown["id"], string> = {
+  swem: "This SWEM",
+  system: "The system's own scheduler",
+  outside: "An outside scheduler",
+};
+
+/// Who keeps an agent's time: what was chosen for it, or what agents have.
+export function keeperOf(keeper: Keeper | null, profile: string | null | undefined): KeeperShown | null {
+  if (!keeper) return null;
+  const chosen = profile ? keeper.chosen[profile] : undefined;
+  return keeper.keepers.find((one) => (chosen ? one.id === chosen : one.default)) ?? null;
 }
 
 interface Time {
@@ -60,6 +97,21 @@ export const timing = {
   },
   async keeper(): Promise<void> {
     time.setState({ keeper: await fetchJson<Keeper>("/api/time") });
+  },
+  /// Give the system's scheduler the job of starting SWEM to look.
+  async turnSystemOn(makeDefault: boolean): Promise<void> {
+    time.setState({ keeper: await fetchJson<Keeper>("/api/time/keepers/system/on", send("POST", { make_default: makeDefault })) });
+  },
+  async turnSystemOff(): Promise<void> {
+    time.setState({ keeper: await fetchJson<Keeper>("/api/time/keepers/system/off", send("POST")) });
+  },
+  /// Agents nothing was chosen for have this keeper.
+  async makeDefault(keeper: string): Promise<void> {
+    time.setState({ keeper: await fetchJson<Keeper>(`/api/time/keepers/${part(keeper)}/default`, send("POST")) });
+  },
+  /// Who keeps an agent's time; nothing lets it have what agents have.
+  async choose(profile: string, keeper: string | null): Promise<void> {
+    time.setState({ keeper: await fetchJson<Keeper>(`/api/time/agents/${part(profile)}`, send("PUT", { keeper })) });
   },
   async make(agent: string, say: string, when: When, chat: string | null): Promise<void> {
     await fetchJson("/api/schedules", send("POST", { agent_id: agent, say, when, chat_id: chat }));

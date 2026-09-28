@@ -245,12 +245,31 @@ impl WorkbenchShellState {
     ///
     /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
     pub async fn take_up_chats(self: &Arc<Self>) -> Result<(), WorkbenchShellError> {
+        self.take_up_chats_of(None).await
+    }
+
+    /// Take up what the chats were left owing to these agents and leave
+    /// the others' to whoever opens the Workbench; everybody's when none
+    /// is named.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub async fn take_up_chats_of(
+        self: &Arc<Self>,
+        agents: Option<Vec<String>>,
+    ) -> Result<(), WorkbenchShellError> {
+        let of_these = |agent_id: &String| {
+            agents
+                .as_ref()
+                .is_none_or(|agents| agents.contains(agent_id))
+        };
         let running = self
             .with_ledger(|ledger| ledger.agents_running())
             .await
             .map_err(ledger_refusal)?;
         let mut left = Vec::new();
-        for agent_id in running {
+        for agent_id in running.into_iter().filter(of_these) {
             let path = self.turn_lock_path(&agent_id);
             let held_by_nobody = tokio::task::spawn_blocking(move || {
                 std::fs::File::open(&path).map_or(true, |file| file.try_lock().is_ok())
@@ -269,7 +288,7 @@ impl WorkbenchShellState {
             })
             .await
             .map_err(ledger_refusal)?;
-        for agent_id in owed {
+        for agent_id in owed.into_iter().filter(of_these) {
             self.set_to_work(&agent_id);
         }
         Ok(())

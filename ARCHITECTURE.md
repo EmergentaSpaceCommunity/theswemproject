@@ -55,6 +55,15 @@ A library plus test fixtures. It owns:
   there is refused after half an hour in the engine's own words. An agent makes schedules
   for itself through a server handed to its session (`swem-time`), whose agent and chat are
   fixed when it is started. Nothing about time lives in an agent's machine.
+  Who keeps time is a provider (`keepers.rs`, `workbench_shell/keepers.rs`,
+  `host/system_scheduler.rs`): the running product, and the system's own scheduler, which
+  is given a job (launchd, a systemd user timer) that starts `swem time keep` every minute.
+  That command takes the keeper's lock or leaves, says what is due to the agents whose time
+  the system keeps, stays until each turn has ended and stops; a look that finds nothing to
+  do is told from the ledger alone. The choice - the keeper agents have, and the one chosen
+  for an agent - is kept under `<data root>/time`, not in a profile. A Workbench that found
+  the lock taken asks for it again as time passes. The job holds the command, where the data
+  is and the search path; never a key.
 - **Hosts** (`host/`, `workbench_shell/hosts.rs`). This machine is looked at while the door
   opens and when a person asks: system, processors, memory, disk, and whether Podman and
   Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an

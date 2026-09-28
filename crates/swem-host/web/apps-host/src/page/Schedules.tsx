@@ -8,7 +8,7 @@ import { useStore } from "zustand";
 
 import { Clock, Plus } from "./icons.tsx";
 import { go } from "./place.ts";
-import { HOW_A_RUN_ENDED, ran, time, timing, until, whenOf, type Chosen, type Schedule } from "./time.ts";
+import { HOW_A_RUN_ENDED, KEEPER_NAMES, keeperOf, ran, time, timing, until, whenOf, type Chosen, type Schedule } from "./time.ts";
 import type { Participant } from "./types.ts";
 import { chatsOf, world } from "./world.ts";
 
@@ -203,6 +203,7 @@ function Row({ agent, schedule, now, onProblem }: { agent: Participant; schedule
 export function Schedules({ agent, hidden }: { agent: Participant; hidden: boolean }) {
   const kept = useStore(time, (known) => known.of[agent.participant_id]);
   const keeper = useStore(time, (known) => known.keeper);
+  const mine = keeperOf(keeper, agent.profile_id);
   const [making, setMaking] = useState(false);
   const [problem, setProblem] = useState("");
   const [now, setNow] = useState(Date.now());
@@ -225,16 +226,40 @@ export function Schedules({ agent, hidden }: { agent: Participant; hidden: boole
         <div className="k-inline w-nowrap">
           <Clock size={20} />
           <div className="w-col w-close">
-            <span className="k-title">{keeper === null ? "Time" : keeper.keeping ? "Time is kept by this SWEM" : "Another SWEM on this computer keeps time"}</span>
+            <span className="k-title">{mine === null ? "Time" : `${agent.name}'s time is kept by ${mine.id === "swem" ? "this SWEM" : "the system's scheduler"}`}</span>
             <span className="k-caption">
-              {agent.name}'s machine is not kept awake to watch the clock. When something is due, SWEM hands over the message. Nothing is said while SWEM is closed; what was missed
-              is said once when it is back.
+              {agent.name}'s machine is not kept awake to watch the clock. When something is due, SWEM hands over the message.{" "}
+              {mine?.id === "system"
+                ? "While the Workbench is closed this computer starts SWEM to say it."
+                : "Nothing is said while SWEM is closed; what was missed is said once when it is back."}
             </span>
           </div>
         </div>
-        <button type="button" className="k-btn" onClick={() => go({ at: "providers", tab: "time" })}>
-          Who keeps time
-        </button>
+        <div className="k-inline w-tight w-nowrap">
+          {keeper && agent.profile_id ? (
+            <select
+              className="k-field"
+              aria-label={`Who keeps ${agent.name}'s time`}
+              value={keeper.chosen[agent.profile_id] ?? ""}
+              onChange={(event) => {
+                setProblem("");
+                timing.choose(agent.profile_id ?? "", event.target.value || null).catch((error: Error) => setProblem(error.message));
+              }}
+            >
+              <option value="">{`As agents have it: ${KEEPER_NAMES[keeper.keepers.find((one) => one.default)?.id ?? "swem"]}`}</option>
+              {keeper.keepers
+                .filter((one) => one.id !== "outside")
+                .map((one) => (
+                  <option value={one.id} key={one.id} disabled={one.id === "system" && !one.on}>
+                    {one.id === "system" && !one.on ? `${KEEPER_NAMES[one.id]} (off)` : KEEPER_NAMES[one.id]}
+                  </option>
+                ))}
+            </select>
+          ) : null}
+          <button type="button" className="k-btn" onClick={() => go({ at: "providers", tab: "time" })}>
+            Who keeps time
+          </button>
+        </div>
       </section>
       <section className="k-card k-stack">
         <div className="k-spread">
