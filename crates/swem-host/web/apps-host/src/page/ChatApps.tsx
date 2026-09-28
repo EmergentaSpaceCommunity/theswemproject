@@ -7,8 +7,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { loadBridge, type MountedApp } from "../agent/bridge.ts";
-import type { AppAttachment, OpenedApp } from "../agent/session.ts";
+import type { AppAttachment, AppTool, OpenedApp } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
+import { AppForm, forAPerson, toolNamed } from "./AppForm.tsx";
 import { Cross, Tiles } from "./icons.tsx";
 import { sessionOf } from "./session.ts";
 import type { Brought } from "./timeline.ts";
@@ -58,6 +59,7 @@ export function ChatApps({
   const [attachments, setAttachments] = useState<AppAttachment[] | null>(null);
   const [status, setStatus] = useState("");
   const [open, setOpen] = useState<OpenedApp | null>(null);
+  const [form, setForm] = useState<{ server: string; tool: AppTool } | null>(null);
 
   const close = async () => {
     const closing = mounted.current;
@@ -149,7 +151,25 @@ export function ChatApps({
     }
   };
 
-  const apps = (attachments ?? []).flatMap((attachment) => attachment.apps.map((app) => ({ server: attachment.server_name, app })));
+  const apps = (attachments ?? []).flatMap((attachment) =>
+    attachment.apps.map((app) => ({ server: attachment.server_name, app, forms: forAPerson(attachment.tools, app.uri) })),
+  );
+  const formsOf = (server: string, forms: AppTool[]) =>
+    forms.map((tool) => (
+      <button
+        type="button"
+        className="k-btn k-quiet"
+        key={`${server} ${tool.name}`}
+        title={tool.description ?? tool.name}
+        onClick={() => {
+          setStatus("");
+          setForm({ server, tool });
+        }}
+      >
+        {toolNamed(tool)}…
+      </button>
+    ));
+  const openForms = open ? (apps.find((one) => one.server === open.server_name && one.app.uri === open.uri)?.forms ?? []) : [];
   return (
     <aside className={`w-side w-right w-apps${open ? " w-wide" : ""}`} aria-label={`Apps of ${name}`} hidden={!shown}>
       <div className="k-spread">
@@ -159,26 +179,44 @@ export function ChatApps({
         </button>
       </div>
       {open ? (
-        <div className="k-spread">
-          <span className="k-name w-one-line">{named(open)}</span>
-          <button type="button" className="k-btn" onClick={() => void close()}>
-            Close it
-          </button>
-        </div>
+        <>
+          <div className="k-spread">
+            <span className="k-name w-one-line">{named(open)}</span>
+            <button type="button" className="k-btn" onClick={() => void close()}>
+              Close it
+            </button>
+          </div>
+          {openForms.length > 0 ? <div className="k-inline w-tight w-wrap">{formsOf(open.server_name, openForms)}</div> : null}
+        </>
       ) : (
         <div className="k-rail-group">
-          {apps.map(({ server, app }) => (
-            <button type="button" className="k-rail-item" key={`${server} ${app.uri}`} title={app.uri} onClick={() => void openApp(server, app.uri)}>
-              <Tiles />
-              <span className="k-two">
-                <span className="k-name">{named(app)}</span>
-                <span className="k-caption">{server}</span>
-              </span>
-            </button>
+          {apps.map(({ server, app, forms }) => (
+            <div className="k-stack w-close" key={`${server} ${app.uri}`}>
+              <button type="button" className="k-rail-item" title={app.uri} onClick={() => void openApp(server, app.uri)}>
+                <Tiles />
+                <span className="k-two">
+                  <span className="k-name">{named(app)}</span>
+                  <span className="k-caption">{server}</span>
+                </span>
+              </button>
+              {forms.length > 0 ? <div className="k-inline w-tight w-wrap">{formsOf(server, forms)}</div> : null}
+            </div>
           ))}
           {attachments !== null && apps.length === 0 ? <span className="k-caption">The servers it attaches bring no Apps.</span> : null}
         </div>
       )}
+      {form ? (
+        <AppForm
+          key={`${form.server} ${form.tool.name}`}
+          connection={() => sessionOf(chat, agent, true)}
+          server={form.server}
+          tool={form.tool}
+          onDone={(said) => {
+            setForm(null);
+            setStatus(said);
+          }}
+        />
+      ) : null}
       {status ? <span className="k-caption">{status}</span> : null}
       <div className="w-app" ref={container} />
     </aside>

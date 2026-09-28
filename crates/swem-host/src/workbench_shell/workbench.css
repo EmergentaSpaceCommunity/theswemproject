@@ -20,6 +20,7 @@ html, body, #workbench-root { height: 100%; }
 .w-grow { flex: 1 1 auto; }
 .w-you { padding: 10px 4px 0; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
 .w-tight { gap: 8px; }
+.w-wrap { flex-wrap: wrap; }
 .w-close { gap: 2px; }
 .w-nowrap { flex-wrap: nowrap; }
 .w-end { justify-content: flex-end; }
@@ -30,6 +31,7 @@ html, body, #workbench-root { height: 100%; }
 .w-stage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .w-lost { margin: 10px 24px 0; }
 .w-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.w-main[hidden] { display: none; }
 .w-scroll { overflow: auto; }
 .w-head { display: flex; flex-direction: column; gap: 10px; padding: 14px 24px 0; flex: none;
   border-bottom: var(--border-width-regular) solid var(--color-border-secondary); background: var(--color-background-secondary); }

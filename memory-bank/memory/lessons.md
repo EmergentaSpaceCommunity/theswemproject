@@ -109,3 +109,9 @@ brought. A number that crosses a boundary carries its name with it (`place`, `ca
 `genericity` anchored its scan on a file of the old page and was red for four commits of this
 slice because only the suites a change "touches" were run. Before a slice ends, run
 `scripts/suites.sh` whole, once.
+
+## A search cut short proves nothing was found in what it showed
+
+"No server asks this way" was concluded from a search piped through `head -10`, whose ten
+lines were all one file. The eleventh was the Cycle's server. A claim that something does not
+exist needs the whole result: count the matches, or list the files, before the lines.

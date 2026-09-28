@@ -72,9 +72,6 @@ and the package and tool routes are gone; an App says what a person is looking a
 - `scripts/unwalked_controls.py` counts controls by the names the old page gave them and
   checks itself against five of those; it refuses to count the new page, whose controls a walk
   finds by what they say. Rewritten or retired when somebody needs the number again.
-- A tool only a person may call, answered by its server with a form
-  (`/api/connections/{id}/apps/interactions`), is not offered by the page. Nothing ever
-  exercised it and no server asks this way; the page offers it when one does.
 - No browser walk repeats GJ-09 or an App's context by itself; both are proven below the page
   and by hand.
 - The Cycle's walks drive the rail and the addresses the old page had; they are moved when its

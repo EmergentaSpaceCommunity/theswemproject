@@ -49,5 +49,19 @@ await b.waitFor("the App mounted", async () => b.evaluate(`!!document.querySelec
 await b.waitFor("the App to settle", async () =>
   (await b.evaluate(`document.querySelector('.server-space .app-status')?.textContent ?? ""`)) === "", 300);
 step("the server's App is open in its space");
+
+// A person goes elsewhere and comes back: the App is the one they left, not
+// another one opened in its place.
+await b.evaluate(`document.querySelector('.server-space[data-server="notes"] iframe').dataset.left = "here"`);
+await b.goTo("#/store");
+await b.waitFor("the Store in its place", async () =>
+  b.evaluate(`document.querySelector('.server-space[data-server="notes"]')?.hidden === true && document.getElementById("index-url") !== null`), 100);
+await b.goTo("#/apps/notes");
+await b.waitFor("the space again", async () =>
+  b.evaluate(`document.querySelector('.server-space[data-server="notes"]')?.hidden === false`), 100);
+if ((await b.evaluate(`document.querySelector('.server-space[data-server="notes"] iframe')?.dataset.left ?? ""`)) !== "here") {
+  cleanup(1, "the App was opened anew when the person came back to its space");
+}
+step("the App is the one the person left");
 console.log("space OK");
 cleanup(0);

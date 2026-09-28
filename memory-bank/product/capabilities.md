@@ -12,9 +12,10 @@
 | Editor door over ACP: same agent, files, resume, several windows | proven | GJ-06 |
 | MCP Apps hosted in a sandboxed origin beside a chat, opened by a person or brought by a tool of the agent; calls relayed through the host | proven | `workbench_shell_apps_browser`, `workbench_apps_engine_probe_browser` |
 | A form or a link an agent asks for, answered in the chat | proven | `workbench_shell_apps_browser` |
+| A tool of a server that is a person's to call, asked and answered by forms in the panel of Apps | proven in the Cycle's repository | its walk of the composition App; this repository's fixture server asks nothing this way |
 | Embedding through a product builder | done | `swem_host::product`, `examples/embed.rs`, `tests/product.rs`; the product binary is the builder's first caller |
 | Client credentials for an embedder's own page | missing | roadmap C2 |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
-| A server's home App as a space | proven | `workbench_shell_spaces.rs`, GJ-08's walk; the host draws no space for a server |
+| A server's home App as a space, the same App when a person comes back to it | proven | `workbench_shell_spaces.rs`, GJ-08's walk; the host draws no space for a server |
 | What an App says a person is looking at, given to the agent | proven below the page | `chat_runtime`; `ui/update-model-context`, text and resource links; no browser walk of its own since the page was rebuilt |
 | Projects | the project server's | the hub of a `swem-cycle` installed from the Store, beside the binary or on PATH is declared as a server; its space and its projects are its own |

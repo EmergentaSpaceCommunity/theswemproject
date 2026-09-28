@@ -59,7 +59,8 @@ A library plus test fixtures. It owns:
 - **Spaces** (`workbench_shell/server_apps.rs`): a declared server that marks one of its App
   resources as its home is a space on the Workbench; opening the space opens that App, outside
   any agent session, through the same sandbox and the same relay. The host keeps no registry of
-  spaces and draws none for a server.
+  spaces and draws none for a server. The page keeps an opened space open while a person is
+  elsewhere on it.
 - **What the agent is given** (`workbench_shell/model_context.rs`): an App says what a person is
   looking at (`ui/update-model-context`); the page keeps the last one and sends it with the
   person's next words; the host checks its shape, gives the blocks above the turn to an agent

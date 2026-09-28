@@ -1,6 +1,6 @@
 // The Workbench: a rail, and whatever the person went to.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "zustand";
 
 import { sessionStore } from "../agent/store.ts";
@@ -37,12 +37,20 @@ export function Workbench() {
   const participants = useStore(world, (state) => state.participants);
   const chats = useStore(world, (state) => state.chats);
   const [newChat, setNewChat] = useState(false);
+  // The spaces a person has been to. An App that was opened stays open
+  // while they are elsewhere: what they chose in it, what it plays and
+  // what it said they are looking at are there when they come back.
+  const [been, setBeen] = useState<string[]>([]);
+  const at = place.at === "app" ? place.server : "";
+  useEffect(() => {
+    if (at) setBeen((known) => (known.includes(at) ? known : [...known, at]));
+  }, [at]);
   useEffect(() => {
     follow();
     void sessionStore.loadProfiles();
     void sessionStore.loadEnvironments();
   }, []);
-  let main = <Home />;
+  let main: ReactNode = <Home />;
   if (ready) {
     if (place.at === "agent") {
       const agent = participants[place.agent];
@@ -61,16 +69,8 @@ export function Workbench() {
         </main>
       );
     } else if (place.at === "app") {
-      const space = spaces.find((one) => one.server === place.server);
-      main = space ? (
-        <Guard what={`The space of ${space.name}`}>
-          <main className="server-space w-main" data-server={space.server}>
-            <ServerApp server={space.server} uri={space.uri} key={space.server} />
-          </main>
-        </Guard>
-      ) : (
-        <main className="w-main" />
-      );
+      // Drawn below, among the spaces that stay open.
+      main = spaces.some((one) => one.server === place.server) ? null : <main className="w-main" />;
     }
   }
   return (
@@ -79,6 +79,15 @@ export function Workbench() {
       <div className="w-stage">
         {lost ? <div className="k-notice k-warning w-lost">The Workbench is not answering. What is here is what was last heard; it comes back by itself.</div> : null}
         {main}
+        {spaces
+          .filter((space) => space.server === at || been.includes(space.server))
+          .map((space) => (
+            <Guard what={`The space of ${space.name}`} key={space.server}>
+              <main className="server-space w-main" data-server={space.server} hidden={space.server !== at}>
+                <ServerApp server={space.server} uri={space.uri} />
+              </main>
+            </Guard>
+          ))}
       </div>
       <NewChat open={newChat} onClose={() => setNewChat(false)} />
     </div>

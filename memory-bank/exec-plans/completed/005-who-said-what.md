@@ -178,10 +178,13 @@ turn's ten-minute deadline.
 - 2026-09-27: an agent is put to sleep from its header, as the accepted design draws it: the
   sessions held open for it are let go of. It is how a person ends what the old page ended
   with Disconnect.
-- 2026-09-27: a tool only a person may call, answered by its server with a form, is not
-  offered by the new page. The old page had a button for it; no test and no walk ever pressed
-  it and no server, the fixture included, asks this way. The host's addresses for it stay.
-  Roadmap, Debt.
+- 2026-09-27: a tool only a person may call, answered by its server with a form, is offered
+  in the panel of Apps, under the App it belongs to, by the tool's own name. It was first
+  left out on a search that was cut short and said no server asks this way; the Cycle's
+  server does, and its walk presses it. Corrected the same day.
+- 2026-09-27: a server's App stays open while a person is elsewhere on the page and is the
+  same App when they come back, as the old page kept it: what they chose in it and what it
+  said they are looking at would otherwise be lost on the way to the agent's chat.
 - 2026-09-27: `scripts/unwalked_controls.py` is left as it is, refusing to count: it counts
   by names the new page does not give its controls on purpose. Roadmap, Debt.
 - 2026-09-27: A2 and A3 of the roadmap land together. The page is built once, on the
@@ -253,7 +256,7 @@ Remaining, each recorded where it is decided:
 - A chat of several agents works below the page (rules, the count of replies, the limit); the
   page draws a chat of one agent. Choosing who to name and seeing members: roadmap A6.
 - GJ-09 and an App's context have no browser walk of their own; by hand and below the page.
-- The person-only form of a server and `unwalked_controls.py`: roadmap, Debt.
+- `unwalked_controls.py`: roadmap, Debt.
 - `callback_authority` (two tests) assumes Linux paths and signal names; red on macOS before
   and after. `native_session::cancellation_protocol_failure_and_transport_timeout_remain_
   distinct` fails beside its suite on a loaded machine and passes alone.
