@@ -471,12 +471,24 @@ export function AgentEnvironment({ hidden }: { hidden: boolean }) {
               onChange={(event) => void sessionStore.amendProfile({ environment: event.target.value })}
             >
               {state.environments.map((place) => (
-                <option value={place.environment_profile_id} key={place.environment_profile_id}>
+                <option
+                  value={place.environment_profile_id}
+                  key={place.environment_profile_id}
+                  disabled={place.available === false && place.environment_profile_id !== profile.environment_profile_id}
+                >
                   {place.name}
+                  {place.available === false ? " (not on this computer today)" : ""}
                 </option>
               ))}
             </select>
           </label>
+          {state.environments
+            .filter((place) => place.available === false)
+            .map((place) => (
+              <p className="k-caption k-muted" key={place.environment_profile_id}>
+                {place.name}: {place.why_not}
+              </p>
+            ))}
           <p id="profile-environment" className="k-caption" data-environment={profile.environment_profile_id}>
             {state.environments.find(
               (place) => place.environment_profile_id === profile.environment_profile_id,

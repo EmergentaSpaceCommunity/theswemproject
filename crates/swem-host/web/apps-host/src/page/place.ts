@@ -5,12 +5,14 @@
 import { useSyncExternalStore } from "react";
 
 export type AgentTab = "chat" | "files" | "terminal" | "settings";
+export type ProvidersTab = "models" | "hosts";
 
 export type Place =
   | { at: "home" }
   | { at: "agent"; agent: string; tab: AgentTab; chat?: string }
   | { at: "chat"; chat: string }
   | { at: "new-agent" }
+  | { at: "providers"; tab: ProvidersTab }
   | { at: "store" }
   | { at: "app"; server: string };
 
@@ -25,6 +27,7 @@ export function read(hash: string): Place {
     return { at: "agent", agent: second, tab };
   }
   if (first === "chats" && second) return { at: "chat", chat: second };
+  if (first === "providers") return { at: "providers", tab: second === "hosts" ? "hosts" : "models" };
   if (first === "store") return { at: "store" };
   if (first === "apps" && second) return { at: "app", server: second };
   return { at: "home" };
@@ -40,6 +43,8 @@ export function address(place: Place): string {
       return `#/chats/${part(place.chat)}`;
     case "new-agent":
       return "#/agents/new";
+    case "providers":
+      return `#/providers/${place.tab}`;
     case "store":
       return "#/store";
     case "app":

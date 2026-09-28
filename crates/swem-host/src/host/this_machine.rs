@@ -199,11 +199,17 @@ fn free_at(path: &Path) -> Option<u64> {
 pub fn look_at_this_machine(data_root: &Path) -> MachineLook {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
-    let named = [sysinfo::System::name(), sysinfo::System::os_version()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The name a person knows the system by ("macOS 12.7"), and only
+    // without one the kernel's.
+    let named = sysinfo::System::long_os_version()
+        .filter(|named| !named.trim().is_empty())
+        .unwrap_or_else(|| {
+            [sysinfo::System::name(), sysinfo::System::os_version()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
     MachineLook {
         looked_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)

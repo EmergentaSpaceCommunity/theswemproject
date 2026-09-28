@@ -89,3 +89,26 @@ export const Copy = (props: Sized) => (
   </Sign>
 );
 export const Down = (props: Sized) => <Sign {...props}><path d="M6 9l6 6 6-6" /></Sign>;
+export const Key = (props: Sized) => (
+  <Sign {...props}>
+    <circle cx="8" cy="15" r="4" />
+    <path d="M11 12l9-9M16 7l3 3" />
+  </Sign>
+);
+export const Brain = (props: Sized) => (
+  <Sign {...props}>
+    <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" />
+    <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" />
+  </Sign>
+);
+export const Plug = (props: Sized) => (
+  <Sign {...props}>
+    <path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 01-12 0zM12 17v4" />
+  </Sign>
+);
+export const Box = (props: Sized) => (
+  <Sign {...props}>
+    <path d="M4 8l8-4 8 4v8l-8 4-8-4z" />
+    <path d="M4 8l8 4 8-4M12 12v8" />
+  </Sign>
+);

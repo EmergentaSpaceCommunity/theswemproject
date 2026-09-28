@@ -80,6 +80,10 @@ export interface EnvironmentProfileOption {
   environment_profile_id: string;
   name: string;
   summary: string;
+  /// Whether it can be chosen today, from what was found when this
+  /// computer was looked at, and why not.
+  available?: boolean;
+  why_not?: string;
 }
 
 /// One MCP server an agent here can attach: one the product declared, or one

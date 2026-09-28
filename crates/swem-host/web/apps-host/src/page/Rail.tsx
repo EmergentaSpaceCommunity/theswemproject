@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { fetchJson } from "../http.ts";
-import { ChatSign, Moon, People, Plus, Shop, Sun, Tiles } from "./icons.tsx";
+import { ChatSign, Moon, People, Plug, Plus, Shop, Sun, Tiles } from "./icons.tsx";
 import { go, usePlace, type Place } from "./place.ts";
 import type { Participant } from "./types.ts";
 import { Avatar, names, StateDot, useDoing, useStanding } from "./who.tsx";
@@ -174,6 +174,14 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
       ) : null}
       <div className="w-grow" />
       <div className="k-rail-group">
+        <button
+          type="button"
+          className={`k-rail-item k-quiet${place.at === "providers" ? " k-active" : ""}`}
+          onClick={() => go({ at: "providers", tab: "models" })}
+        >
+          <Plug size={17} />
+          <span>Providers</span>
+        </button>
         <button type="button" className={`k-rail-item k-quiet${place.at === "store" ? " k-active" : ""}`} onClick={() => go({ at: "store" })}>
           <Shop size={17} />
           <span>Store</span>

@@ -101,3 +101,13 @@ html, body, #workbench-root { height: 100%; }
 .w-composer > .k-spread > .k-inline { flex-wrap: wrap; }
 .w-thread .w-stream, .w-thread .w-composer { --w-gutter: max(24px, calc((100% - 860px) / 2)); }
 .w-kind { font-weight: var(--font-weight-normal); font-size: var(--font-text-sm-size); opacity: .7; }
+
+/* A page of the product that is a list of things: Providers. */
+.w-page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 18px; padding: 24px 32px; overflow: auto; }
+.w-page > .k-card { flex: none; }
+.w-table { width: 100%; border-collapse: collapse; }
+.w-table th { text-align: left; padding: 0 10px 8px; white-space: nowrap; }
+.w-table td { padding: 10px; border-top: var(--border-width-regular) solid var(--color-border-secondary); vertical-align: middle; }
+.w-table td.w-end, .w-table th.w-end { text-align: right; }
+.w-facts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.w-fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

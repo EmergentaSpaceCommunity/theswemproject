@@ -11,6 +11,7 @@ import { AgentView, GroupView } from "./AgentView.tsx";
 import { NewAgent } from "./NewAgent.tsx";
 import { NewChat } from "./NewChat.tsx";
 import { go, usePlace } from "./place.ts";
+import { Providers } from "./Providers.tsx";
 import { Rail, useSpaces } from "./Rail.tsx";
 import { follow, world } from "./world.ts";
 
@@ -60,6 +61,8 @@ export function Workbench() {
       main = chat ? <GroupView chat={chat} key={chat.chat_id} /> : <Home />;
     } else if (place.at === "new-agent") {
       main = <NewAgent />;
+    } else if (place.at === "providers") {
+      main = <Providers tab={place.tab} />;
     } else if (place.at === "store") {
       main = (
         <main className="w-main">

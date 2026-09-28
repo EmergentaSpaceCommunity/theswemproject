@@ -90,18 +90,24 @@ profile's own secret stays possible, as "this agent uses its own".
       its key; `PUT|DELETE /api/model-providers/{id}/key`; the engine and the terminals of an agent on
       this machine get its provider's key, then its own over it; an agent's key of its provider's kind
       moves to the provider at start
-- [ ] 1c Providers on the rail, Models
+- [x] 1c Providers on the rail (`page/Providers.tsx`, `page/providers.ts`), Models: what opens each
+      provider, given in a dialog whose field hides what is typed, replaced, taken away; who answers
+      from it
 - [x] 2a the look at this machine (`host/this_machine.rs`, `workbench_shell/hosts.rs`): taken while the
       door opens and when asked, kept under `<data>/hosts`; `GET /api/hosts`,
       `POST /api/hosts/this-machine/look`; `/api/environments` says whether each can be chosen today and
       why not; moving an agent where it cannot live is refused in the look's words
-- [ ] 2b Hosts in Providers; where an agent may run, from what was found
+- [x] 2b Hosts in Providers: the machine as it was found, Look again, the two places an agent may live
+      with who lives there; an agent's settings do not offer a container that cannot start and say why
 - [ ] 3a Settings in sections on the kit
 - [ ] 3b a terminal on this machine has the machine's home
 - [ ] 4 the record of hosts
 
 ## Discoveries
 
+- The owner's own agents hold no key: they are signed in the way their engine does it. So a
+  provider without a key is not a fault, and the page says "Not given here", not a warning. The
+  acceptance scenario's agent with a key of its own is made on the copy.
 - The system's facts come from the `sysinfo` crate (system and disks only); the engines are asked
   by running them, each given eight seconds, the whole look forty-five.
 
@@ -123,6 +129,13 @@ profile's own secret stays possible, as "this agent uses its own".
 - 2026-09-27, step 2a: `hosts` green on this machine, where Podman is installed and has no machine:
   before a look nothing is refused; after it a container is not offered and moving an agent into
   one is refused with the reason; the next start says what was found.
+
+- 2026-09-27, steps 1c and 2b, by hand in Chrome on a copy of the owner's data root, the real
+  binary: Providers opens from the rail in both themes; Hosts says macOS 12.7.6, 4 cores, 8 GB,
+  12 GB free, Podman with no machine set up, Docker not answering, and that a container cannot
+  start and why; a made-up key was given to a provider no agent uses, stood as given with its
+  time, and was taken away; the directory of keys is its owner's alone. No walk of the gate
+  presses Providers yet: one is written with the forms of step 3, whose names it will press.
 
 ## Outcome / remaining gaps
 
