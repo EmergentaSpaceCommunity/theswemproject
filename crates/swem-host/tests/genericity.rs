@@ -163,8 +163,8 @@ fn the_harness_surface_names_no_domain_word() {
     );
     sources.sort();
     assert!(
-        sources.iter().any(|path| path.ends_with("AgentSpace.tsx")),
-        "the scan must cover the Agent space: {sources:?}"
+        sources.iter().any(|path| path.ends_with("ChatView.tsx")),
+        "the scan must cover the page of chats: {sources:?}"
     );
     let mut found = Vec::new();
     for path in &sources {

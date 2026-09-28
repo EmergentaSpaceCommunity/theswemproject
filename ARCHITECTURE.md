@@ -36,10 +36,21 @@ A library plus test fixtures. It owns:
   a person adds by URL (`swem:catalog@0.1`). An installed server is declared in the MCP catalogue for
   a profile to attach; an installed skill is read from its `SKILL.md` for a profile to take a copy
   of; an installed agent is rediscovered and offered.
+- **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
+  participants, chats and their members, messages with their sender, the session an agent has
+  in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and
+  under them the events of every session in one order. ADR-0007.
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
-  to, guarded by the page's own origin and a per-run secret; connections, routes and the event
-  stream a page long-polls; the MCP catalogue (`mcp_servers.rs`), model providers
-  (`model_providers.rs`), schedules, terminals, the editor door (`editor_door.rs`: the same product
+  to, guarded by the page's own origin and a per-run secret. Chats (`chats.rs`: who a message is
+  for), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
+  ledger and under a file lock because the editor door is another process; a session is opened
+  when a message needs it and let go of when idle; a chat whose engine lost its session goes on
+  in a fresh one that is given what was said), and the one stream a page follows every chat by
+  (`stream.rs`, server-sent events from a place in the ledger's order). What an engine is told
+  about who spoke is one block the host makes per turn (`envelope.rs`). Beside them: the MCP
+  catalogue (`mcp_servers.rs`), model providers
+  (`model_providers.rs`), schedules (a schedule says its message into a chat as a participant),
+  terminals, the editor door (`editor_door.rs`: the same chats
   answered over stdio to an editor that speaks ACP), and MCP Apps (`workbench_apps.rs`: a server's
   surface rendered in a sandboxed origin, its calls relayed through the host: `tools/call` of a
   tool its server declares as App-visible, and `resources/read`; a tool the host has not seen is
@@ -50,14 +61,20 @@ A library plus test fixtures. It owns:
   any agent session, through the same sandbox and the same relay. The host keeps no registry of
   spaces and draws none for a server.
 - **What the agent is given** (`workbench_shell/model_context.rs`): an App says what a person is
-  looking at (`ui/update-model-context`); the host keeps the last update per connection,
-  refuses one from a server the session does not attach, and hands the blocks to the agent with
-  every next turn until a person lets go of it. It interprets none of it.
+  looking at (`ui/update-model-context`); the page keeps the last one and sends it with the
+  person's next words; the host checks its shape, gives the blocks above the turn to an agent
+  that attaches the App's server, and leaves them out for one that does not. It interprets
+  none of it.
 - **Content** (`workbench_content.rs`): the bytes a person hands an agent and an agent hands
   back, by descriptor.
-- **The page** (`web/apps-host`): React over the shell's HTTP surface. Two spaces of its own -
-  Agent and Store - and one per server that offers a home App; one design vocabulary
-  (`web/view-kit`), no protocol nouns on screen; diagnostics behind a Dev switch.
+- **The page** (`web/apps-host`): React over the shell's HTTP surface. A rail of agents and
+  chats, the Store, and one place per server that offers a home App; an agent has its chat, its
+  files, its terminal and its settings. A chat is drawn from a store per chat, fed by the one
+  stream. The thread and composer are `@assistant-ui/react` over those stores, text is
+  `react-markdown`, code is coloured by `shiki`, dialogs and selects are Base UI. It is styled
+  by the project's kit (`web/view-kit`: the palette's variables only) and its own layout
+  (`workbench_shell/workbench.css`), in both themes. No protocol nouns and nothing for
+  debugging on screen.
 
 The host names no domain. A structural test (`tests/genericity.rs`) scans its source for domain
 words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate.

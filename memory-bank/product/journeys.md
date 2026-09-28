@@ -16,8 +16,7 @@ agent. Walk: `product_front_door::a_person_with_nothing_installs_an_agent_and_ca
 
 A person gives a profile a model provider and a model, a role and skills in Setup, keys under Keys,
 MCP servers by name; the agent gets them in its own layout before launch, and the session's option
-shows the model. Walk: `product_front_door::a_person_gives_an_agent_a_role_and_a_model`;
-`workbench_agent_setup_browser`.
+shows the model. Walk: `product_front_door::a_person_gives_an_agent_a_role_and_a_model`.
 
 ## GJ-03 — Install from the Store
 
@@ -25,10 +24,22 @@ A person opens the Store, adds a catalog by address, installs an agent, an MCP s
 each behind its own consent dialog, gives the agent both, and the agent calls the server's tool
 and reads the skill. Walk: `product_front_door::a_person_installs_from_the_store_and_the_agent_uses_it`.
 
-## GJ-04 — Sessions kept across restarts
+## GJ-04 — Chats kept across restarts
 
-A profile's sessions are listed newest first; picking one resumes its conversation; after the
-product restarts they are still there. Walk: `workbench_shell_sessions_browser`.
+An agent's chats are listed, the one that moved last first; picking one shows everything that
+was said with each message under its sender, and the next message goes on in it; after the
+product restarts they are still there, and so is a question nobody answered yet. A chat from
+before chats existed is there too. Evidence: by hand on a copy of a real data root with a real
+engine, the product restarted in between (ExecPlan 005); `chat_ledger`, `chat_runtime`;
+`product_front_door::a_person_closes_their_editor_and_comes_back_to_the_same_conversation`.
+
+## GJ-09 — Several agents at once, and who said what
+
+A person talks to one agent while another works or waits for an answer; stops a turn from the
+composer; closes the page while an agent asks before it does something, opens it again and
+answers. Every message has its sender. Evidence: by hand, as above;
+`chat_runtime::two_agents_work_at_once_and_a_question_waits_for_whoever_comes_back` and its
+siblings. No browser walk repeats it by itself yet.
 
 ## GJ-05 — An agent in a container
 
@@ -53,6 +64,7 @@ from_a_page_of_code`); the client credential is planned (roadmap C2).
 
 A server installed from the Store that declares a home App appears as a space; opening it shows
 the App; what the App says a person is looking at is given to the agent with the next turn.
-Status: done (roadmap C4; `workbench_shell_spaces_browser`, `workbench_shell_context_browser`,
-`product_front_door::a_person_installs_a_server_with_a_home_app_and_opens_its_space`). The host
+Status: done (roadmap C4;
+`product_front_door::a_person_installs_a_server_with_a_home_app_and_opens_its_space`,
+`chat_runtime::what_an_app_said_the_person_is_looking_at_goes_with_their_words`). The host
 draws no Project space of its own.

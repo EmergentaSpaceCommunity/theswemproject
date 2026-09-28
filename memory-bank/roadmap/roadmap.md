@@ -12,8 +12,8 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 | Item | A person can | State |
 |---|---|---|
 | A1 | open an existing chat and go on talking after the agent's setup changed; an attached server that is not set up is a notice, not a refusal | **done** (2026-09-27, ExecPlan 004) |
-| A2 | see who said what; keep two agents working at once; stop from the composer; answer a question after reopening the page | |
-| A3 | read markdown and code; use a rail of agents and chats; switch theme | |
+| A2 | see who said what; keep two agents working at once; stop from the composer; answer a question after reopening the page | **done** (2026-09-27, ExecPlan 005) |
+| A3 | read markdown and code; use a rail of agents and chats; switch theme | **done** (2026-09-27, ExecPlan 005, with A2) |
 | A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | |
 | A5 | schedule a message into a chat, pause it, and let the agent make its own | |
 | A6 | put two agents in one chat; a chain of agent replies waits for a person at its limit | |
@@ -69,5 +69,13 @@ and the package and tool routes are gone; an App says what a person is looking a
   `registry_id`); rename with C3.
 - A server's environment values are given in the MCP catalogue, not from the Store row.
 - Two callback-boundary tests assume a Linux filesystem and signal names.
-- The browser drivers that press Load, Resume, Disconnect and End session or read the Dev log
-  describe a page that A2 removes; they are deleted with it, not repaired.
+- `scripts/unwalked_controls.py` counts controls by the names the old page gave them and
+  checks itself against five of those; it refuses to count the new page, whose controls a walk
+  finds by what they say. Rewritten or retired when somebody needs the number again.
+- A tool only a person may call, answered by its server with a form
+  (`/api/connections/{id}/apps/interactions`), is not offered by the page. Nothing ever
+  exercised it and no server asks this way; the page offers it when one does.
+- No browser walk repeats GJ-09 or an App's context by itself; both are proven below the page
+  and by hand.
+- The Cycle's walks drive the rail and the addresses the old page had; they are moved when its
+  pin moves to a core that has the new page.

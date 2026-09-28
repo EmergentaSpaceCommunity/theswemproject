@@ -178,6 +178,12 @@ turn's ten-minute deadline.
 - 2026-09-27: an agent is put to sleep from its header, as the accepted design draws it: the
   sessions held open for it are let go of. It is how a person ends what the old page ended
   with Disconnect.
+- 2026-09-27: a tool only a person may call, answered by its server with a form, is not
+  offered by the new page. The old page had a button for it; no test and no walk ever pressed
+  it and no server, the fixture included, asks this way. The host's addresses for it stay.
+  Roadmap, Debt.
+- 2026-09-27: `scripts/unwalked_controls.py` is left as it is, refusing to count: it counts
+  by names the new page does not give its controls on purpose. Roadmap, Debt.
 - 2026-09-27: A2 and A3 of the roadmap land together. The page is built once, on the
   libraries, rather than once on the old parts and again on the new.
 
@@ -220,6 +226,38 @@ turn's ten-minute deadline.
   credential and was not run), `workbench_apps_engine_probe_browser` two green.
   `chat_runtime`, `chat_ledger`, `workbench_shell_apps` green; the page's own tests 27 green.
 
+- 2026-09-27, the end of the slice: `cargo clippy --workspace --all-targets -- -D warnings`
+  clean; `scripts/suites.sh` green but `callback_authority` (two tests, red on macOS before
+  this plan); `genericity` was red since the old page left, its scan anchored on a file of
+  that page, and is green anchored on the new one. The product gate against the real binary
+  in Chrome, one walk after another: fourteen green, the container walk among them passing
+  by finding nothing to run a container with.
+
 ## Outcome / remaining gaps
 
-Not started.
+Done 2026-09-27. A person opens the Workbench and finds a rail of agents and their chats. A
+chat from before is there with each message under its sender. They write, the agent is shown
+working with Stop in the composer, and what it answers is drawn as text, tables and coloured
+code. They talk to a second agent while the first works or waits. What an agent asks before it
+does something waits in the chat for whoever answers, through a closed page and a restarted
+product. An App of an agent's server opens beside its chat, and one a tool brought opens by
+itself. Nothing on the page is a protocol word or a control for debugging.
+
+Under it: the ledger keeps participants, chats, messages, sessions, deliveries and questions
+(ADR-0007); the engine is told who spoke by one block per turn; the page follows everything by
+one stream. The old page, its addresses, `Correspondent` and the drivers that pressed its
+lifecycle buttons are gone.
+
+Remaining, each recorded where it is decided:
+
+- A chat of several agents works below the page (rules, the count of replies, the limit); the
+  page draws a chat of one agent. Choosing who to name and seeing members: roadmap A6.
+- GJ-09 and an App's context have no browser walk of their own; by hand and below the page.
+- The person-only form of a server and `unwalked_controls.py`: roadmap, Debt.
+- `callback_authority` (two tests) assumes Linux paths and signal names; red on macOS before
+  and after. `native_session::cancellation_protocol_failure_and_transport_timeout_remain_
+  distinct` fails beside its suite on a loaded machine and passes alone.
+- The container walk of the gate was skipped: this machine cannot run a container (roadmap B1).
+- The acceptance scenario was walked on a copy of a real data root, not on the root itself;
+  the root is migrated, after being copied beside itself, the first time this build opens it.
+- The Cycle pins a core from before the page was rebuilt. Its walks are moved with its pin.

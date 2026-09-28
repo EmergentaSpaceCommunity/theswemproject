@@ -1,7 +1,7 @@
 # Agents, put together from providers
 
-**Status:** accepted (2026-09-27). Not built; the order of building is `roadmap/roadmap.md`,
-items A and B. Supersedes the "profile" of `journeys.md` GJ-01, GJ-02 and GJ-04 as each item
+**Status:** accepted (2026-09-27). Chats and the page are built (roadmap A1-A3); providers,
+time and hosts are not; the order of building is `roadmap/roadmap.md`, items A and B. Supersedes the "profile" of `journeys.md` GJ-01, GJ-02 and GJ-04 as each item
 lands. Reference for the model: the SaaS platform's profiles, provider pool, channels and
 schedules (not in this tree). What the code has today is stated in each section, read from the
 code on the same date.
@@ -138,9 +138,12 @@ Rules of a chat of several:
 guests of this chat; agents of this product that sit in both are recognised as themselves, and a
 foreign bot is a guest like any other. Everything above works with no channel at all.
 
-What the code has today: `Correspondent { surface, author, addressed_to }` and the event
-`host/turn_written`; the author is free text typed in the Dev drawer, the page labels every turn
-"You", and a conversation has one agent. What the reference had: authorship only in an envelope
+What the code has today (2026-09-27, roadmap A2): participants, chats, messages with their
+sender, deliveries and questions in the ledger; the envelope; the rules above, with the count
+of agents' replies kept per chat. The page draws a chat of one agent; choosing who to name and
+seeing a chat's members is roadmap A6. What it had before: `Correspondent { surface, author,
+addressed_to }`, an author typed as free text, every turn labelled "You", one agent per
+conversation. What the reference had: authorship only in an envelope
 around the text (`<message from chat_id sender user_id scope sender_kind sender_bot>`), nothing
 stored; an allow-list of raw messenger ids typed by hand; agents meeting only inside a messenger
 group; the reply count kept in memory per receiving agent. The envelope stays, as the way an

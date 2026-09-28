@@ -5,13 +5,16 @@
 | Install an agent from the plan the page shows; any id the ACP registry lists | proven | GJ-01; `swem agents install <registry-id>` walked by `a_person_installs_an_agent_the_product_never_heard_of` |
 | Agent setup: providers, model, role, skills, keys, servers, environment, permissions | proven | GJ-02 |
 | Store over the ACP registry and added catalogs; servers and skills installed and used | proven | GJ-03; `tests/store.rs` |
-| Sessions listed, resumed, kept across restarts | proven | GJ-04 |
+| Chats listed, read with each message under its sender, gone on with, kept across restarts | proven by hand and below the page | GJ-04 |
+| Several agents at work at once; a turn stopped from the composer; a question answered after the page was closed | proven by hand and below the page | GJ-09 |
+| Markdown, tables and coloured code in a chat; a rail of agents and chats; both themes | proven by hand | ExecPlan 005 |
 | Agent in a Podman container | proven where Podman exists | GJ-05 |
 | Editor door over ACP: same agent, files, resume, several windows | proven | GJ-06 |
-| MCP Apps hosted in a sandboxed origin, calls relayed through the host | proven | `workbench_shell_apps_browser` |
+| MCP Apps hosted in a sandboxed origin beside a chat, opened by a person or brought by a tool of the agent; calls relayed through the host | proven | `workbench_shell_apps_browser`, `workbench_apps_engine_probe_browser` |
+| A form or a link an agent asks for, answered in the chat | proven | `workbench_shell_apps_browser` |
 | Embedding through a product builder | done | `swem_host::product`, `examples/embed.rs`, `tests/product.rs`; the product binary is the builder's first caller |
 | Client credentials for an embedder's own page | missing | roadmap C2 |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
-| A server's home App as a space | proven | `workbench_shell_spaces.rs`, `workbench_shell_spaces_browser.rs`; the host draws no space for a server |
-| What an App says a person is looking at, given to the agent | proven | `workbench_shell_context_browser`; `ui/update-model-context`, text and resource links |
+| A server's home App as a space | proven | `workbench_shell_spaces.rs`, GJ-08's walk; the host draws no space for a server |
+| What an App says a person is looking at, given to the agent | proven below the page | `chat_runtime`; `ui/update-model-context`, text and resource links; no browser walk of its own since the page was rebuilt |
 | Projects | the project server's | the hub of a `swem-cycle` installed from the Store, beside the binary or on PATH is declared as a server; its space and its projects are its own |

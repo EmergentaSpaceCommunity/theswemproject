@@ -91,3 +91,21 @@ other binaries beside its own anchor.
 
 `ERR_UNKNOWN_FILE_EXTENSION ".ts"` on a tree where nothing under the page changed is a missing
 `--experimental-strip-types`, which `scripts/suites.sh` sets for the Node that needs it.
+
+## A walk waits for what a person sees, not for what the record says
+
+The page learns that a turn ended a moment after the ledger does. A driver that read the ledger
+and pressed at once pressed a button still disabled, and nothing happened. Wait for the control
+to be offered (`putToSleep` in `cdp_browser.mjs`), then press.
+
+## Two counters that both start small are one bug waiting
+
+The panel of Apps compared the place of an event in the ledger with the number of a call in a
+session. Both are integers and the first App worked, so nothing failed until a second one was
+brought. A number that crosses a boundary carries its name with it (`place`, `call`).
+
+## A suite that was not run is not green
+
+`genericity` anchored its scan on a file of the old page and was red for four commits of this
+slice because only the suites a change "touches" were run. Before a slice ends, run
+`scripts/suites.sh` whole, once.
