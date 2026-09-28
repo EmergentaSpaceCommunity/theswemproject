@@ -117,6 +117,12 @@ impl DataRoot {
         self.root.join("model-providers")
     }
 
+    /// The keys of providers, their owner's alone.
+    #[must_use]
+    pub fn keys(&self) -> PathBuf {
+        self.root.join("keys")
+    }
+
     /// Where prepared environments live, shared across projects.
     #[must_use]
     pub fn environments(&self) -> PathBuf {
@@ -402,6 +408,11 @@ impl Product {
             .map_err(|error| error.to_string())?;
         state
             .enable_model_providers(&root.model_providers())
+            .map_err(|error| error.to_string())?;
+        // After the providers: a key an agent held for its provider moves
+        // to the provider, and that needs both.
+        state
+            .enable_provider_keys(&root.keys())
             .map_err(|error| error.to_string())?;
         if let Some((executable, args)) = self.mcp_observer {
             state.set_mcp_observer_command(executable, args);

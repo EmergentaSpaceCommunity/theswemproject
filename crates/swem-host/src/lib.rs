@@ -28,6 +28,7 @@ mod envelope;
 mod environment;
 mod environment_profile;
 mod install;
+mod keys;
 pub mod mcp_observer;
 mod permission_profile;
 pub mod product;
@@ -52,6 +53,7 @@ pub use envelope::{
 pub use environment::*;
 pub use environment_profile::*;
 pub use install::*;
+pub use keys::{KeyError, KeyHeld, KeyStore, PROVIDER_KEY_SCHEMA, ProviderKey};
 pub use permission_profile::*;
 pub use profile::*;
 pub use routing::*;

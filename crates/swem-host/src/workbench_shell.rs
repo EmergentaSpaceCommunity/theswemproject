@@ -42,10 +42,12 @@ mod agent_environment;
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
 mod model_providers;
+mod provider_keys;
 pub use model_providers::{
     DeclareModelProviderBody, MODEL_PROVIDER_SCHEMA, ModelChoice, ModelProvider, ModelProviderBook,
     ModelProviderOrigin, ModelProviderView,
 };
+pub use provider_keys::{GiveKeyBody, ModelProviderStanding};
 #[path = "workbench_shell/server_apps.rs"]
 mod server_apps;
 pub use server_apps::SpaceView;
@@ -778,6 +780,8 @@ pub struct WorkbenchShellState {
     mcp_catalogue: std::sync::OnceLock<McpCatalogue>,
     /// The model providers a profile may name, shipped and declared.
     model_providers: std::sync::OnceLock<ModelProviderBook>,
+    /// The keys of providers, given once for every agent.
+    provider_keys: std::sync::OnceLock<crate::KeyStore>,
     /// Where what this product installs lands (`<data root>/installed`), when
     /// installing is enabled; a host alone installs nothing.
     installed_root: std::sync::OnceLock<PathBuf>,
@@ -993,6 +997,7 @@ impl WorkbenchShellState {
             server_apps: server_apps::ServerApps::new(),
             mcp_catalogue: std::sync::OnceLock::new(),
             model_providers: std::sync::OnceLock::new(),
+            provider_keys: std::sync::OnceLock::new(),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
             schedules: std::sync::OnceLock::new(),
@@ -1899,10 +1904,7 @@ impl WorkbenchShellState {
         // and refuses process overrides; the direct process gets the profile's
         // bindings here, on top of the filtered bootstrap environment.
         if matches!(connection.environment, ResolvedAgentEnvironment::Direct) {
-            let secrets = self
-                .inventory
-                .secrets(&profile.profile_id)
-                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+            let secrets = self.keys_of(&profile)?;
             // The model and the provider's address first, the credentials
             // over them: a key is never shadowed by a setup variable.
             let mut overrides = setup.environment.clone();
@@ -3998,9 +4000,24 @@ async fn route_shell(
         // The places a model is served from, set up once for every profile.
         (&Method::GET, ["api", "model-providers"]) => json_result(
             state
-                .model_providers()
-                .map(|providers| json!({ "providers": providers })),
+                .providers_standing()
+                .map(|(providers, kept_by)| json!({ "providers": providers, "kept_by": kept_by })),
         ),
+        // A provider's key: given once, never read back.
+        (&Method::PUT, ["api", "model-providers", id, "key"]) => {
+            let id = (*id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<GiveKeyBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.give_provider_key(&id, &body))
+        }
+        (&Method::DELETE, ["api", "model-providers", id, "key"]) => {
+            json_result(state.take_provider_key(id).map(|()| json!({ "taken": id })))
+        }
         (&Method::POST, ["api", "model-providers"]) => {
             let body = match read_json(request).await.and_then(|value| {
                 serde_json::from_value::<DeclareModelProviderBody>(value)

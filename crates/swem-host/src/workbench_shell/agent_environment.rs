@@ -274,10 +274,7 @@ impl WorkbenchShellState {
             .inventory
             .select(&body.profile_id)
             .map_err(profile_error)?;
-        let secrets = self
-            .inventory
-            .secrets(&profile.profile_id)
-            .map_err(profile_error)?;
+        let secrets = self.keys_of(&profile)?;
         self.terminals
             .open(&profile, secrets, body, TerminalOpener::Person)
             .await
