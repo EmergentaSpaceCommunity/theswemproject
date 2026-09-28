@@ -252,17 +252,20 @@ async fn advertised_file_callbacks_reach_the_surface_and_stop_at_the_boundary() 
 
     // The surface was never asked about it. This is the part that matters: a
     // boundary enforced by asking politely is not a boundary.
+    // Under its real name: where the temporary directory is a link, as on
+    // macOS, the host names the file it opened and not the link to it.
+    let asked_about = fs::canonicalize(root.join("sentinel.txt")).unwrap();
     let asked = asked.lock().unwrap().clone();
     assert_eq!(
         asked,
         vec![
             (
                 "fs/read_text_file".to_owned(),
-                root.join("sentinel.txt").display().to_string()
+                asked_about.display().to_string()
             ),
             (
                 "fs/write_text_file".to_owned(),
-                root.join("sentinel.txt").display().to_string()
+                asked_about.display().to_string()
             ),
         ],
         "the surface saw a path the host should have stopped"
@@ -380,9 +383,8 @@ async fn advertised_terminal_callbacks_run_in_the_profiles_environment_and_stop_
             &executable,
             &workspace,
             &[
-                // `pwd` says where it ran; `$HOME` says whose environment it
-                // ran in. Both have to be the profile's, or the command ran
-                // somewhere that is not the agent's work.
+                // `pwd` says where it ran and has to be the profile's
+                // folder; `$HOME` says whose home it had.
                 "run in a terminal printf %s \"$HOME\" > home.txt; pwd".into(),
                 // Says something, then waits to be stopped. What it said has
                 // to survive the stopping.
@@ -427,11 +429,13 @@ async fn advertised_terminal_callbacks_run_in_the_profiles_environment_and_stop_
         "the terminal was not released: {terminal}"
     );
 
-    // And it ran in the profile's environment, not this process's.
+    // And it ran with the home the agent's engine has. On this machine
+    // directly that is this machine's: a sign-in done in a terminal is the
+    // one the engine finds.
     assert_eq!(
         fs::read_to_string(workspace.join("home.txt")).unwrap(),
-        fs::canonicalize(&home).unwrap().display().to_string(),
-        "the command did not get the profile's agent home"
+        std::env::var("HOME").expect("this machine has a home"),
+        "the command did not get the home its engine has"
     );
 
     // A command the agent stopped is still a command the agent can read: ACP
@@ -446,12 +450,13 @@ async fn advertised_terminal_callbacks_run_in_the_profiles_environment_and_stop_
         stopped["terminal/kill"]["ok"].is_object(),
         "the command was not stopped: {stopped}"
     );
-    assert_eq!(
+    assert!(
         // portable-pty hangs a terminal up rather than killing its process,
         // which is what closing a terminal window does; the name comes back
-        // as the platform's own.
-        stopped["terminal/wait_for_exit"]["ok"]["signal"],
-        "Hangup",
+        // as the platform's own: "Hangup" on Linux, "Hangup: 1" on macOS.
+        stopped["terminal/wait_for_exit"]["ok"]["signal"]
+            .as_str()
+            .is_some_and(|signal| signal.starts_with("Hangup")),
         "a stopped command did not say it was stopped: {stopped}"
     );
     assert!(
@@ -502,10 +507,19 @@ async fn advertised_terminal_callbacks_run_in_the_profiles_environment_and_stop_
         .collect();
     // Reads are left out of the sequence because the agent chooses how often
     // to look; that it looked at all is asserted on its own below.
+    // The signal is named as the platform names it ("Hangup", "Hangup: 1"),
+    // so it is read as far as the name they share.
     let went: Vec<(&str, &str)> = all
         .iter()
         .copied()
         .filter(|(method, _)| *method != "terminal/output")
+        .map(|(method, outcome)| {
+            if outcome.starts_with("stopped by Hangup") {
+                (method, "stopped by Hangup")
+            } else {
+                (method, outcome)
+            }
+        })
         .collect();
     assert!(
         all.iter()

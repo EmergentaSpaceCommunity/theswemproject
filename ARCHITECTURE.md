@@ -40,6 +40,16 @@ A library plus test fixtures. It owns:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and
   under them the events of every session in one order. ADR-0007.
+- **Keys** (`keys.rs`, `workbench_shell/provider_keys.rs`). A key belongs to the provider it
+  opens. It is kept under `<data root>/keys`, a directory its owner alone can enter, one file
+  per provider; the engine of an agent on this machine and the terminals it opens are handed
+  the key of the agent's provider under the variable that kind of key is read from, then what
+  the agent holds of its own over it. A key is never written into a profile, the ledger or a
+  command line.
+- **Hosts** (`host/`, `workbench_shell/hosts.rs`). This machine is looked at while the door
+  opens and when a person asks: system, processors, memory, disk, and whether Podman and
+  Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an
+  agent may live is offered from it, and a place that cannot take an agent today says why.
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
   to, guarded by the page's own origin and a per-run secret. Chats (`chats.rs`: who a message is
   for), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
@@ -69,8 +79,9 @@ A library plus test fixtures. It owns:
 - **Content** (`workbench_content.rs`): the bytes a person hands an agent and an agent hands
   back, by descriptor.
 - **The page** (`web/apps-host`): React over the shell's HTTP surface. A rail of agents and
-  chats, the Store, and one place per server that offers a home App; an agent has its chat, its
-  files, its terminal and its settings. A chat is drawn from a store per chat, fed by the one
+  chats, Providers, the Store, and one place per server that offers a home App; an agent has
+  its chat, its files, its terminal and its settings, which are forms by part
+  (`react-hook-form`). A chat is drawn from a store per chat, fed by the one
   stream. The thread and composer are `@assistant-ui/react` over those stores, text is
   `react-markdown`, code is coloured by `shiki`, dialogs and selects are Base UI. It is styled
   by the project's kit (`web/view-kit`: the palette's variables only) and its own layout

@@ -43,7 +43,7 @@ provider that exists, and a provider says which agents stand on it before it can
 | Kind | What it gives | Built in | Today |
 |---|---|---|---|
 | Engine | a coding agent to stand on | the catalogue and the public agent registry | exists: catalogue, discovery, install by plan, receipts; two profiles may share one engine |
-| Model | an address, a kind of key, models, **the key itself** | Anthropic, OpenAI, OpenRouter, Groq, Google, Ollama | the provider is shared, the key is not: it sits in each profile's vault, found by variable name, so two providers with one kind of key cannot both be used |
+| Model | an address, a kind of key, models, **the key itself** | Anthropic, OpenAI, OpenRouter, Groq, Google, Ollama | built (roadmap A4): the key is the provider's, given once in Providers; an agent may still hold one of its own. An agent in a container is handed none until B1 |
 | Host | a machine for an agent: start it, run the engine in it, reach its files, open a terminal in it, put it to sleep | this machine directly; Docker or Podman; a machine over SSH; Sprites | this machine and Podman here, chosen from a closed list of two; nothing remote |
 | Time | keeps schedules and says when one is due | this SWEM | one loop inside the serving process; no interface; interval in minutes only; no pause |
 | Channel | a door into chats from outside | the Workbench, the editor door | the two exist as surfaces; a messenger bot does not |
@@ -101,7 +101,7 @@ Nothing is offered that was not looked at. Three looks, each stored with its tim
 
 | Look | When | What it finds | Today |
 |---|---|---|---|
-| The machine SWEM runs on | at start, and on request | system, architecture, processor, memory, disk; Docker and Podman and whether they are ready | Podman only, from the command line; memory and disk only on Windows inside one plan |
+| The machine SWEM runs on | at start, and on request | system, architecture, processor, memory, disk; Docker and Podman and whether they are ready | built (roadmap A4), shown under Providers, Hosts |
 | A host | when added, and on request | reachable, who we are there, system and resources, which container engine, what an agent gets there | nothing |
 | Inside an agent's machine | when the agent is made, after a move, on request | the engine and its version, signed in or not, the tools it has, its workspace, its network, **whether it can start containers of its own** | the engine's handshake only |
 

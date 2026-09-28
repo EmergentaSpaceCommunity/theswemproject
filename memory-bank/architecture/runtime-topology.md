@@ -9,6 +9,8 @@ swem (product binary)
         |     the ledger (<ledger>.turns/<agent>.lock) shared with the editor door's process
         +-- installer and Store (<data>/installed, <data>/indexes)
         +-- MCP catalogue (<data>/mcp-servers), model providers (<data>/model-providers)
+        +-- keys of providers (<data>/keys, its owner's alone)
+        +-- what was found of this machine (<data>/hosts/this-machine.json)
         +-- environments: this machine, or a Podman container per profile
         +-- HTTP surface for the page (127.0.0.1:<port>, per-run token); one stream per page
         +-- sandbox origin for MCP Apps (127.0.0.1:<sandbox port>)

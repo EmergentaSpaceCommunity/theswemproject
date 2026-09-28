@@ -45,6 +45,17 @@ struct RenameBody {
     title: String,
 }
 
+/// What somebody is called from now on; what is left out stays.
+#[derive(Deserialize)]
+struct NameBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    handle: Option<String>,
+    #[serde(default)]
+    colour: Option<String>,
+}
+
 fn frame(event: &str, place: Option<u64>, data: &Value) -> Bytes {
     use std::fmt::Write as _;
     let mut text = String::new();
@@ -103,6 +114,35 @@ impl WorkbenchShellState {
         self.with_ledger(move |ledger| ledger.rename_chat(&chat_id, &title))
             .await
             .map_err(ledger_refusal)
+    }
+
+    /// Change what a participant is called: its name, the handle it is
+    /// named by in a chat, its colour. An agent is told its new name with
+    /// the next session it starts.
+    ///
+    /// # Errors
+    ///
+    /// Refuses somebody else's handle, a handle a chat cannot carry and a
+    /// name that is not one line.
+    pub async fn name_participant(
+        &self,
+        participant_id: &str,
+        name: Option<String>,
+        handle: Option<String>,
+        colour: Option<String>,
+    ) -> Result<crate::Participant, WorkbenchShellError> {
+        let participant_id = participant_id.to_owned();
+        self.with_ledger(move |ledger| {
+            ledger.participant(&participant_id)?;
+            ledger.name_participant(
+                &participant_id,
+                name.as_deref(),
+                handle.as_deref(),
+                colour.as_deref(),
+            )
+        })
+        .await
+        .map_err(ledger_refusal)
     }
 
     /// The stream of everything that happens, from a place or from now.
@@ -233,6 +273,17 @@ pub(super) async fn route_chats(
             state.stream_from(place).await
         }
         (&Method::GET, ["api", "people"]) => json_result(state.chat_people().await),
+        (&Method::PATCH, ["api", "people", participant_id]) => {
+            let participant_id = (*participant_id).to_owned();
+            match body_of::<NameBody>(request).await {
+                Ok(body) => json_result(
+                    state
+                        .name_participant(&participant_id, body.name, body.handle, body.colour)
+                        .await,
+                ),
+                Err(error) => error_response(&error),
+            }
+        }
         // Put an agent to sleep: the sessions held open for it are let go
         // of. The engines keep them; it wakes with the next thing said.
         (&Method::POST, ["api", "people", agent_id, "sleep"]) => {

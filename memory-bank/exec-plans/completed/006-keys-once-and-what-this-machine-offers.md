@@ -99,11 +99,20 @@ profile's own secret stays possible, as "this agent uses its own".
       why not; moving an agent where it cannot live is refused in the look's words
 - [x] 2b Hosts in Providers: the machine as it was found, Look again, the two places an agent may live
       with who lives there; an agent's settings do not offer a container that cannot start and say why
-- [ ] 3a Settings in sections on the kit
-- [ ] 3b a terminal on this machine has the machine's home
-- [ ] 4 the record of hosts
+- [x] 3a Settings in parts on the kit (`page/settings/`): put together, identity, where it works, tools,
+      skills, permissions, signing in, on its own; forms on `react-hook-form`; each part says for itself
+      what became of what was done in it; a name and a handle are changed (`PATCH /api/people/{id}`);
+      adding a provider moved to Providers; the old panel and its sign-in card are gone
+- [x] 3b a terminal of an agent that lives on this machine directly has this machine's home, as its
+      engine has
+- [ ] 4 the record of hosts - not built in this plan, see the decision log
 
 ## Discoveries
+
+- A form on `react-hook-form` hears what is typed, not what a script assigns to a field, so the
+  walks type into the settings as a person does (`b.fill`).
+- The two tests of `callback_authority` that were red on macOS assumed the temporary directory's
+  name is its real one and that a hang-up is named without its number. They hold on both now.
 
 - The owner's own agents hold no key: they are signed in the way their engine does it. So a
   provider without a key is not a fault, and the page says "Not given here", not a warning. The
@@ -115,6 +124,17 @@ profile's own secret stays possible, as "this agent uses its own".
 
 - 2026-09-27: a profile with no provider chosen keeps its secrets where they are: there is no
   provider to move them to, and its engine reads them by their variable names as before.
+- 2026-09-27: what is chosen from a list in Settings (the provider, the model, the host, how it asks,
+  a server attached) is taken when it is chosen, as it was; what is written is taken on the part's
+  own button. A person who picks from a list has said what they want.
+- 2026-09-27: the parts of Settings stand in one column with their names beside it, as the accepted
+  design draws Put together and Identity on one page. The names move the page to a part.
+- 2026-09-27: `HostBook` in place of `EnvironmentBackend` is left to roadmap B1. What a person was
+  promised here - this machine as it was found, the two places an agent may live, nothing offered
+  that cannot start - is answered by `workbench_shell/hosts.rs` over the two environments there
+  are. A record of hosts is wanted when there is a third kind of host to write into it.
+- 2026-09-27: what the inside of an agent's machine has (the accepted design's right-hand card) is
+  roadmap B3, the look inside; nothing stands in its place.
 - 2026-09-27: Time and Channels are not tabs of Providers until roadmap A5 and the channel
   slice build what would stand under them.
 
@@ -137,6 +157,35 @@ profile's own secret stays possible, as "this agent uses its own".
   time, and was taken away; the directory of keys is its owner's alone. No walk of the gate
   presses Providers yet: one is written with the forms of step 3, whose names it will press.
 
+- 2026-09-27/28, steps 3a and 3b, the end of the slice. Lint clean. `scripts/suites.sh` green whole,
+  `callback_authority` with it for the first time on macOS. The product gate, one walk after
+  another: the first run was thirteen green and the walk of a command red, because the forms of
+  the settings carried the class of a question's card and the walk took a hidden form for a
+  question; the forms have a class of their own. The second run was thirteen green, that walk
+  among them, and another red on a browser that did not answer for a minute: the run took two
+  and a half hours, the computer having slept in it. That walk alone is green. So each of the
+  fourteen was green after the last change, thirteen together and one alone; the container walk
+  passes by finding nothing to run a container with. After that the page stopped beginning a
+  refusal with its kind; the walk that reads refusals (first run, with a place the product does
+  not have) was run again alone and is green.
+- By hand in Chrome on the copy, the real binary: Settings in both themes; an agent renamed, given
+  a handle and what it is for, seen in the rail and its header; somebody else's handle refused
+  in words; where it works saved.
+
 ## Outcome / remaining gaps
 
-Not started.
+Done 2026-09-28. A person opens Providers from the rail. Under Models they add a place a model
+is served from and give it what opens it once; an agent that answers from it is handed it when
+it starts. Under Hosts they read what this machine has and whether a container can start on
+it. An agent's Settings are parts with their own forms and their own word of what happened.
+
+Remaining:
+
+- The record of hosts and the look inside an agent's machine: roadmap B1 and B3.
+- An agent in a container is handed no key until B1.
+- A provider can be opened by one kind of thing. A subscription token for Anthropic is still an
+  agent's own, under Signing in.
+- A new name reaches an agent's instructions when its next session starts, not the one open.
+- The walks still find some controls of Settings by names the old panel had (`.server-attach`,
+  `.skill-row`); new walks find controls by what they say.
+- The owner's own data root was not opened by this build; the scenario was walked on a copy.

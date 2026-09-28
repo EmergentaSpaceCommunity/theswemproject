@@ -36,6 +36,9 @@ await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel
 // The list comes from the product, so it is not there the instant the panel
 // is: a value set on a picker that is still empty or still disabled changes
 // nothing and reads later as "the choice did not stick".
+if (!(await b.pressText("#settings-together .k-row:has(#profile-environment) button", "Change"))) {
+  cleanup(1, "where the agent lives cannot be changed");
+}
 await b.waitFor("the places this product can run an agent", async () =>
   b.evaluate(`(() => {
     const picker = document.getElementById("profile-environment-choice");

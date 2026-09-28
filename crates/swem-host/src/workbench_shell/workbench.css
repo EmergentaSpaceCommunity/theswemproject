@@ -85,9 +85,28 @@ html, body, #workbench-root { height: 100%; }
 .w-composer { position: relative; }
 .w-commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; max-height: 280px; overflow: auto; }
 .w-commands .k-mono { white-space: nowrap; }
-/* What an agent is set up with reads as a column, not across the screen. */
-.w-panel > .environment, .w-panel > .files-panel { width: min(100%, 880px); margin: 0 auto; flex: none; overflow: visible; }
-.w-panel .environment textarea { min-height: 120px; }
+/* What an agent holds reads as a column, not across the screen. */
+.w-panel > .files-panel { width: min(100%, 880px); margin: 0 auto; flex: none; overflow: visible; }
+
+/* An agent's settings: the parts down the middle, their names beside. */
+.w-settings { display: flex; align-items: flex-start; gap: 24px; padding: 24px 32px; flex: none; }
+.w-settings[hidden] { display: none; }
+.w-subnav { width: 180px; flex: none; position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; }
+.w-parts { flex: 1 1 auto; min-width: 0; max-width: 820px; display: flex; flex-direction: column; gap: 18px; }
+.w-part { padding: 18px 20px; scroll-margin-top: 24px; }
+.w-part-name { width: 64px; flex: none; }
+.w-part .k-field { width: 100%; min-width: 0; }
+.w-part .k-inline > .k-field { width: auto; }
+.w-part textarea.k-field { resize: vertical; min-height: 96px; }
+.w-part .k-row > svg { color: var(--color-text-secondary); }
+.w-change { padding: 12px 0 12px 28px; border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }
+/* A form inside a part: set in from the part around it. */
+.w-inset { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+.w-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1100px) {
+  .w-subnav { display: none; }
+  .w-pair { grid-template-columns: minmax(0, 1fr); }
+}
 
 .w-side.w-right { border-right: 0; border-left: var(--border-width-regular) solid var(--color-border-secondary); width: 320px; }
 .w-side.w-right.w-wide { width: min(50%, 760px); }

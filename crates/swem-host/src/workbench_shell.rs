@@ -4021,11 +4021,16 @@ async fn route_shell(
             json_result(state.forget_mcp_server(name))
         }
         // The places a model is served from, set up once for every profile.
-        (&Method::GET, ["api", "model-providers"]) => json_result(
-            state
-                .providers_standing()
-                .map(|(providers, kept_by)| json!({ "providers": providers, "kept_by": kept_by })),
-        ),
+        (&Method::GET, ["api", "model-providers"]) => {
+            json_result(state.providers_standing().map(|(providers, kept_by)| {
+                json!({
+                    "providers": providers,
+                    "kept_by": kept_by,
+                    // What a provider can be opened by, for whoever adds one.
+                    "key_kinds": crate::secret_types(),
+                })
+            }))
+        }
         // A provider's key: given once, never read back.
         (&Method::PUT, ["api", "model-providers", id, "key"]) => {
             let id = (*id).to_owned();

@@ -4,7 +4,7 @@
 import { useEffect } from "react";
 import { useStore } from "zustand";
 
-import { AgentEnvironment } from "../agent/AgentEnvironment.tsx";
+import { AgentSettings } from "./settings/AgentSettings.tsx";
 import { AgentFiles } from "../agent/AgentFiles.tsx";
 import { sessionStore } from "../agent/store.ts";
 import { TerminalPanel } from "../agent/TerminalPanel.tsx";
@@ -159,7 +159,7 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
           <TerminalPanel hidden={tab !== "terminal"} />
         </Guard>
         <Guard what="The agent's settings">
-          <AgentEnvironment hidden={tab !== "settings"} />
+          <AgentSettings agent={agent} hidden={tab !== "settings"} />
         </Guard>
       </div>
     </main>

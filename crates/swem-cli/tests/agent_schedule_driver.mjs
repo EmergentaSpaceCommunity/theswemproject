@@ -31,11 +31,9 @@ if (before !== 0) cleanup(1, `a new profile already has ${before} schedules`);
 step("nothing is scheduled yet");
 
 // The standing instruction, in the words a person would type to the agent.
-await b.evaluate(`(() => {
-  document.getElementById("schedule-id").value = "morning";
-  document.getElementById("schedule-say").value = ${JSON.stringify(JSON.stringify({write: "outbox/from-the-clock.txt", text: answer}))};
-  document.getElementById("schedule-minutes").value = "60";
-})()`);
+await b.fill("#schedule-id", "morning");
+await b.fill("#schedule-say", JSON.stringify({write: "outbox/from-the-clock.txt", text: answer}));
+await b.fill("#schedule-minutes", "60");
 await b.click("#schedule-save");
 await b.waitFor("the schedule is listed", async () =>
   b.exists('#schedules .schedule-row[data-schedule="morning"]'), 200);
@@ -72,7 +70,7 @@ step("it wrote what the instruction said");
 await b.openAgent(profile, "settings");
 await b.waitFor("the schedule says it ran", async () => {
   await b.click("#schedules-refresh");
-  return b.evaluate(`!/not run yet/.test((document.querySelector('[data-schedule-outcome="morning"]')||{textContent:""}).textContent)`);
+  return b.evaluate(`!/not said yet/i.test((document.querySelector('[data-schedule-outcome="morning"]')||{textContent:""}).textContent)`);
 }, 60);
 const outcome = await b.evaluate(
   `(document.querySelector('[data-schedule-outcome="morning"]')||{textContent:""}).textContent`);

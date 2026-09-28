@@ -4,7 +4,7 @@
 
 import { createStore } from "zustand/vanilla";
 
-import type { ModelProviderView } from "../agent/session.ts";
+import type { DeclareModelProvider, ModelProviderView, SecretType } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
 
 export interface KeyHeld {
@@ -51,6 +51,8 @@ interface Providers {
   models: ModelProviderStanding[] | null;
   /// What keeps the keys, in the host's words.
   keptBy: string;
+  /// What a provider can be opened by.
+  kinds: SecretType[];
   machine: MachineLook | null;
   hosts: HostStanding[] | null;
   looking: boolean;
@@ -60,6 +62,7 @@ interface Providers {
 export const providers = createStore<Providers>(() => ({
   models: null,
   keptBy: "",
+  kinds: [],
   machine: null,
   hosts: null,
   looking: false,
@@ -81,8 +84,8 @@ interface Hosts {
 export const providing = {
   async models(): Promise<void> {
     try {
-      const answer = await fetchJson<{ providers: ModelProviderStanding[]; kept_by: string | null }>("/api/model-providers");
-      providers.setState({ models: answer.providers, keptBy: answer.kept_by ?? "", problem: "" });
+      const answer = await fetchJson<{ providers: ModelProviderStanding[]; kept_by: string | null; key_kinds?: SecretType[] }>("/api/model-providers");
+      providers.setState({ models: answer.providers, keptBy: answer.kept_by ?? "", kinds: answer.key_kinds ?? [], problem: "" });
     } catch (error) {
       providers.setState({ problem: said(error) });
     }
@@ -91,6 +94,15 @@ export const providing = {
   /// on the page.
   async giveKey(provider: string, value: string, variable?: string): Promise<void> {
     await fetchJson(`/api/model-providers/${part(provider)}/key`, send("PUT", { value, ...(variable ? { variable } : {}) }));
+    await providing.models();
+  },
+  /// Add a provider, or correct one.
+  async add(provider: DeclareModelProvider): Promise<void> {
+    await fetchJson("/api/model-providers", send("POST", provider));
+    await providing.models();
+  },
+  async forget(provider: string): Promise<void> {
+    await fetchJson(`/api/model-providers/${part(provider)}`, send("DELETE"));
     await providing.models();
   },
   async takeKey(provider: string): Promise<void> {

@@ -14,7 +14,7 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 | A1 | open an existing chat and go on talking after the agent's setup changed; an attached server that is not set up is a notice, not a refusal | **done** (2026-09-27, ExecPlan 004) |
 | A2 | see who said what; keep two agents working at once; stop from the composer; answer a question after reopening the page | **done** (2026-09-27, ExecPlan 005) |
 | A3 | read markdown and code; use a rail of agents and chats; switch theme | **done** (2026-09-27, ExecPlan 005, with A2) |
-| A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | |
+| A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | **done** (2026-09-28, ExecPlan 006); the record of hosts is left to B1 |
 | A5 | schedule a message into a chat, pause it, and let the agent make its own | |
 | A6 | put two agents in one chat; a chain of agent replies waits for a person at its limit | |
 
@@ -68,7 +68,6 @@ and the package and tool routes are gone; an App says what a person is looking a
 - The install plan's fields are named for an agent whatever kind it installs (`agent_id`,
   `registry_id`); rename with C3.
 - A server's environment values are given in the MCP catalogue, not from the Store row.
-- Two callback-boundary tests assume a Linux filesystem and signal names.
 - `scripts/unwalked_controls.py` counts controls by the names the old page gave them and
   checks itself against five of those; it refuses to count the new page, whose controls a walk
   finds by what they say. Rewritten or retired when somebody needs the number again.

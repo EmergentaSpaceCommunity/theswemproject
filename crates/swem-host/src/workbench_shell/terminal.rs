@@ -394,9 +394,13 @@ impl Terminals {
             command.arg(argument);
         }
         command.cwd(&cwd);
-        // The agent's own home, so a sign-in performed here is a sign-in the
-        // agent finds when it starts.
-        command.env("HOME", profile.agent_home.as_os_str());
+        // The home the agent's engine has, so a sign-in done here is one
+        // the engine finds when it starts. An engine run on this machine
+        // directly has this machine's home, which the terminal has already;
+        // one in a container has the agent's own.
+        if profile.environment_profile_id == crate::IN_A_CONTAINER {
+            command.env("HOME", profile.agent_home.as_os_str());
+        }
         command.env("TERM", "xterm-256color");
         for (name, value) in credential_environment(profile, secrets)? {
             command.env(name, value);

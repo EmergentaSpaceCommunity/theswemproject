@@ -14,9 +14,20 @@ agent. Walk: `product_front_door::a_person_with_nothing_installs_an_agent_and_ca
 
 ## GJ-02 — Set up an agent: model, role, skills, keys, servers
 
-A person gives a profile a model provider and a model, a role and skills in Setup, keys under Keys,
-MCP servers by name; the agent gets them in its own layout before launch, and the session's option
+A person chooses in an agent's Settings the provider and the model it answers from, writes what
+it is for, gives it skills and servers by name; what opens a provider is given in Providers
+(GJ-10); the agent gets them in its own layout before launch, and the session's option
 shows the model. Walk: `product_front_door::a_person_gives_an_agent_a_role_and_a_model`.
+
+## GJ-10 — Providers: a key given once, and what this machine offers
+
+A person opens Providers from the rail. Under Models they add a place a model is served from
+and give it what opens it, once; an agent that answers from it is handed it when it starts and
+nobody types it into the agent. Under Hosts they read what the machine SWEM runs on has, look
+again when they like, and see where on it an agent may live; a place that cannot take an agent
+today says why and is not offered in an agent's settings. Walk:
+`product_front_door::a_person_gives_an_agent_a_role_and_a_model` (the key); Hosts by hand and by
+`hosts::where_an_agent_may_live_is_offered_from_what_was_found`.
 
 ## GJ-03 — Install from the Store
 

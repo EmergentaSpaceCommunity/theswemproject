@@ -18,6 +18,8 @@ if (!url || !role) {
 }
 
 const b = await launchBrowser({browser, url, label: "agent-setup"});
+/// What the walk gives the provider. Not a key of anything.
+const KEY = "sk-walk-not-a-key-of-anything";
 
 const setValue = async (selector, value) =>
   b.evaluate(`(() => {
@@ -39,9 +41,8 @@ step("the product opens");
 const profile = await b.makeAgent("hands");
 step("the agent is theirs");
 
-// --- Setup: a provider, the model, the role ------------------------------
-await b.openAgent(profile, "settings");
-await b.waitFor("the setup panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
+// --- Providers: a place a model is served from, and what opens it --------
+await b.goTo("#/providers/models");
 await b.waitFor("the shipped providers listed", async () => b.exists('.provider-row[data-provider="anthropic"][data-origin="built_in"]'));
 await b.click("#add-model-provider-open");
 await b.waitFor("the provider form", async () => b.exists("#declare-model-provider"));
@@ -54,6 +55,23 @@ await b.click("#add-model-provider");
 await b.waitFor("the provider listed", async () => b.exists('.provider-row[data-provider="desk"][data-origin="declared"]'));
 step("a provider is declared");
 
+// What opens it is given once, here, and never typed into an agent.
+if (!(await b.pressText('.provider-row[data-provider="desk"] button', "Give"))) cleanup(1, "the provider cannot be given what opens it");
+await b.waitFor("the dialog that takes it", async () => b.exists('.w-dialog input[type="password"]'));
+await setValue('.w-dialog input[type="password"]', KEY);
+await setValue('.w-dialog input.k-mono', "DESK_API_KEY");
+if (!(await b.pressText(".w-dialog button", "Give it"))) cleanup(1, "what was typed cannot be given");
+await b.waitFor("the provider says it was given", async () =>
+  (await b.evaluate(`document.querySelector('.provider-row[data-provider="desk"]')?.innerText ?? ""`)).includes("Given"), 100);
+if ((await b.evaluate("document.body.innerText")).includes(KEY)) cleanup(1, "the page shows what was given back");
+step("the provider is given what opens it, once");
+
+// --- Settings: the model, what the agent is for --------------------------
+await b.openAgent(profile, "settings");
+await b.waitFor("the settings", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
+if (!(await b.pressText("#settings-together .k-row button", "Change"))) cleanup(1, "the model cannot be changed");
+await b.waitFor("the providers to choose from", async () =>
+  (await b.evaluate(`[...(document.getElementById("profile-model-provider")?.options ?? [])].map((o) => o.value).join(",")`)).includes("desk"), 100);
 await choose("#profile-model-provider", "desk");
 await saved("the provider");
 await b.waitFor("its models offered", async () =>
@@ -67,8 +85,19 @@ await b.click("#save-role");
 await saved("the role");
 step("the role is written");
 
+// It works by itself inside its folder, so a command it runs is not asked
+// about: the walk is about what it was handed.
+await choose("#profile-permissions", "workspace-permissions");
+await b.waitFor("how it asks, taken", async () =>
+  (await b.evaluate(`document.querySelector("#settings-permissions #environment-status")?.textContent ?? ""`)) === "Saved.", 150);
+
 // --- The agent reads it back ------------------------------------------------
 await b.openAgent(profile);
+const handed = (await b.say(JSON.stringify({run: `test -n "$DESK_API_KEY" && echo it-was-handed-over || echo it-has-nothing`}))).at(-1) ?? "";
+if (!handed.includes("it-was-handed-over")) cleanup(1, `the agent was not handed what its provider was given: ${handed}`);
+if (JSON.stringify(await b.said()).includes(KEY)) cleanup(1, "what the provider was given is in the chat");
+step("the agent was handed what opens its provider, and nobody typed it into the agent");
+
 const answered = await b.say(JSON.stringify({read: "AGENTS.md"}));
 const instructions = answered[answered.length - 1] ?? "";
 if (!instructions.includes(role)) cleanup(1, `the agent did not get its role: ${instructions}`);

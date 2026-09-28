@@ -153,11 +153,8 @@ await b.openAgent(agentId, "settings");
 await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
 await b.click("#declare-server-open");
 await b.waitFor("the declaration form", async () => b.exists("#declare-server"));
-await b.evaluate(`(() => {
-  document.getElementById("server-name").value = "notes";
-  document.getElementById("server-command").value = "/bin/cat";
-  document.getElementById("server-args").value = "";
-})()`);
+await b.fill("#server-name", "notes");
+await b.fill("#server-command", "/bin/cat");
 await b.click("#declare-server-save");
 await b.waitFor("the declared server listed", async () =>
   b.exists('#mcp-servers .server-row[data-server="notes"][data-origin="catalogue"]'));
