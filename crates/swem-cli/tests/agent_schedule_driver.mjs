@@ -1,11 +1,11 @@
-// A person leaves a standing instruction, and the product carries it out
-// without them.
+// A person makes a schedule, and the product says it on time without them.
 //
 // Everything else in this product happens because somebody asked for it in
-// the moment. This walk sets a schedule, then touches nothing: no session is
-// started by hand, no prompt is typed. What proves it ran is a file in the
-// agent's outbox that only the agent could have written, and a record that
-// says the clock wrote the turn rather than a person.
+// the moment. This walk makes a schedule in the agent's Schedules, then
+// touches nothing: no chat is begun by hand, nothing is typed to the agent.
+// What proves it was said is a file in the agent's outbox that only the
+// agent could have written, a run that says it was answered, and a chat
+// whose first message is the schedule's own.
 
 import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
 
@@ -18,40 +18,55 @@ if (!url || !answer) {
 }
 
 const b = await launchBrowser({browser, url, label: "agent-schedule"});
+const panel = '[data-agent-panel="schedules"]:not([hidden])';
+const choose = (selector, value) => b.evaluate(`(() => {
+  const field = document.querySelector(${JSON.stringify(selector)});
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(field, ${JSON.stringify(value)});
+  field.dispatchEvent(new Event("change", {bubbles: true}));
+})()`);
+const shown = () => b.evaluate(`document.querySelector(${JSON.stringify(panel)})?.innerText ?? ""`);
 
 step("the product opens");
 const profile = await b.makeAgent("hands");
+const agent = await b.agentOf(profile);
+const kept = async () => (await b.ask(`/api/schedules?agent=${agent}`)).body;
 step("the agent is theirs");
 
-// Nothing has run and nothing is scheduled.
-await b.openAgent(profile, "settings");
-await b.waitFor("the environment panel", async () => b.exists('[data-agent-panel="environment"]:not([hidden])'));
-const before = await b.evaluate(`document.querySelectorAll("#schedules .schedule-row").length`);
-if (before !== 0) cleanup(1, `a new profile already has ${before} schedules`);
-step("nothing is scheduled yet");
+await b.openAgent(profile, "schedules");
+await b.waitFor("its schedules", async () => (await shown()).includes("on time yet"), 100);
+if ((await kept()).schedules.length !== 0) cleanup(1, "a new agent is told something on time already");
+step("nothing is said to it on time yet");
 
-// The standing instruction, in the words a person would type to the agent.
-await b.fill("#schedule-id", "morning");
-await b.fill("#schedule-say", JSON.stringify({write: "outbox/from-the-clock.txt", text: answer}));
-await b.fill("#schedule-minutes", "60");
-await b.click("#schedule-save");
-await b.waitFor("the schedule is listed", async () =>
-  b.exists('#schedules .schedule-row[data-schedule="morning"]'), 200);
-step("a standing instruction is set");
+// What it is told, in the words a person would write to it; every minute,
+// so the walk need not wait long; in a chat of its own.
+const told = JSON.stringify({write: "outbox/from-the-clock.txt", text: answer});
+if (!(await b.pressText(`${panel} button`, "New schedule"))) cleanup(1, "a schedule cannot be made");
+await b.waitFor("the form", async () => b.exists(".w-dialog textarea"));
+await b.fill(".w-dialog textarea", told);
+await choose(".w-dialog select", "every");
+await b.waitFor("how often", async () => b.exists('.w-dialog input[type="number"]'));
+await b.fill('.w-dialog input[type="number"]', "1");
+if (!(await b.pressText(".w-dialog button", "Make the schedule"))) cleanup(1, "the form cannot be sent");
+await b.waitFor("the schedule in the list", async () => (await shown()).includes("Every minute"), 100);
+const made = (await kept()).schedules[0];
+const owner = (await b.ask("/api/people")).body.owner;
+if (made?.made_by !== owner.participant_id || !(await shown()).includes(owner.name)) {
+  cleanup(1, `the schedule does not say who made it: ${JSON.stringify(made)}`);
+}
+step(`a schedule is made: ${made.when_in_words}, by ${made.made_by_name}`);
 
-// And now nothing. No session started, no prompt typed. The clock is the
-// product's, so what happens next happens without this page.
-step("waiting for the clock");
+// And now nothing. The clock is the product's, so what happens next happens
+// without this page.
+step("waiting for its time");
 await b.openAgent(profile, "files");
 await b.waitFor("the Files panel", async () => b.exists('[data-agent-panel="files"]:not([hidden])'));
 await b.waitFor(
-  "the clock to run it",
+  "its time to come",
   async () => {
-    // The clock runs behind the page, so the page is asked rather than told.
     await b.click("#files-refresh");
     return b.exists('[data-files-area="outbox"] [data-file-name="from-the-clock.txt"]');
   },
-  120,
+  150,
   1000,
 );
 step("the agent did the work with nobody watching");
@@ -62,62 +77,46 @@ const served = await b.evaluate(`(async () => {
   const response = await fetch(${JSON.stringify(href)});
   return JSON.stringify({status: response.status, body: await response.text()});
 })()`).then(JSON.parse);
-if (served.body !== answer) cleanup(1, `the clock's turn produced something else: ${JSON.stringify(served)}`);
-step("it wrote what the instruction said");
+if (served.body !== answer) cleanup(1, `what was said on time produced something else: ${JSON.stringify(served)}`);
+step("it wrote what it was told to");
 
-// The schedule now says when it ran, and the session it wrote into is in the
-// list beside the ones a person started.
-await b.openAgent(profile, "settings");
-await b.waitFor("the schedule says it ran", async () => {
-  await b.click("#schedules-refresh");
-  return b.evaluate(`!/not said yet/i.test((document.querySelector('[data-schedule-outcome="morning"]')||{textContent:""}).textContent)`);
-}, 60);
-const outcome = await b.evaluate(
-  `(document.querySelector('[data-schedule-outcome="morning"]')||{textContent:""}).textContent`);
-step(`the schedule records its run (${outcome})`);
+// The run is read where the schedule is, and says how it ended.
+await b.openAgent(profile, "schedules");
+await b.waitFor("the run, answered", async () => (await shown()).includes("Answered"), 120, 500);
+const run = (await kept()).runs.at(-1);
+step(`the run is kept: ${run.state}`);
 
-// The clock is a participant of the chat it speaks in: the chat says who said
-// it, and it was not a person at a browser. Read through the product's own
-// door, because that is where a person would read it.
-const record = await b.evaluate(`(async () => {
-  const schedules = await (await fetch("/api/profiles/hands/schedules")).json();
-  // The whole standing instruction as the product holds it, read before it
-  // is forgotten: what it claimed, and the chat it kept.
-  const kept = schedules[0];
-  const chat = await (await fetch("/api/chats/" + encodeURIComponent(kept?.chat_id))).json();
-  return JSON.stringify({route: kept?.route_id, chat, kept});
-})()`).then(JSON.parse);
-const first = (record.chat.messages || [])[0];
-const clock = (record.chat.chat?.members || []).find((member) => member.participant_id === first?.sender_id);
-const wrote = {surface: first?.channel, author: clock?.name, kind: clock?.kind};
-if (wrote.surface !== "schedule" || wrote.author !== "morning" || wrote.kind !== "schedule") {
-  cleanup(1, `the record does not say the clock said it: ${JSON.stringify(record)}`);
+// The schedule is a participant of the chat it speaks in: the chat says who
+// said it, and it was not a person at a browser.
+const chat = (await b.ask(`/api/chats/${run.chat_id}`)).body;
+const first = (chat.messages ?? [])[0];
+const clock = (chat.chat?.members ?? []).find((member) => member.participant_id === first?.sender_id);
+const wrote = {channel: first?.channel, name: clock?.name, kind: clock?.kind, made_by: clock?.made_by};
+if (wrote.channel !== "schedule" || wrote.kind !== "schedule" || wrote.made_by !== owner.participant_id) {
+  cleanup(1, `the chat does not say the schedule said it: ${JSON.stringify(wrote)}`);
 }
-step(`the chat says who said it (${wrote.author}, a ${wrote.kind})`);
+step(`the chat says who said it (a ${wrote.kind})`);
 
-// And stopped again. A standing instruction a person cannot stop is one the
-// product goes on running without them, so Forget is the other half of
-// setting one - and no walk had ever pressed it.
-await b.click('.schedule-forget[data-schedule="morning"]');
-await b.waitFor("the schedule leaves the list", async () =>
-  !(await b.exists('#schedules .schedule-row[data-schedule="morning"]')), 200);
-// Refreshing asks the host rather than the page, so what comes back is the
-// host's answer and not a row React took away on its own.
-await b.click("#schedules-refresh");
-await b.waitFor("the host agrees it is gone", async () =>
-  !(await b.exists('#schedules .schedule-row[data-schedule="morning"]')), 100);
-const left = await b.evaluate(
-  `(async () => JSON.stringify(await (await fetch("/api/profiles/hands/schedules")).json()))()`,
-).then(JSON.parse);
-if (left.length !== 0) cleanup(1, `the clock still holds the instruction: ${JSON.stringify(left)}`);
-// What it already did is the person's work, and stays where it was put.
+// Paused: the switch is off, and the host keeps it as not due.
+await b.click(`${panel} button[role="switch"]`);
+await b.waitFor("the schedule paused", async () =>
+  (await b.evaluate(`document.querySelector(${JSON.stringify(`${panel} button[role="switch"]`)})?.getAttribute("aria-checked")`)) === "false"
+    && (await shown()).includes("paused"), 100);
+const paused = (await kept()).schedules[0];
+if (paused.enabled || paused.next_due_ms) cleanup(1, `a paused schedule is still due: ${JSON.stringify(paused)}`);
+step("the schedule is paused with its switch");
+
+// And forgotten. What it already did is the person's work and stays.
+if (!(await b.pressText(`${panel} button`, "Forget"))) cleanup(1, "a schedule cannot be forgotten");
+await b.waitFor("the schedule gone", async () => (await shown()).includes("on time yet"), 100);
+if ((await kept()).schedules.length !== 0) cleanup(1, "the host still keeps the schedule");
 await b.openAgent(profile, "files");
 await b.waitFor("the Files panel", async () => b.exists('[data-agent-panel="files"]:not([hidden])'));
 await b.click("#files-refresh");
-await b.waitFor("what the clock wrote is still there", async () =>
+await b.waitFor("what was written is still there", async () =>
   b.exists('[data-files-area="outbox"] [data-file-name="from-the-clock.txt"]'), 100);
-step("the standing instruction stops when a person stops it, and what it did stays");
+step("the schedule stops when a person stops it, and what it did stays");
 
 console.log("schedule OK");
-console.log(JSON.stringify({outcome, served, route: record.route, wrote, schedule: record.kept}));
+console.log(JSON.stringify({served, wrote, schedule: made, run}));
 cleanup(0, "agent schedule done");

@@ -680,11 +680,10 @@ fn a_person_leaves_a_standing_instruction_and_the_product_carries_it_out() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The walk read the lane through the product's own door and found the
-    // clock named there. It also read the standing instruction itself, before
-    // stopping it: what the product had written down is that it claimed its
-    // window before running, and kept the lane it wrote into so its next turn
-    // would join the same conversation.
+    // The walk read the chat through the product's own door and found the
+    // schedule named there. It also read the schedule as the product keeps
+    // it and the run it was said in: due at a moment, taken up, said in a
+    // chat and answered.
     let report: serde_json::Value = serde_json::from_str(
         walked
             .lines()
@@ -692,24 +691,19 @@ fn a_person_leaves_a_standing_instruction_and_the_product_carries_it_out() {
             .expect("the walk reported what it saw"),
     )
     .expect("parse the walk's report");
-    let schedule = &report["schedule"];
-    assert_eq!(schedule["every_minutes"], 60);
+    assert_eq!(
+        report["schedule"]["when"],
+        serde_json::json!({ "kind": "every", "minutes": 1 })
+    );
+    let run = &report["run"];
+    assert_eq!(run["state"], "answered", "{run}");
     assert!(
-        schedule["last_claimed_ms"].as_u64().unwrap_or(0) > 0,
-        "the schedule ran without claiming its window: {schedule}"
+        run["claimed_ms"].as_u64().unwrap_or(0) >= run["due_ms"].as_u64().unwrap_or(u64::MAX),
+        "it was said before it was due: {run}"
     );
     assert!(
-        schedule["route_id"]
-            .as_str()
-            .is_some_and(|route| !route.is_empty()),
-        "the schedule kept no lane: {schedule}"
-    );
-    // And the person stopped it. The page said so; this is the product's own
-    // directory saying the same thing, because a standing instruction still
-    // on disk is one that fires again the next time the product starts.
-    assert!(
-        find_file(&data_root, "morning.json", "schedules").is_none(),
-        "the instruction the person stopped is still on disk"
+        run["chat_id"].as_str().is_some_and(|chat| !chat.is_empty()),
+        "the run was said nowhere: {run}"
     );
 }
 

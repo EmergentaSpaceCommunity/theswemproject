@@ -448,6 +448,14 @@ fn owner_in(transaction: &Transaction<'_>) -> Result<String, RoutingError> {
     Ok(owner)
 }
 
+/// [`free_handle`], for the tables that stand beside these.
+pub(crate) fn free_handle_in(
+    transaction: &Transaction<'_>,
+    wanted: &str,
+) -> Result<String, RoutingError> {
+    free_handle(transaction, wanted)
+}
+
 fn free_handle(transaction: &Transaction<'_>, wanted: &str) -> Result<String, RoutingError> {
     let mut handle = wanted.to_owned();
     let mut attempt = 1_u32;

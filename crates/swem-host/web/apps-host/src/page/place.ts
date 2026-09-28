@@ -4,8 +4,8 @@
 
 import { useSyncExternalStore } from "react";
 
-export type AgentTab = "chat" | "files" | "terminal" | "settings";
-export type ProvidersTab = "models" | "hosts";
+export type AgentTab = "chat" | "files" | "terminal" | "schedules" | "settings";
+export type ProvidersTab = "models" | "hosts" | "time";
 
 export type Place =
   | { at: "home" }
@@ -16,7 +16,7 @@ export type Place =
   | { at: "store" }
   | { at: "app"; server: string };
 
-const TABS: AgentTab[] = ["chat", "files", "terminal", "settings"];
+const TABS: AgentTab[] = ["chat", "files", "terminal", "schedules", "settings"];
 
 export function read(hash: string): Place {
   const [first, second, third, fourth] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
@@ -27,7 +27,7 @@ export function read(hash: string): Place {
     return { at: "agent", agent: second, tab };
   }
   if (first === "chats" && second) return { at: "chat", chat: second };
-  if (first === "providers") return { at: "providers", tab: second === "hosts" ? "hosts" : "models" };
+  if (first === "providers") return { at: "providers", tab: second === "hosts" || second === "time" ? second : "models" };
   if (first === "store") return { at: "store" };
   if (first === "apps" && second) return { at: "app", server: second };
   return { at: "home" };

@@ -466,11 +466,23 @@ impl RoutingLedger {
              );",
         )?;
         let mut ledger = Self { connection };
+        ledger.with_its_schema()?;
+        // Beside the rest and made when missing: the version does not move.
+        ledger.connection.execute_batch(crate::time::TIME_SCHEMA)?;
+        Ok(ledger)
+    }
+
+    fn with_its_schema(&mut self) -> Result<(), RoutingError> {
+        let path = self.connection.path().map(std::path::PathBuf::from);
+        let ledger = self;
         match ledger.stored_version()? {
             Some(version) if version == SCHEMA_VERSION => {}
             None => ledger.create_schema()?,
             Some(1) => {
-                crate::chat_ledger::keep_a_copy(&ledger.connection, path)?;
+                let path = path.ok_or_else(|| {
+                    RoutingError::InvalidBinding("the ledger is kept in no file".into())
+                })?;
+                crate::chat_ledger::keep_a_copy(&ledger.connection, &path)?;
                 ledger.migrate_from_routes()?;
             }
             Some(version) => {
@@ -479,7 +491,7 @@ impl RoutingLedger {
                 )));
             }
         }
-        Ok(ledger)
+        Ok(())
     }
 
     fn stored_version(&self) -> Result<Option<i64>, RoutingError> {

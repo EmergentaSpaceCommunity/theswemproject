@@ -1119,6 +1119,17 @@ impl WorkbenchShellState {
         question_id: &str,
         answer: Value,
     ) -> Result<Question, WorkbenchShellError> {
+        self.answer_in_chat_by(question_id, answer, None).await
+    }
+
+    /// [`Self::answer_in_chat`], answered by somebody other than the person
+    /// the Workbench is: a schedule, for a question nobody came to.
+    pub(super) async fn answer_in_chat_by(
+        &self,
+        question_id: &str,
+        answer: Value,
+        by: Option<String>,
+    ) -> Result<Question, WorkbenchShellError> {
         let id = question_id.to_owned();
         let question = self
             .with_ledger(move |ledger| ledger.question(&id))
@@ -1168,8 +1179,11 @@ impl WorkbenchShellState {
         };
         let id = question_id.to_owned();
         self.with_ledger(move |ledger| {
-            let owner = ledger.owner()?;
-            ledger.answer_question(&id, &kept, &owner.participant_id)
+            let by = match by {
+                Some(by) => by,
+                None => ledger.owner()?.participant_id,
+            };
+            ledger.answer_question(&id, &kept, &by)
         })
         .await
         .map_err(|error| match error {

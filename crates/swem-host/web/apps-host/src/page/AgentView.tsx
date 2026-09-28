@@ -10,8 +10,9 @@ import { sessionStore } from "../agent/store.ts";
 import { TerminalPanel } from "../agent/TerminalPanel.tsx";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
-import { ChatSign, Folder, Gear, Moon, People, Plus, Prompt } from "./icons.tsx";
+import { ChatSign, Clock, Folder, Gear, Moon, People, Plus, Prompt } from "./icons.tsx";
 import { go, type AgentTab } from "./place.ts";
+import { Schedules } from "./Schedules.tsx";
 import type { Chat, Participant } from "./types.ts";
 import { Avatar, names, StateWord, useDoing, useStanding, when } from "./who.tsx";
 import { act, chatsOf, doing, world } from "./world.ts";
@@ -20,6 +21,7 @@ const TABS: { tab: AgentTab; label: string; sign: typeof ChatSign }[] = [
   { tab: "chat", label: "Chat", sign: ChatSign },
   { tab: "files", label: "Files", sign: Folder },
   { tab: "terminal", label: "Terminal", sign: Prompt },
+  { tab: "schedules", label: "Schedules", sign: Clock },
   { tab: "settings", label: "Settings", sign: Gear },
 ];
 
@@ -157,6 +159,9 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
         </Guard>
         <Guard what="The agent's terminal">
           <TerminalPanel hidden={tab !== "terminal"} />
+        </Guard>
+        <Guard what="The agent's schedules">
+          <Schedules agent={agent} hidden={tab !== "schedules"} />
         </Guard>
         <Guard what="The agent's settings">
           <AgentSettings agent={agent} hidden={tab !== "settings"} />

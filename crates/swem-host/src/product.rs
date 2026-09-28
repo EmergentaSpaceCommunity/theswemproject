@@ -141,7 +141,8 @@ impl DataRoot {
         self.root.join("agent-homes")
     }
 
-    /// Standing instructions and their clock.
+    /// Where the clock before the ledger's kept its schedules: they are
+    /// brought into the ledger and the directory is set aside.
     #[must_use]
     pub fn schedules(&self) -> PathBuf {
         self.root.join("schedules")
@@ -463,7 +464,8 @@ impl Assembled {
         // it starts with the product and stops with it, and it holds the
         // same state the page does.
         self.state
-            .enable_schedules(&self.root.schedules())
+            .keep_time(&self.root.schedules())
+            .await
             .map_err(|error| error.to_string())?;
         // What this machine has is looked at while the door opens.
         self.state.look_at_the_machine_meanwhile();

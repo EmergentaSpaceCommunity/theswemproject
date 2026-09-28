@@ -815,45 +815,71 @@ async fn a_page_follows_every_chat_by_one_stream_and_comes_back_to_its_place() {
     fs::remove_dir_all(root).expect("remove fixture root");
 }
 
+/// The moment a schedule is next due, for a test that takes it up then.
+async fn next_due(state: &WorkbenchShellState, schedule_id: &str) -> u64 {
+    let (schedules, _) = state.schedules_shown(None).await.expect("schedules");
+    schedules
+        .iter()
+        .find(|shown| shown.schedule.schedule_id == schedule_id)
+        .and_then(|shown| shown.schedule.next_due_ms)
+        .expect("the schedule is due some time")
+}
+
 #[tokio::test]
-async fn the_clock_says_its_message_into_a_chat_as_a_schedule() {
+async fn what_the_old_clock_kept_is_said_on_time_by_the_schedule() {
     let root = fixture_root("clock");
     let (state, _ledger) = shell_of_two(&root);
-    state
-        .enable_schedules(&root.join("schedules"))
-        .expect("the clock");
-    state
-        .set_schedule(
-            "coder",
-            &swem_host::SetScheduleBody {
-                schedule_id: "morning".into(),
-                say: "how are we doing".into(),
-                every_minutes: 60,
-            },
-        )
-        .expect("set a schedule");
+    // What the clock before this one kept, as it kept it.
+    let kept = root.join("schedules");
+    fs::create_dir_all(&kept).expect("the old directory");
+    fs::write(
+        kept.join("morning.json"),
+        json!({
+            "schema": "swem.workbench-schedule.v1",
+            "schedule_id": "morning",
+            "profile_id": "coder",
+            "say": "how are we doing",
+            "every_minutes": 60,
+            "enabled": true,
+        })
+        .to_string(),
+    )
+    .expect("an old schedule");
+    state.keep_time(&kept).await.expect("keep time");
+    assert!(
+        !kept.exists(),
+        "the old schedules were left where they were"
+    );
+    assert!(root.join("schedules.v1").join("morning.json").is_file());
 
-    // It is due at once; the clock looks every ten seconds.
-    let began = std::time::Instant::now();
-    let chat = loop {
-        let chats = state.chats().await.expect("chats");
-        if let Some(chat) = chats.into_iter().find(|chat| chat.title == "morning") {
-            break chat;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(30),
-            "the clock never spoke"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
-    let page = until(&state, &chat.chat_id, "the answer", settled(2)).await;
+    let (schedules, runs) = state.schedules_shown(None).await.expect("schedules");
+    assert!(runs.is_empty());
+    assert_eq!(schedules.len(), 1);
+    let schedule = &schedules[0];
+    assert_eq!(schedule.schedule.say, "how are we doing");
+    assert_eq!(schedule.schedule.when_in_words, "Every hour");
+    assert!(schedule.schedule.enabled);
+    assert_eq!(schedule.chat_title.as_deref(), Some("morning"));
+    let standing = state.keeper().await.expect("who keeps time");
+    assert!(standing.keeping);
+    assert_eq!(standing.used_by, ["coder"]);
+
+    // When it is due it is said, by the schedule, and answered.
+    let due = state
+        .claim_what_is_due(next_due(&state, &schedule.schedule.schedule_id).await)
+        .await;
+    assert_eq!(due.len(), 1);
+    let chat_id = schedule.schedule.chat_id.clone().expect("its chat");
+    state.say_what_is_due(due[0].clone()).await;
+    let page = until(&state, &chat_id, "the answer", settled(2)).await;
     let clock = page
         .chat
         .members
         .iter()
         .find(|member| member.kind == swem_host::ParticipantKind::Schedule)
         .expect("the schedule is in the chat it speaks in");
-    assert_eq!(clock.name, "morning");
+    assert_eq!(clock.participant_id, schedule.schedule.speaker_id);
+    assert_eq!(clock.name, "how are we doing");
     assert_eq!(
         clock.made_by.as_deref(),
         Some(page.chat.created_by.as_str())
@@ -868,28 +894,155 @@ async fn the_clock_says_its_message_into_a_chat_as_a_schedule() {
     let block = given[0].last().expect("the block");
     assert!(block.contains("via: \"schedule\""));
     assert!(
-        block.contains("\"from\":\"morning\",\"name\":\"morning\",\"kind\":\"schedule\",\"trust\":\"principal\""),
+        block.contains(
+            "\"name\":\"how are we doing\",\"kind\":\"schedule\",\"trust\":\"principal\""
+        ),
         "{block}"
     );
-    assert!(block.contains("\"said_above\":true"));
 
-    // The schedule remembers where it spoke and how it went.
+    let (_, runs) = state.schedules_shown(None).await.expect("schedules");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, swem_host::RunState::Answered);
+    assert_eq!(runs[0].chat_id.as_deref(), Some(chat_id.as_str()));
+    assert!(!runs[0].late);
+
+    // Off, it is not due whatever the time.
+    state
+        .change_schedule(
+            &schedule.schedule.schedule_id,
+            swem_host::TimedMessageChange {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("turn it off");
+    assert!(state.claim_what_is_due(u64::MAX / 4).await.is_empty());
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk: said, asked, left alone, refused in time, ended"
+)]
+async fn what_an_agent_asks_with_nobody_there_is_refused_for_it_in_time() {
+    let root = fixture_root("unattended");
+    let (state, _ledger) = shell_of_two(&root);
+    state
+        .keep_time(&root.join("schedules"))
+        .await
+        .expect("keep time");
+    let agent = state.chat_people().await.expect("people")["participants"]
+        .as_array()
+        .expect("participants")
+        .iter()
+        .find(|one| one["profile_id"] == "coder")
+        .expect("the agent")["participant_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    // A new chat each time: the schedule names none.
+    let wants =
+        json!({ "fixture": "mcp-echo-permission-v0.1", "server": "echo", "nonce": "unattended" });
+    let made = state
+        .make_schedule(
+            swem_host::workbench_shell::NewScheduleBody {
+                agent_id: agent,
+                chat_id: None,
+                say: wants.to_string(),
+                when: swem_host::When::Every { minutes: 30 },
+            },
+            None,
+        )
+        .await
+        .expect("make a schedule");
+    assert_eq!(made.chat_title, None);
+    let at = next_due(&state, &made.schedule.schedule_id).await;
+    let due = state.claim_what_is_due(at).await;
+    assert_eq!(due.len(), 1);
+    let saying = tokio::spawn({
+        let state = Arc::clone(&state);
+        let due = due[0].clone();
+        async move { state.say_what_is_due(due).await }
+    });
+
+    // The agent asks before it does something, and nobody is there.
     let began = std::time::Instant::now();
-    loop {
-        let kept = state.profile_schedules("coder").expect("schedules");
-        if let Some(outcome) = &kept[0].last_outcome {
-            assert!(outcome.ends_with("(done)"), "{outcome}");
-            assert_eq!(kept[0].chat_id.as_deref(), Some(chat.chat_id.as_str()));
-            assert!(kept[0].route_id.is_some());
-            break;
+    let chat_id = loop {
+        let (_, runs) = state.schedules_shown(None).await.expect("schedules");
+        if let Some(chat_id) = runs.first().and_then(|run| run.chat_id.clone()) {
+            break chat_id;
         }
         assert!(
-            began.elapsed() < Duration::from_secs(10),
-            "no outcome was kept"
+            began.elapsed() < Duration::from_secs(30),
+            "it was never said"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    state.forget_schedule("morning").expect("forget");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let page = until(&state, &chat_id, "the question", |page| {
+        !page.questions.is_empty()
+    })
+    .await;
+    let question = page.questions[0].clone();
+
+    // While it is due again the run before it has not ended: passed over.
+    assert!(state.claim_what_is_due(at + 30 * 60_000).await.is_empty());
+
+    // A person has half an hour. Before it is over nothing is answered.
+    // It was asked now, whatever moment the run was taken up at.
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis(),
+    )
+    .expect("a time that fits");
+    state.refuse_what_nobody_answered(now + 29 * 60_000).await;
+    let still = state
+        .chat_page(&chat_id, None, 500)
+        .await
+        .expect("read the chat");
+    assert_eq!(still.questions.len(), 1, "it was refused before its time");
+
+    // After it, the schedule refuses for them, in the engine's own words,
+    // and the turn ends.
+    state.refuse_what_nobody_answered(u64::MAX / 4).await;
+    saying.await.expect("the run ended");
+    let page = until(&state, &chat_id, "the turn to finish", settled(2)).await;
+    assert!(page.questions.is_empty());
+    assert!(
+        !root.join("mcp-receipt.json").is_file(),
+        "what nobody allowed was done"
+    );
+    let answered = page
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "chat/question")
+        .expect("the question moved");
+    assert_eq!(answered.payload["question_id"], question.question_id);
+    assert_eq!(answered.payload["state"], "answered");
+    assert_eq!(answered.payload["answered_by"], made.schedule.speaker_id);
+    let refused = question.asked["options"]
+        .as_array()
+        .expect("options")
+        .iter()
+        .find(|option| {
+            option["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("reject"))
+        })
+        .expect("the engine offered a way to refuse")["optionId"]
+        .clone();
+    assert_eq!(answered.payload["answer"]["option"], refused);
+
+    let (_, runs) = state.schedules_shown(None).await.expect("schedules");
+    assert_eq!(
+        runs.iter().map(|run| run.state).collect::<Vec<_>>(),
+        [swem_host::RunState::Skipped, swem_host::RunState::Answered]
+    );
     state.let_go_of(None).await;
     fs::remove_dir_all(root).expect("remove fixture root");
 }

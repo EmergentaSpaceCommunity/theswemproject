@@ -63,10 +63,10 @@ mod runtime;
 #[path = "workbench_shell/stream.rs"]
 mod stream;
 pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
-#[path = "workbench_shell/schedules.rs"]
-mod schedules;
 mod store;
-pub use schedules::{SCHEDULE_SURFACE, Schedule, ScheduleBook, SetScheduleBody};
+#[path = "workbench_shell/timekeeper.rs"]
+mod timekeeper;
+pub use timekeeper::{KeeperStanding, NewScheduleBody, ScheduleShown};
 #[path = "workbench_shell/terminal.rs"]
 mod terminal;
 use crate::workbench_content::{WorkbenchContentSource, WorkbenchContentStore};
@@ -794,7 +794,8 @@ pub struct WorkbenchShellState {
     store: std::sync::OnceLock<store::StoreHome>,
     /// The standing instructions a clock runs, and the directory they are
     /// kept in. Absent until a host enables them.
-    schedules: std::sync::OnceLock<ScheduleBook>,
+    /// The keeper's lock, held for as long as this process keeps time.
+    timekeeper: std::sync::OnceLock<std::fs::File>,
     /// The terminals open on this host. A terminal runs in the environment of
     /// one profile, which is how an agent that signs in at a prompt is signed
     /// in at all - and, since a session may open one over ACP, how an agent
@@ -1007,7 +1008,7 @@ impl WorkbenchShellState {
             machine_look: std::sync::RwLock::new(None),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
-            schedules: std::sync::OnceLock::new(),
+            timekeeper: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
             chat_runtime: runtime::ChatRuntime::default(),
         })
@@ -4156,24 +4157,41 @@ async fn route_shell(
         (&Method::GET, ["api", "agents", agent_id, "install-plan"]) => {
             json_result(state.agent_install_plan(agent_id))
         }
-        (&Method::GET, ["api", "profiles", profile_id, "schedules"]) => {
-            json_result(state.profile_schedules(profile_id))
-        }
-        (&Method::POST, ["api", "profiles", profile_id, "schedules"]) => {
+        // Schedules: messages that arrive on time.
+        (&Method::GET, ["api", "schedules"]) => json_result(
+            state
+                .schedules_shown(query_param(query.as_deref(), "agent"))
+                .await
+                .map(|(schedules, runs)| json!({ "schedules": schedules, "runs": runs })),
+        ),
+        (&Method::POST, ["api", "schedules"]) => {
             let body = match read_json(request).await.and_then(|value| {
-                serde_json::from_value::<SetScheduleBody>(value)
+                serde_json::from_value::<NewScheduleBody>(value)
                     .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
             }) {
                 Ok(body) => body,
                 Err(error) => return error_response(&error),
             };
-            json_result(state.set_schedule(profile_id, &body))
+            json_result(state.make_schedule(body, None).await)
+        }
+        (&Method::PATCH, ["api", "schedules", schedule_id]) => {
+            let schedule_id = (*schedule_id).to_owned();
+            let change = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<crate::TimedMessageChange>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(change) => change,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.change_schedule(&schedule_id, change).await)
         }
         (&Method::DELETE, ["api", "schedules", schedule_id]) => json_result(
             state
                 .forget_schedule(schedule_id)
+                .await
                 .map(|()| json!({ "forgotten": schedule_id })),
         ),
+        (&Method::GET, ["api", "time"]) => json_result(state.keeper().await),
         (&Method::GET, ["api", "profiles", profile_id, "files"]) => {
             json_result(state.profile_files(profile_id).await)
         }

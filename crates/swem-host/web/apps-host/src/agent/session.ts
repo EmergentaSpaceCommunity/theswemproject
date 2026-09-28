@@ -1,5 +1,5 @@
 // What an agent is set up with, as the page edits it: its profile, the
-// providers and servers it names, its keys, its files and its schedules.
+// providers and servers it names, its keys and its files.
 //
 // What is said in chats is not here; that is `page/world.ts`. `fetch` is
 // injected so a test drives this with a fake host and asks what a person
@@ -251,18 +251,6 @@ export interface ProfileSecrets {
   secrets: SecretEntry[];
 }
 
-/// A standing instruction a clock runs.
-export interface Schedule {
-  schedule_id: string;
-  profile_id: string;
-  say: string;
-  every_minutes: number;
-  enabled: boolean;
-  last_claimed_ms?: number;
-  route_id?: string;
-  last_outcome?: string;
-}
-
 /// One file in the agent's inbox or outbox.
 export interface HandedFile {
   area: string;
@@ -377,8 +365,6 @@ export interface SessionState {
   /// that could not be read are different things to a person waiting for a
   /// file, and the panel must not say the first when it means the second.
   filesStatus: string;
-  /// The standing instructions of the selected profile.
-  schedules: Schedule[];
   /// Every MCP server this host can attach to an agent.
   mcpServers: McpServerView[];
   /// Whether the host has said what it declares yet: until it has, a server
@@ -413,7 +399,6 @@ export class SessionStore {
       secrets: {},
       files: [],
       filesStatus: "",
-      schedules: [],
       mcpServers: [],
       mcpServersKnown: false,
       permissionProfiles: [],
@@ -776,59 +761,9 @@ export class SessionStore {
     }
   }
 
-  /// The standing instructions this profile's clock runs.
-  async loadSchedules(profileId?: string): Promise<void> {
-    const wanted = profileId ?? this.state.profileId;
-    if (!wanted) {
-      this.set({ schedules: [] });
-      return;
-    }
-    try {
-      const schedules = await this.api<Schedule[]>(
-        "GET",
-        `/api/profiles/${encodeURIComponent(wanted)}/schedules`,
-      );
-      if (this.state.profileId === wanted) this.set({ schedules });
-    } catch {
-      // A host that keeps no schedules simply shows none.
-      if (this.state.profileId === wanted) this.set({ schedules: [] });
-    }
-  }
-
-  /// Set one. It runs once straight away, so a person sees what it does
-  /// rather than waiting an interval to find out.
-  async setSchedule(scheduleId: string, say: string, everyMinutes: number): Promise<boolean> {
-    const profileId = this.state.profileId;
-    if (!profileId) return false;
-    this.set({ environmentStatus: "Saving…" });
-    try {
-      await this.api("POST", `/api/profiles/${encodeURIComponent(profileId)}/schedules`, {
-        schedule_id: scheduleId,
-        say,
-        every_minutes: everyMinutes,
-      });
-      await this.loadSchedules(profileId);
-      this.set({ environmentStatus: "Saved." });
-      return true;
-    } catch (error) {
-      this.set({ environmentStatus: (error as Error).message });
-      return false;
-    }
-  }
-
-  async forgetSchedule(scheduleId: string): Promise<void> {
-    try {
-      await this.api("DELETE", `/api/schedules/${encodeURIComponent(scheduleId)}`);
-      await this.loadSchedules();
-    } catch (error) {
-      this.set({ environmentStatus: (error as Error).message });
-    }
-  }
-
   async loadHandshake(profileId: string): Promise<void> {
     if (!profileId) return;
     void this.loadFiles(profileId);
-    void this.loadSchedules(profileId);
     try {
       const [handshake, secrets] = await Promise.all([
         this.api<Handshake>("GET", `/api/profiles/${encodeURIComponent(profileId)}/handshake`),

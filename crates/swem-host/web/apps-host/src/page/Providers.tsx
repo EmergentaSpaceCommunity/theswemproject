@@ -6,15 +6,17 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useStore } from "zustand";
 
-import { Box, Brain, Laptop, Plus } from "./icons.tsx";
+import { Box, Brain, Clock, Laptop, Plus } from "./icons.tsx";
 import { go, type ProvidersTab } from "./place.ts";
 import { gigabytes, providers, providing, when, type EngineLook, type HostStanding, type ModelProviderStanding } from "./providers.ts";
+import { time, timing } from "./time.ts";
 import { Avatar } from "./who.tsx";
 import { world } from "./world.ts";
 
 const TABS: { tab: ProvidersTab; label: string; sign: typeof Brain }[] = [
   { tab: "models", label: "Models", sign: Brain },
   { tab: "hosts", label: "Hosts", sign: Laptop },
+  { tab: "time", label: "Time", sign: Clock },
 ];
 
 /// The agents that stand on something, by their faces.
@@ -391,6 +393,44 @@ function Hosts() {
   );
 }
 
+function Time() {
+  const keeper = useStore(time, (known) => known.keeper);
+  const [problem, setProblem] = useState("");
+  useEffect(() => {
+    timing.keeper().catch((error: Error) => setProblem(error.message));
+  }, []);
+  return (
+    <>
+      <div className="k-notice">
+        Time is never kept inside an agent's machine. A machine that sleeps between messages costs nothing between runs, and is woken only to do the work.
+      </div>
+      <section className="k-card k-stack">
+        <div className="w-col w-close">
+          <h2 className="k-heading">Who keeps time</h2>
+          <span className="k-caption">
+            A schedule is a message that arrives on time. Whoever keeps time stores it and, when it is due, has SWEM say it in its chat.
+          </span>
+        </div>
+        {problem ? <div className="k-notice k-danger">{problem}</div> : null}
+        {keeper ? (
+          <div className="k-row w-nowrap w-top">
+            <Clock size={18} />
+            <span className="k-two k-grow">
+              <span className="k-name">This SWEM</span>
+              <span className="k-caption">Built in. Keeps time for as long as SWEM runs, in {keeper.zone} time.</span>
+              <span className="k-caption">On this computer: what was due while it was asleep or SWEM was closed is said once, late.</span>
+            </span>
+            <UsedBy profiles={keeper.used_by} />
+            <Standing tone={keeper.keeping ? "ready" : "asking"}>{keeper.keeping ? "Keeping time" : "Another SWEM here keeps it"}</Standing>
+          </div>
+        ) : (
+          <span className="k-caption">Reading…</span>
+        )}
+      </section>
+    </>
+  );
+}
+
 export function Providers({ tab }: { tab: ProvidersTab }) {
   const problem = useStore(providers, (state) => state.problem);
   return (
@@ -417,7 +457,7 @@ export function Providers({ tab }: { tab: ProvidersTab }) {
       </header>
       <div className="w-page">
         {problem ? <div className="k-notice k-danger">{problem}</div> : null}
-        {tab === "hosts" ? <Hosts /> : <Models />}
+        {tab === "hosts" ? <Hosts /> : tab === "time" ? <Time /> : <Models />}
       </div>
     </main>
   );

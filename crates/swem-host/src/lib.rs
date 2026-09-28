@@ -37,6 +37,7 @@ mod profile;
 mod routing;
 mod session;
 mod surface;
+mod time;
 pub mod workbench_apps;
 mod workbench_content;
 mod workbench_files;
@@ -63,6 +64,7 @@ pub use session::agent_takes;
 pub use session::*;
 pub(crate) use surface::NativeOutputProjection;
 pub use surface::{NativeSessionEvent, SurfaceEventSource};
+pub use time::{Due, NewTimedMessage, RunState, TimedMessage, TimedMessageChange, TimedRun, When};
 pub use workbench_apps::{
     AppAttachmentView, DiscoveredAppResource, DiscoveredAppTool, MCP_APP_MIME, OpenedApp,
     RelayRefusal,
@@ -84,12 +86,12 @@ pub use workbench_shell::{
     DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, McpServerOrigin, McpServerView,
     ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
     OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
-    ResolvedDirectAgentConnection, SCHEDULE_SURFACE, SaidInChat, Saying, Schedule, ScheduleBook,
-    SetScheduleBody, ShellConnectionMode, StartChatBody, StoreEntry, StoreIndexView,
-    StoreInstallBody, StorePlanBody, StoreView, TerminalInputBody, TerminalOutput,
-    TerminalSizeBody, TerminalView, WorkbenchAgentOption, WorkbenchOnboarding, WorkbenchShellError,
-    WorkbenchShellHandle, WorkbenchShellState, credential_environment, mint_session_token,
-    serve_workbench_http, serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
+    ResolvedDirectAgentConnection, SaidInChat, Saying, ShellConnectionMode, StartChatBody,
+    StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreView, TerminalInputBody,
+    TerminalOutput, TerminalSizeBody, TerminalView, WorkbenchAgentOption, WorkbenchOnboarding,
+    WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState, credential_environment,
+    mint_session_token, serve_workbench_http, serve_workbench_http_with_apps,
+    serve_workbench_http_with_apps_at,
 };
 
 pub const ACP_REGISTRY_INDEX: &str =

@@ -1,5 +1,6 @@
 // An agent's settings: what it is put together from, who it is, where it
-// works, what it reaches, what it knows how to do, how it asks.
+// works, what it reaches, what it knows how to do, how it asks. What it is
+// told on time is its Schedules, a tab of its own.
 //
 // Each part is a card of its own and says for itself what became of what
 // was done in it. What is chosen from a list is taken when it is chosen;
@@ -28,7 +29,6 @@ const PARTS: { part: Part; label: string }[] = [
   { part: "skills", label: "Skills" },
   { part: "permissions", label: "Permissions" },
   { part: "signin", label: "Signing in" },
-  { part: "clock", label: "On its own" },
 ];
 
 function Card({ part, title, about, children }: { part: Part; title: string; about?: string; children: ReactNode }) {
@@ -606,78 +606,6 @@ function Permissions({ profile }: { profile: Profile }) {
   );
 }
 
-interface Instruction {
-  schedule_id: string;
-  say: string;
-  every_minutes: number;
-}
-
-function OnItsOwn() {
-  const state = useSession();
-  const form = useForm<Instruction>({ defaultValues: { schedule_id: "", say: "", every_minutes: 60 } });
-  const set = form.handleSubmit(async (standing) => {
-    inPart("clock");
-    if (await sessionStore.setSchedule(standing.schedule_id.trim(), standing.say.trim(), Number(standing.every_minutes) || 60)) form.reset();
-  });
-  return (
-    <Card
-      part="clock"
-      title="On its own"
-      about="Something said to it on time, in the words you would write. It is said once as soon as it is set, then again each time. SWEM keeps the time, so nothing is said while it is closed."
-    >
-      <div id="schedules">
-        {state.schedules.map((schedule) => (
-          <div className="schedule-row k-row w-nowrap" data-schedule={schedule.schedule_id} key={schedule.schedule_id}>
-            <span className="k-two k-grow">
-              <span className="k-name">{schedule.schedule_id}</span>
-              <span className="k-caption">{schedule.say}</span>
-              <span className="k-caption" data-schedule-outcome={schedule.schedule_id}>
-                {schedule.last_outcome ?? "Not said yet"}
-              </span>
-            </span>
-            <span className="k-chip">every {schedule.every_minutes} min</span>
-            <button
-              type="button"
-              className="k-btn k-quiet schedule-forget"
-              data-schedule={schedule.schedule_id}
-              disabled={state.busy}
-              onClick={() => {
-                inPart("clock");
-                void sessionStore.forgetSchedule(schedule.schedule_id);
-              }}
-            >
-              Forget
-            </button>
-          </div>
-        ))}
-        {state.schedules.length === 0 ? <span className="k-caption">Nothing yet.</span> : null}
-      </div>
-      <form className="k-card k-stack w-inset" onSubmit={(event) => void set(event)}>
-        <div className="w-pair">
-          <Field label="What to call it">
-            <input className="k-field" id="schedule-id" placeholder="morning" spellCheck={false} {...form.register("schedule_id")} />
-          </Field>
-          <Field label="Every how many minutes">
-            <input className="k-field" id="schedule-minutes" type="number" min={1} {...form.register("every_minutes", { valueAsNumber: true })} />
-          </Field>
-        </div>
-        <Field label="What to say to it">
-          <input className="k-field" id="schedule-say" {...form.register("say")} />
-        </Field>
-        <div className="k-inline w-tight">
-          <button type="submit" id="schedule-save" className="k-btn" disabled={state.busy}>
-            Set it
-          </button>
-          <button type="button" id="schedules-refresh" className="k-btn k-quiet" onClick={() => void sessionStore.loadSchedules()}>
-            Read again
-          </button>
-          <Said part="clock" />
-        </div>
-      </form>
-    </Card>
-  );
-}
-
 export function AgentSettings({ agent, hidden }: { agent: Participant; hidden: boolean }) {
   const state = useSession();
   const profile = state.profiles.find((candidate) => candidate.profile_id === state.profileId) ?? null;
@@ -714,7 +642,6 @@ export function AgentSettings({ agent, hidden }: { agent: Participant; hidden: b
             <Card part="signin" title="Signing in" about="How its engine is let in where it answers from.">
               <SignIn needsSignIn={needsSignIn} />
             </Card>
-            <OnItsOwn />
             <span className="k-caption">What is changed here is what it starts with the next time it starts.</span>
           </div>
         </>
