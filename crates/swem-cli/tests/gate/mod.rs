@@ -488,6 +488,36 @@ pub fn declare_the_fixture_agent(data_root: &Path) {
     .expect("write the agent declaration");
 }
 
+/// An agent that says back what it was told, declared the same way. What
+/// it says names whoever it was told to name, which is what makes two of
+/// them in one chat go on answering each other.
+pub fn declare_an_agent_that_says_it_back(data_root: &Path) {
+    let echo = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join(if cfg!(windows) {
+            "swem-echo-agent.exe"
+        } else {
+            "swem-echo-agent"
+        });
+    assert!(
+        echo.is_file(),
+        "build the fixture agent first: cargo build -p swem-host --bin swem-echo-agent"
+    );
+    let agents = data_root.join("SWEM").join("workbench").join("agents");
+    std::fs::create_dir_all(&agents).expect("create the agent directory");
+    std::fs::write(
+        agents.join("echo.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id": "echo",
+            "name": "Says it back",
+            "command": echo.display().to_string(),
+        }))
+        .expect("serialize the declaration"),
+    )
+    .expect("write the agent declaration");
+}
+
 /// One HTTP request to the running product, as any other program on this
 /// machine can make it: the status, then the body.
 ///

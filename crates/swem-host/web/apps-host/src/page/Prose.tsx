@@ -5,7 +5,7 @@
 // middle of a mark; it is read as if the mark were closed, so the page does
 // not flicker between stars and bold. Code is coloured once it is whole.
 
-import { memo, useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
@@ -30,6 +30,7 @@ import typescript from "shiki/langs/typescript.mjs";
 import yaml from "shiki/langs/yaml.mjs";
 
 import { Check, Copy } from "./icons.tsx";
+import { withNames } from "./names.ts";
 
 const THEME = "swem";
 const theme = createCssVariablesTheme({ name: THEME, variablePrefix: "--k-code-", fontStyle: true });
@@ -108,10 +109,44 @@ const parts: Components = {
   },
 };
 
+/// The handles of those who are in the chat that is being read: a name
+/// after `@` that is one of them stands out.
+export const Handles = createContext<string[]>([]);
+
+interface Node {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: Node[];
+}
+
+/// Set the names in what was written apart, everywhere but in code and in
+/// links, where an `@` is part of something else.
+const named = (handles: string[]) => () => (tree: Node) => {
+  const through = (node: Node) => {
+    if (!node.children || node.tagName === "code" || node.tagName === "pre" || node.tagName === "a") return;
+    node.children = node.children.flatMap((child): Node[] => {
+      if (child.type !== "text" || !child.value?.includes("@")) {
+        through(child);
+        return [child];
+      }
+      return withNames(child.value, handles).map((piece) =>
+        typeof piece === "string"
+          ? { type: "text", value: piece }
+          : { type: "element", tagName: "span", properties: { className: ["w-mention"] }, children: [{ type: "text", value: `@${piece.name}` }] },
+      );
+    });
+  };
+  through(tree);
+};
+
 export const Prose = memo(function Prose({ text, settled }: { text: string; settled: boolean }) {
+  const handles = useContext(Handles);
+  const rehype = useMemo(() => (handles.length > 0 ? [named(handles)] : []), [handles]);
   return (
     <div className="k-prose">
-      <Markdown remarkPlugins={[remarkGfm]} components={parts}>
+      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={rehype} components={parts}>
         {settled ? text : remend(text)}
       </Markdown>
     </div>

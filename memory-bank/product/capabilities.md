@@ -11,6 +11,7 @@
 | Store over the ACP registry and added catalogs; servers and skills installed and used | proven | GJ-03; `tests/store.rs` |
 | Chats listed, read with each message under its sender, gone on with, kept across restarts | proven by hand and below the page | GJ-04 |
 | Several agents at work at once; a turn stopped from the composer; a question answered after the page was closed | proven by hand and below the page | GJ-09 |
+| A chat of several agents: named and answered, members brought in and taken out, the chain of replies held at the chat's limit | proven | GJ-12; `chat_runtime`, `chats.rs` |
 | Markdown, tables and coloured code in a chat; a rail of agents and chats; both themes | proven by hand | ExecPlan 005 |
 | Agent in a Podman container | proven where Podman exists | GJ-05 |
 | Editor door over ACP: same agent, files, resume, several windows | proven | GJ-06 |

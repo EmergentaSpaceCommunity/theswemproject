@@ -40,9 +40,22 @@ struct StopBody {
     agent_id: Option<String>,
 }
 
+/// What is changed about a chat: what it is called, its rules. What is
+/// left out stays.
 #[derive(Deserialize)]
-struct RenameBody {
-    title: String,
+struct ChangeChatBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    answer_rule: Option<String>,
+    #[serde(default)]
+    reply_limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct BringBody {
+    /// The profile of the agent that is brought in.
+    agent: String,
 }
 
 /// What somebody is called from now on; what is left out stays.
@@ -143,6 +156,23 @@ impl WorkbenchShellState {
         })
         .await
         .map_err(ledger_refusal)
+    }
+
+    async fn change_chat(
+        &self,
+        chat_id: &str,
+        change: ChangeChatBody,
+    ) -> Result<crate::Chat, WorkbenchShellError> {
+        let mut chat = self.chat_named(chat_id).await?;
+        if let Some(title) = change.title {
+            chat = self.rename_chat(chat_id, title).await?;
+        }
+        if change.answer_rule.is_some() || change.reply_limit.is_some() {
+            chat = self
+                .rule_chat(chat_id, change.answer_rule, change.reply_limit)
+                .await?;
+        }
+        Ok(chat)
     }
 
     /// The stream of everything that happens, from a place or from now.
@@ -305,10 +335,20 @@ pub(super) async fn route_chats(
         }
         (&Method::PATCH, ["api", "chats", chat_id]) => {
             let chat_id = (*chat_id).to_owned();
-            match body_of::<RenameBody>(request).await {
-                Ok(body) => json_result(state.rename_chat(&chat_id, body.title).await),
+            match body_of::<ChangeChatBody>(request).await {
+                Ok(body) => json_result(state.change_chat(&chat_id, body).await),
                 Err(error) => error_response(&error),
             }
+        }
+        (&Method::POST, ["api", "chats", chat_id, "members"]) => {
+            let chat_id = (*chat_id).to_owned();
+            match body_of::<BringBody>(request).await {
+                Ok(body) => json_result(state.bring_into_chat(&chat_id, &body.agent).await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::DELETE, ["api", "chats", chat_id, "members", participant_id]) => {
+            json_result(state.take_out_of_chat(chat_id, participant_id).await)
         }
         (&Method::POST, ["api", "chats", chat_id, "messages"]) => {
             let chat_id = (*chat_id).to_owned();

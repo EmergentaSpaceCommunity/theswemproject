@@ -130,3 +130,9 @@ html, body, #workbench-root { height: 100%; }
 .w-table td.w-end, .w-table th.w-end { text-align: right; }
 .w-facts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .w-fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+/* A chat of several. */
+.w-mention { color: var(--color-text-info); font-weight: var(--font-weight-semibold); }
+.w-chain { align-self: center; }
+.w-end-items { align-items: flex-end; }
+.w-commands .k-menu-item { display: flex; align-items: center; gap: 8px; }

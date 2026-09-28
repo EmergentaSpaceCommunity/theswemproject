@@ -16,7 +16,7 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 | A3 | read markdown and code; use a rail of agents and chats; switch theme | **done** (2026-09-27, ExecPlan 005, with A2) |
 | A4 | give a key once in Providers; edit an agent in forms by section; see what this machine offers | **done** (2026-09-28, ExecPlan 006); the record of hosts is left to B1 |
 | A5 | schedule a message into a chat, pause it, and let the agent make its own | **done** (2026-09-28, ExecPlan 007) |
-| A6 | put two agents in one chat; a chain of agent replies waits for a person at its limit | |
+| A6 | put two agents in one chat; a chain of agent replies waits for a person at its limit | **done** (2026-09-28, ExecPlan 008) |
 
 ## B — Hosts
 

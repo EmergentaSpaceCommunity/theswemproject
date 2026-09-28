@@ -38,6 +38,15 @@ They read the last runs. Asked to check back, the agent makes a schedule itself,
 person switches it off. Providers says who keeps time. Walk:
 `product_front_door::a_person_leaves_a_standing_instruction_and_the_product_carries_it_out`.
 
+## GJ-12 — A chat of several
+
+A person starts a chat with two agents from the rail. What they write is for who it names: they
+pick a name after `@`, the one named answers and the other does not, and what named nobody
+says so. An agent that asks another by name is told its answer. Beside the chat they see who
+is in it and what each is doing, bring an agent in and take one out, and set whether agents
+answer only when named and after how many replies to each other the chain waits for a person.
+Walk: `product_front_door::a_person_puts_two_agents_in_one_chat`.
+
 ## GJ-03 — Install from the Store
 
 A person opens the Store, adds a catalog by address, installs an agent, an MCP server and a skill,

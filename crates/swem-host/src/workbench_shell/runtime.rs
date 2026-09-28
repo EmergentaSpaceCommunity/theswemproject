@@ -169,6 +169,24 @@ fn transcript(chat: &Chat, before: &[(Message, Participant)]) -> String {
     text
 }
 
+/// Why a turn is given to its agent, as the agent is told: it was named,
+/// it is the only one, or an agent it asked by name has answered.
+fn why_it_is_given(prepared: &Prepared) -> String {
+    recipients(&prepared.chat, &prepared.sender, &prepared.message.named)
+        .into_iter()
+        .find(|recipient| recipient.agent_id == prepared.agent.participant_id)
+        .map_or_else(
+            || {
+                if prepared.sender.kind == ParticipantKind::Agent {
+                    format!("@{} answers what you asked it", prepared.sender.handle)
+                } else {
+                    "this message is for you".to_owned()
+                }
+            },
+            |found| found.why,
+        )
+}
+
 impl WorkbenchShellState {
     /// Make this process an editor's door: it carries out what that editor
     /// says and nothing else. Returns the door's name, which begins the
@@ -730,10 +748,7 @@ impl WorkbenchShellState {
         } else {
             None
         };
-        let why = recipients(&prepared.chat, &prepared.sender, &prepared.message.named)
-            .into_iter()
-            .find(|recipient| recipient.agent_id == prepared.agent.participant_id)
-            .map_or_else(|| "this message is for you".to_owned(), |found| found.why);
+        let why = why_it_is_given(prepared);
         let agents = prepared
             .chat
             .members
@@ -895,6 +910,7 @@ impl WorkbenchShellState {
             prepared.agent.participant_id.clone(),
             prepared.message.sequence,
         );
+        let (asked_by, asked_named) = (prepared.sender.clone(), prepared.message.named.clone());
         let owed = self
             .with_ledger(move |ledger| {
                 let chat = ledger.chat(&chat_id)?;
@@ -907,10 +923,16 @@ impl WorkbenchShellState {
                 else {
                     return Ok(Vec::new());
                 };
-                let agents: Vec<String> = recipients(&chat, &agent, &answer.named)
+                let mut agents: Vec<String> = recipients(&chat, &agent, &answer.named)
                     .into_iter()
                     .map(|recipient| recipient.agent_id)
                     .collect();
+                // And for the agent that asked it by name.
+                if let Some(back) = super::chats::asker(&chat, &agent, &asked_by, &asked_named)
+                    && !agents.contains(&back.agent_id)
+                {
+                    agents.push(back.agent_id);
+                }
                 if agents.is_empty() {
                     return Ok(Vec::new());
                 }
@@ -1283,6 +1305,20 @@ impl WorkbenchShellState {
             }
         }
         Ok(json!({ "stopped": stopped, "not_begun": not_begun.len() }))
+    }
+
+    /// Close the session this process holds open for one agent in one
+    /// chat, when it holds one.
+    pub async fn let_go_of_in(&self, chat_id: &str, agent_id: &str) {
+        let gone = self
+            .chat_runtime
+            .live
+            .lock()
+            .await
+            .remove(&(chat_id.to_owned(), agent_id.to_owned()));
+        if let Some(connection_id) = gone {
+            let _ = self.disconnect(&connection_id).await;
+        }
     }
 
     /// Close the sessions this process holds open for one chat.

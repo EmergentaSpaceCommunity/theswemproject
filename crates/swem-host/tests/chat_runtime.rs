@@ -1042,6 +1042,165 @@ async fn what_an_agent_asks_with_nobody_there_is_refused_for_it_in_time() {
     fs::remove_dir_all(root).expect("remove fixture root");
 }
 
+fn held(page: &ChatPage) -> usize {
+    page.events
+        .iter()
+        .filter(|event| event.kind == "chat/held")
+        .count()
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk: nobody named, one named, a chain held, gone on, one taken out, all answer"
+)]
+async fn agents_in_one_chat_answer_when_named_and_a_chain_waits_for_a_person() {
+    let root = fixture_root("several");
+    let (state, _ledger) = shell_of_two(&root);
+    let chat = state
+        .start_chat(StartChatBody {
+            title: "Release".into(),
+            agents: vec!["coder".into(), "reviewer".into()],
+        })
+        .await
+        .expect("chat");
+    let id = chat.chat_id.as_str();
+    let agent = |handle: &str| {
+        chat.members
+            .iter()
+            .find(|member| member.handle == handle)
+            .expect("the agent")
+            .participant_id
+            .clone()
+    };
+    let (coder, reviewer) = (agent("coder"), agent("reviewer"));
+
+    // What names nobody is for nobody.
+    let said = state
+        .say_in_chat(id, saying("good morning"))
+        .await
+        .expect("say");
+    assert!(said.deliveries.is_empty());
+
+    // The one named answers; the other does not.
+    let said = state
+        .say_in_chat(id, saying("@coder say hello"))
+        .await
+        .expect("say");
+    assert_eq!(
+        said.deliveries
+            .iter()
+            .map(|owed| owed.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        [coder.as_str()]
+    );
+    let page = until(&state, id, "the one named to answer", settled(3)).await;
+    assert_eq!(page.messages[2].sender_id, coder);
+    assert_eq!(page.messages.len(), 3, "somebody nobody named answered");
+
+    // An agent that asks another by name is told what it answered. The
+    // engines here say back what they were told, so the coder, told to ask
+    // the reviewer, names it; the reviewer's answer names the coder too and
+    // goes back; and so they go on until the chat's limit.
+    // What an agent says is passed to who it names. The engines here say
+    // back what they were told, so two that are named go on naming each
+    // other; after two replies the chain waits for a person.
+    let ruled = state
+        .rule_chat(id, None, Some(2))
+        .await
+        .expect("set the limit");
+    assert_eq!(
+        (ruled.answer_rule.as_str(), ruled.reply_limit),
+        ("named", 2)
+    );
+    state
+        .say_in_chat(id, saying("@coder and @reviewer, agree on a name"))
+        .await
+        .expect("say");
+    let page = until(&state, id, "the chain to wait", |page| {
+        held(page) > 0 && page.deliveries.is_empty()
+    })
+    .await;
+    assert_eq!(held(&page), 1);
+    assert_eq!(page.chat.agent_replies, 2);
+    let said_so_far = page.messages.len();
+
+    // A person writes, and the count starts over.
+    state
+        .say_in_chat(id, saying("@reviewer and @coder, go on"))
+        .await
+        .expect("say");
+    let page = until(&state, id, "the chain to wait again", |page| {
+        held(page) > 1 && page.deliveries.is_empty()
+    })
+    .await;
+    assert!(page.messages.len() > said_so_far + 1);
+    assert_eq!(page.chat.agent_replies, 2);
+
+    // Taken out, it is not in the chat and naming it reaches nobody.
+    let without = state
+        .take_out_of_chat(id, &reviewer)
+        .await
+        .expect("take it out");
+    assert!(
+        !without
+            .members
+            .iter()
+            .any(|member| member.participant_id == reviewer)
+    );
+    let said = state
+        .say_in_chat(id, saying("@reviewer are you there"))
+        .await
+        .expect("say");
+    // One agent is left, and it answers what a person says.
+    assert_eq!(
+        said.deliveries
+            .iter()
+            .map(|owed| owed.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        [coder.as_str()]
+    );
+    until(&state, id, "it to answer", |page| {
+        page.deliveries.is_empty()
+    })
+    .await;
+    assert!(matches!(
+        state.take_out_of_chat(id, &chat.created_by).await,
+        Err(WorkbenchShellError::Invalid(_) | WorkbenchShellError::Conflict(_))
+    ));
+
+    // Back in, in a chat where agents always answer: what names nobody is
+    // for both.
+    state
+        .bring_into_chat(id, "reviewer")
+        .await
+        .expect("bring it in");
+    state
+        .rule_chat(id, Some("always".into()), Some(1))
+        .await
+        .expect("set the rule");
+    let said = state.say_in_chat(id, saying("anybody")).await.expect("say");
+    let mut owed: Vec<&str> = said
+        .deliveries
+        .iter()
+        .map(|owed| owed.agent_id.as_str())
+        .collect();
+    owed.sort_unstable();
+    let mut both = [coder.as_str(), reviewer.as_str()];
+    both.sort_unstable();
+    assert_eq!(owed, both);
+    until(&state, id, "both to answer", |page| {
+        page.deliveries.is_empty()
+    })
+    .await;
+    assert!(matches!(
+        state.rule_chat(id, Some("sometimes".into()), None).await,
+        Err(WorkbenchShellError::Invalid(_) | WorkbenchShellError::Conflict(_))
+    ));
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}
+
 /// Ask the agent to call one of its schedule tools, and read what the tool
 /// answered.
 async fn through_its_tools(

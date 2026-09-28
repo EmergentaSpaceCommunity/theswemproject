@@ -61,7 +61,7 @@ A library plus test fixtures. It owns:
   agent may live is offered from it, and a place that cannot take an agent today says why.
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
   to, guarded by the page's own origin and a per-run secret. Chats (`chats.rs`: who a message is
-  for), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
+  for - who it names, every agent where the chat says so, and the agent that asked), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
   ledger and under a file lock because the editor door is another process; a session is opened
   when a message needs it and let go of when idle; a chat whose engine lost its session goes on
   in a fresh one that is given what was said), and the one stream a page follows every chat by

@@ -110,8 +110,48 @@ pub(crate) fn recipients(chat: &Chat, sender: &Participant, named: &[String]) ->
             agent_id: only.participant_id.clone(),
             why: "the only agent in the chat".to_owned(),
         }],
-        several => by_name(several),
+        several => {
+            let named = by_name(several);
+            // Where the chat says agents always answer, what names nobody
+            // is for all of them; what names somebody is for those named.
+            if named.is_empty() && chat.answer_rule == "always" {
+                several
+                    .iter()
+                    .map(|agent| Recipient {
+                        agent_id: agent.participant_id.clone(),
+                        why: "agents in this chat answer whatever is said".to_owned(),
+                    })
+                    .collect()
+            } else {
+                named
+            }
+        }
     }
+}
+
+/// Who an agent's answer goes back to without being named: the agent that
+/// asked it by name. An agent that asks another is told what it answered;
+/// what it says next goes on only to who it names, so two agents do not
+/// answer each other for ever by having spoken once.
+pub(crate) fn asker(
+    chat: &Chat,
+    agent: &Participant,
+    asked_by: &Participant,
+    asked_named: &[String],
+) -> Option<Recipient> {
+    let asked_it = asked_by.kind == ParticipantKind::Agent
+        && asked_by.participant_id != agent.participant_id
+        && asked_named
+            .iter()
+            .any(|handle| handle.eq_ignore_ascii_case(&agent.handle));
+    let still_here = chat
+        .members
+        .iter()
+        .any(|member| member.participant_id == asked_by.participant_id && !member.retired);
+    (asked_it && still_here).then(|| Recipient {
+        agent_id: asked_by.participant_id.clone(),
+        why: format!("answered by @{}", agent.handle),
+    })
 }
 
 /// A refusal of the ledger as the shell says it.
@@ -198,6 +238,68 @@ impl WorkbenchShellState {
                 agents.push(ledger.agent_of_profile(profile_id)?.participant_id);
             }
             ledger.start_chat(&body.title, &owner.participant_id, &agents)
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// Bring an agent into a chat, by its profile.
+    ///
+    /// # Errors
+    ///
+    /// Not found for a profile or a chat there is not.
+    pub async fn bring_into_chat(
+        &self,
+        chat_id: &str,
+        profile_id: &str,
+    ) -> Result<Chat, WorkbenchShellError> {
+        self.inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let (chat_id, profile_id) = (chat_id.to_owned(), profile_id.to_owned());
+        self.with_ledger(move |ledger| {
+            ledger.chat(&chat_id)?;
+            let agent = ledger.agent_of_profile(&profile_id)?;
+            ledger.join_chat(&chat_id, &agent.participant_id)
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// Take somebody out of a chat. A session the agent had open for the
+    /// chat is let go of.
+    ///
+    /// # Errors
+    ///
+    /// Refuses the one who started the chat and somebody who is not in it.
+    pub async fn take_out_of_chat(
+        &self,
+        chat_id: &str,
+        participant_id: &str,
+    ) -> Result<Chat, WorkbenchShellError> {
+        let (chat, participant) = (chat_id.to_owned(), participant_id.to_owned());
+        let left = self
+            .with_ledger(move |ledger| ledger.leave_chat(&chat, &participant))
+            .await
+            .map_err(ledger_refusal)?;
+        self.let_go_of_in(chat_id, participant_id).await;
+        Ok(left)
+    }
+
+    /// Set a chat's rules.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a rule there is not and a limit outside one to twenty.
+    pub async fn rule_chat(
+        &self,
+        chat_id: &str,
+        answer_rule: Option<String>,
+        reply_limit: Option<u32>,
+    ) -> Result<Chat, WorkbenchShellError> {
+        let chat_id = chat_id.to_owned();
+        self.with_ledger(move |ledger| {
+            ledger.rule_chat(&chat_id, answer_rule.as_deref(), reply_limit)
         })
         .await
         .map_err(ledger_refusal)
@@ -417,6 +519,51 @@ mod tests {
             .iter()
             .map(|recipient| recipient.agent_id.as_str())
             .collect()
+    }
+
+    #[test]
+    fn where_agents_always_answer_what_names_nobody_is_for_all_of_them() {
+        let ada = participant("ada", ParticipantKind::Person);
+        let coder = participant("coder", ParticipantKind::Agent);
+        let reviewer = participant("reviewer", ParticipantKind::Agent);
+        let mut chat = chat(vec![ada.clone(), coder.clone(), reviewer]);
+        chat.answer_rule = "always".into();
+        let for_whom = recipients(&chat, &ada, &[]);
+        assert_eq!(ids(&for_whom), vec!["p_coder", "p_reviewer"]);
+        assert_eq!(
+            for_whom[0].why,
+            "agents in this chat answer whatever is said"
+        );
+        // Naming somebody still means them alone.
+        assert_eq!(
+            ids(&recipients(&chat, &ada, &named(&["reviewer"]))),
+            vec!["p_reviewer"]
+        );
+        // And what an agent says is for who it names, whatever the rule:
+        // two agents do not answer each other for being in one room.
+        assert!(recipients(&chat, &coder, &[]).is_empty());
+    }
+
+    #[test]
+    fn an_agent_that_asked_by_name_is_told_the_answer_and_no_more() {
+        let ada = participant("ada", ParticipantKind::Person);
+        let coder = participant("coder", ParticipantKind::Agent);
+        let reviewer = participant("reviewer", ParticipantKind::Agent);
+        let chat = chat(vec![ada.clone(), coder.clone(), reviewer.clone()]);
+        // The coder asked the reviewer by name: the answer goes back.
+        let back = asker(&chat, &reviewer, &coder, &named(&["Reviewer"])).expect("the asker");
+        assert_eq!(back.agent_id, "p_coder");
+        assert_eq!(back.why, "answered by @reviewer");
+        // What the coder says to that was not asked for by name: it goes
+        // on only to who it names.
+        assert!(asker(&chat, &coder, &reviewer, &[]).is_none());
+        // A person is not an agent to be given a turn, and an agent does
+        // not answer itself.
+        assert!(asker(&chat, &reviewer, &ada, &named(&["reviewer"])).is_none());
+        assert!(asker(&chat, &coder, &coder, &named(&["coder"])).is_none());
+        // One who left the chat is not told.
+        let without = super::tests::chat(vec![ada, reviewer.clone()]);
+        assert!(asker(&without, &reviewer, &coder, &named(&["reviewer"])).is_none());
     }
 
     #[test]

@@ -599,13 +599,24 @@ impl RoutingLedger {
                 "UPDATE chats SET agent_replies = agent_replies + 1 WHERE chat_id = ?1",
                 [chat_id],
             )?;
-        } else {
+        } else if !transaction.query_row(
+            // Said once for a wait: several answers may be held while the
+            // chat waits for the same person.
+            "SELECT EXISTS(
+               SELECT 1 FROM events WHERE chat_id = ?1 AND kind = 'chat/held' AND sequence > (
+                 SELECT COALESCE(MAX(m.sequence), 0) FROM messages m
+                 JOIN participants p ON p.participant_id = m.sender_id
+                 WHERE m.chat_id = ?1 AND p.kind != 'agent'))",
+            [chat_id],
+            |row| row.get::<_, bool>(0),
+        )? {
             chat_event_in(
                 &transaction,
                 chat_id,
                 "chat/held",
                 &json!({
                     "message_id": message_id,
+                    "limit": limit,
                     "in_words": format!(
                         "agents have answered each other {limit} times; the chat waits for a person"
                     ),

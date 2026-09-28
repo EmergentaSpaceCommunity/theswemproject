@@ -707,6 +707,57 @@ fn a_person_leaves_a_standing_instruction_and_the_product_carries_it_out() {
     );
 }
 
+/// A person puts two agents in one chat.
+///
+/// What is said there is for who it names. The one named answers and the
+/// other does not; two that go on naming each other are counted and, at the
+/// chat's limit, wait for a person; one that is taken out is gone from the
+/// chat. The engines here say back what they are told, so whether they
+/// answer each other is decided by the product and by nothing they think.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_puts_two_agents_in_one_chat() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("chat-of-several");
+    gate::declare_an_agent_that_says_it_back(&data_root);
+
+    let (product, url) = start_product(&data_root);
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/chat_of_several_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&url)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the driver of a chat of several");
+    product.stop();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("chat of several OK"),
+        "two agents could not be put in one chat:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_str(
+        walked
+            .lines()
+            .last()
+            .expect("the walk reported what it saw"),
+    )
+    .expect("parse the walk's report");
+    assert_eq!(report["answered_the_one_named"], serde_json::json!(["ada"]));
+    assert_eq!(report["held_at"], 2, "{report}");
+    assert_eq!(
+        report["in_the_chat_at_the_end"].as_array().map(Vec::len),
+        Some(1),
+        "{report}"
+    );
+}
+
 /// A person works with their agent from the editor they write code in.
 ///
 /// Every other agent walk in this file goes through the page. This one does

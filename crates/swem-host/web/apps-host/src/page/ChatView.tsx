@@ -27,7 +27,7 @@ import { ChatApps } from "./ChatApps.tsx";
 import { useOffers } from "./session.ts";
 import { sessionStore, useSession } from "../agent/store.ts";
 import { Arrow, Check, Chevron, Clip, Clock, Cross, Down, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
-import { Prose } from "./Prose.tsx";
+import { Handles, Prose } from "./Prose.tsx";
 import { grouped, type Group, type Item } from "./timeline.ts";
 import type { Chat, Message, Participant, Question } from "./types.ts";
 import { Avatar, StateWord, when } from "./who.tsx";
@@ -406,6 +406,7 @@ function Composer({
   usage,
   offers,
   apps,
+  names = [],
   onSay,
   onStop,
 }: {
@@ -415,7 +416,10 @@ function Composer({
   usage: string;
   offers?: ReturnType<typeof useOffers>;
   apps?: { shown: boolean; toggle: () => void };
-  onSay: (saying: Saying) => Promise<void>;
+  /// Who can be named in what is written, in a chat of several.
+  names?: Participant[];
+  /// Says it, and answers with what there is to tell the person about it.
+  onSay: (saying: Saying) => Promise<string | void>;
   onStop: () => void;
 }) {
   const aui = useAui();
@@ -440,13 +444,22 @@ function Composer({
   // that has been typed.
   const asked = /^\/(\S*)$/.exec(text)?.[1];
   const offeredCommands = asked === undefined ? [] : commands.filter((command) => command.name.startsWith(asked)).slice(0, 8);
+  // Who can be named, while a name is being written after `@`.
+  const naming = names.length > 0 ? /(^|\s)@([a-z0-9_-]*)$/i.exec(text) : null;
+  const offeredNames = naming ? names.filter((one) => one.handle.startsWith((naming[2] ?? "").toLowerCase()) || one.name.toLowerCase().startsWith((naming[2] ?? "").toLowerCase())).slice(0, 8) : [];
+  const name = (handle: string) => {
+    aui.composer().setText(`${text.slice(0, text.length - (naming?.[2] ?? "").length)}${handle} `);
+  };
+  const [note, setNote] = useState("");
   const send = async () => {
     if (nothing || sending) return;
     setSending(true);
     setProblem("");
+    setNote("");
     try {
       const content_refs = await Promise.all(files.map(handOver));
-      await onSay({ text, content_refs, ...(offered ? { context: offered } : {}) });
+      const told = await onSay({ text, content_refs, ...(offered ? { context: offered } : {}) });
+      setNote(told ?? "");
       aui.composer().setText("");
       setFiles([]);
     } catch (error) {
@@ -463,6 +476,18 @@ function Composer({
         void send();
       }}
     >
+      {offeredNames.length > 0 ? (
+        <div className="k-menu w-commands" role="listbox" aria-label="Who it is for">
+          {offeredNames.map((one) => (
+            <button type="button" role="option" aria-selected="false" className="k-menu-item" key={one.participant_id} onClick={() => name(one.handle)}>
+              <Avatar who={one} size="small" />
+              <span className="k-name">{one.name}</span>
+              <span className="k-mono k-muted">@{one.handle}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {note ? <div className="k-notice">{note}</div> : null}
       {offeredCommands.length > 0 ? (
         <div className="k-menu w-commands" role="listbox" aria-label="What it can be asked">
           {offeredCommands.map((command) => (
@@ -504,7 +529,10 @@ function Composer({
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
-            void send();
+            // While a name is being picked, Enter picks the first.
+            const first = offeredNames[0];
+            if (first) name(first.handle);
+            else void send();
           }
         }}
       />
@@ -560,10 +588,12 @@ function Thread({
   usage = "",
   offers,
   apps,
+  names,
   more,
   onEarlier,
   onSay,
   onStop,
+  after,
   children,
 }: {
   groups: Group[];
@@ -573,10 +603,13 @@ function Thread({
   usage?: string;
   offers?: ReturnType<typeof useOffers>;
   apps?: { shown: boolean; toggle: () => void };
+  names?: Participant[];
   more: boolean;
   onEarlier: () => void;
-  onSay: (saying: Saying) => Promise<void>;
+  onSay: (saying: Saying) => Promise<string | void>;
   onStop: () => void;
+  /// What is said under everything that was said.
+  after?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const owner = useStore(world, (state) => state.owner);
@@ -614,8 +647,9 @@ function Thread({
           ) : null}
           {children}
           <ThreadPrimitive.Messages components={{ Message: Said }} />
+          {after}
         </ThreadPrimitive.Viewport>
-        <Composer to={to} running={running} commands={commands} usage={usage} offers={offers} apps={apps} onSay={onSay} onStop={onStop} />
+        <Composer to={to} running={running} commands={commands} usage={usage} offers={offers} apps={apps} names={names} onSay={onSay} onStop={onStop} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );
@@ -639,10 +673,25 @@ export function ChatView({ chat }: { chat: Chat }) {
   const since = useStore(world, (now) => now.since);
   const broughtLast = only ? state.timeline.brought[only.participant_id] : undefined;
   const broughtNow = broughtLast && broughtLast.place > since ? broughtLast : undefined;
+  const handles = useMemo(() => chat.members.filter((member) => member.kind !== "schedule").map((member) => member.handle), [chat.members]);
+  const say = async (saying: Saying): Promise<string | void> => {
+    const forHowMany = await act.say(chat.chat_id, saying);
+    // In a chat of several a message is for who it names.
+    if (several && forHowMany === 0) return "That named nobody, so nobody answers it. Write @ and pick who it is for.";
+    return undefined;
+  };
+  // How far a chain of agents answering each other has gone.
+  const chain =
+    several && chat.agent_replies > 0
+      ? chat.agent_replies >= chat.reply_limit
+        ? `Agents have answered each other ${chat.agent_replies} times in a row. The chain waits for you: write, and it goes on.`
+        : `Agents have answered each other ${chat.agent_replies} ${chat.agent_replies === 1 ? "time" : "times"} in a row. After ${chat.reply_limit} the chain waits for a person.`
+      : "";
   return (
-    <>
+    <Handles.Provider value={handles}>
       <Thread
         groups={groups}
+        names={several ? agents.filter((one) => !one.retired) : []}
         commands={only ? (state.timeline.commands[only.participant_id] ?? []) : []}
         usage={only ? used(state.timeline.usage[only.participant_id]) : ""}
         offers={only ? offers : undefined}
@@ -651,8 +700,9 @@ export function ChatView({ chat }: { chat: Chat }) {
         running={busy}
         more={state.more}
         onEarlier={() => void readEarlier(chat.chat_id)}
-        onSay={(saying) => act.say(chat.chat_id, saying)}
+        onSay={say}
         onStop={() => void act.stop(chat.chat_id)}
+        after={chain ? <div className="k-notice w-chain">{chain}</div> : null}
       >
         {state.status === "loading" ? <div className="k-caption">Reading the chat…</div> : null}
         {state.status === "failed" ? <div className="k-notice k-danger">The chat could not be read: {state.problem}</div> : null}
@@ -674,7 +724,7 @@ export function ChatView({ chat }: { chat: Chat }) {
           onHide={() => setAppsShown(false)}
         />
       ) : null}
-    </>
+    </Handles.Provider>
   );
 }
 
@@ -686,6 +736,7 @@ export function FirstWords({ agent, onBegun }: { agent: Participant; onBegun: (c
     const chat = await act.startChat([agent.profile_id]);
     onBegun(chat);
     await act.say(chat.chat_id, saying);
+    return undefined;
   };
   return (
     <Thread groups={[]} to={agent.name} running={false} more={false} onEarlier={() => {}} onSay={say} onStop={() => {}}>

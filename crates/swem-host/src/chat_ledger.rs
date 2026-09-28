@@ -979,6 +979,121 @@ impl RoutingLedger {
         self.chat(chat_id)
     }
 
+    /// Take a participant out of a chat. What they said stays; what they
+    /// were owed and had not begun is not begun. The one who started the
+    /// chat stays in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError::InvalidBinding`] for a chat that does not
+    /// exist, for somebody who is not in it, and for the one who started it.
+    pub fn leave_chat(
+        &mut self,
+        chat_id: &str,
+        participant_id: &str,
+    ) -> Result<Chat, RoutingError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let started_by: Option<String> = transaction
+            .query_row(
+                "SELECT created_by FROM chats WHERE chat_id = ?1",
+                [chat_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match started_by {
+            None => {
+                return Err(RoutingError::InvalidBinding(format!(
+                    "there is no chat {chat_id}"
+                )));
+            }
+            Some(started_by) if started_by == participant_id => {
+                return Err(RoutingError::InvalidBinding(
+                    "whoever started a chat stays in it".into(),
+                ));
+            }
+            Some(_) => {}
+        }
+        let left = transaction.execute(
+            "UPDATE chat_members SET left_ms = ?3
+             WHERE chat_id = ?1 AND participant_id = ?2 AND left_ms IS NULL",
+            params![chat_id, participant_id, now_ms()],
+        )?;
+        if left == 0 {
+            return Err(RoutingError::InvalidBinding(
+                "nobody is in the chat by that id".into(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE deliveries SET state = 'stopped', ended_ms = ?3,
+                                   outcome = 'it was taken out of the chat'
+             WHERE chat_id = ?1 AND agent_id = ?2 AND state = 'queued'",
+            params![chat_id, participant_id, now_ms()],
+        )?;
+        chat_event_in(
+            &transaction,
+            chat_id,
+            "chat/left",
+            &json!({ "participant_id": participant_id }),
+        )?;
+        transaction.commit()?;
+        self.chat(chat_id)
+    }
+
+    /// Set a chat's rules: whether agents answer only when they are named
+    /// (`named`) or whatever a person says (`always`), and after how many
+    /// replies of agents to each other the chain waits for a person. What
+    /// is left out stays.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError::InvalidBinding`] for a chat that does not
+    /// exist, a rule there is not, and a limit outside one to twenty.
+    pub fn rule_chat(
+        &mut self,
+        chat_id: &str,
+        answer_rule: Option<&str>,
+        reply_limit: Option<u32>,
+    ) -> Result<Chat, RoutingError> {
+        if let Some(rule) = answer_rule
+            && !matches!(rule, "named" | "always")
+        {
+            return Err(RoutingError::InvalidBinding(format!(
+                "agents answer when named or always, not {rule:?}"
+            )));
+        }
+        if let Some(limit) = reply_limit
+            && !(1..=20).contains(&limit)
+        {
+            return Err(RoutingError::InvalidBinding(
+                "a chain waits for a person after one to twenty replies".into(),
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let ruled = transaction.execute(
+            "UPDATE chats SET answer_rule = COALESCE(?2, answer_rule),
+                              reply_limit = COALESCE(?3, reply_limit)
+             WHERE chat_id = ?1",
+            params![chat_id, answer_rule, reply_limit],
+        )?;
+        if ruled == 0 {
+            return Err(RoutingError::InvalidBinding(format!(
+                "there is no chat {chat_id}"
+            )));
+        }
+        chat_event_in(
+            &transaction,
+            chat_id,
+            "chat/ruled",
+            &json!({ "answer_rule": answer_rule, "reply_limit": reply_limit }),
+        )?;
+        transaction.commit()?;
+        self.chat(chat_id)
+    }
+
     /// One participant by id.
     ///
     /// # Errors

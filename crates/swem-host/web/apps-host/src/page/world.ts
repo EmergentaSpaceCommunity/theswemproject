@@ -125,7 +125,11 @@ function happened(event: Happened): void {
   // A chat that is new here, that somebody joined, that was renamed to
   // nothing, or that just got its first words is read again for its name.
   const named = Boolean(chat?.title);
-  if (!chat || event.kind === "chat/joined" || event.kind === "chat/started" || (event.kind === "chat/renamed" && !payload["title"]) || (!named && event.message)) {
+  // And one whose members or rules changed, or where agents may be
+  // answering each other: how far their chain has gone is the chat's.
+  const several = (chat?.members.filter((member) => member.kind === "agent").length ?? 0) > 1;
+  const changed = ["chat/joined", "chat/left", "chat/ruled", "chat/started", "chat/held"].includes(event.kind);
+  if (!chat || changed || (event.kind === "chat/renamed" && !payload["title"]) || (!named && event.message) || (several && event.message)) {
     void learn(chatId);
   }
   const store = opened.get(chatId);
@@ -228,8 +232,24 @@ export const act = {
     world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
     return chat;
   },
-  async say(chatId: string, saying: Saying): Promise<void> {
-    await fetchJson(`/api/chats/${encodeURIComponent(chatId)}/messages`, json({ ...saying, client_ref: once() }));
+  /// Say something in a chat. It answers how many agents it is for.
+  async say(chatId: string, saying: Saying): Promise<number> {
+    const said = await fetchJson<{ deliveries?: unknown[] }>(`/api/chats/${encodeURIComponent(chatId)}/messages`, json({ ...saying, client_ref: once() }));
+    return said.deliveries?.length ?? 0;
+  },
+  /// Bring an agent into a chat, by its profile.
+  async bring(chatId: string, profile: string): Promise<void> {
+    const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}/members`, json({ agent: profile }));
+    world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
+  },
+  async takeOut(chatId: string, participant: string): Promise<void> {
+    const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}/members/${encodeURIComponent(participant)}`, { method: "DELETE" });
+    world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
+  },
+  /// Set a chat's rules, or call it something else.
+  async change(chatId: string, change: { title?: string; answer_rule?: string; reply_limit?: number }): Promise<void> {
+    const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}`, { ...json(change), method: "PATCH" });
+    world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
   },
   async stop(chatId: string, agentId?: string): Promise<void> {
     await fetchJson(`/api/chats/${encodeURIComponent(chatId)}/stop`, json(agentId ? { agent_id: agentId } : {}));

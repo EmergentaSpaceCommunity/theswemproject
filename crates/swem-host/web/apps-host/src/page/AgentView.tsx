@@ -1,7 +1,7 @@
 // An agent: who it is, what it stands on and where it lives, the chats it
 // has, and its files, terminal and settings.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { AgentSettings } from "./settings/AgentSettings.tsx";
@@ -11,6 +11,7 @@ import { TerminalPanel } from "../agent/TerminalPanel.tsx";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
 import { ChatSign, Clock, Folder, Gear, Moon, People, Plus, Prompt } from "./icons.tsx";
+import { AddSomeone, Members } from "./Members.tsx";
 import { go, type AgentTab } from "./place.ts";
 import { Schedules } from "./Schedules.tsx";
 import type { Chat, Participant } from "./types.ts";
@@ -171,9 +172,12 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
   );
 }
 
-/// A chat of several: who is in it, and what is said.
+/// A chat of several: what is said, and beside it who is in it and by
+/// what rules.
 export function GroupView({ chat }: { chat: Chat }) {
-  const owner = useStore(world, (state) => state.owner);
+  const [adding, setAdding] = useState(false);
+  const agents = chat.members.filter((member) => member.kind === "agent" && !member.retired).length;
+  const people = chat.members.filter((member) => member.kind !== "schedule" && !member.retired).length;
   return (
     <main className="w-main">
       <header className="w-head w-head-plain">
@@ -184,25 +188,24 @@ export function GroupView({ chat }: { chat: Chat }) {
             </span>
             <div className="w-col w-close">
               <h1 className="w-h1">{chat.title || "New chat"}</h1>
-              <div className="k-caption">{names(chat.members, owner)}</div>
+              <div className="k-caption">
+                A chat of {people}. {agents > 1 ? (chat.answer_rule === "always" ? "Agents answer whatever is said." : "Agents answer when someone names them.") : "Its agent answers whatever is said."}
+              </div>
             </div>
           </div>
-          <div className="k-inline w-tight w-nowrap">
-            {chat.members
-              .filter((member) => member.kind === "agent")
-              .map((member) => (
-                <button type="button" className="k-chip w-chip-button" key={member.participant_id} onClick={() => go({ at: "agent", agent: member.participant_id, tab: "chat" })}>
-                  @{member.handle}
-                </button>
-              ))}
-          </div>
+          <button type="button" className="k-btn" onClick={() => setAdding(true)}>
+            <Plus size={15} />
+            <span>Add someone</span>
+          </button>
         </div>
       </header>
       <div className="w-body">
         <Guard what="The chat">
           <ChatView chat={chat} key={chat.chat_id} />
         </Guard>
+        <Members chat={chat} onAdd={() => setAdding(true)} />
       </div>
+      <AddSomeone chat={chat} open={adding} onClose={() => setAdding(false)} />
     </main>
   );
 }
