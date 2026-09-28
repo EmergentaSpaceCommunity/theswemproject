@@ -114,6 +114,19 @@ fn build_apps_bundle(out_dir: &Path) {
     );
 }
 
+/// The session of the engine a chat of the walk is in, for the oracles
+/// that read the session's own events.
+fn route_of(ledger: &Path, report: &serde_json::Value, which: &str) -> String {
+    let chat = report[format!("{which}_chat")].as_str().expect("a chat");
+    let agent = report[format!("{which}_agent")].as_str().expect("an agent");
+    RoutingLedger::open(ledger)
+        .expect("open ledger")
+        .current_session(chat, agent)
+        .expect("read the session")
+        .expect("the chat holds a session")
+        .route_id
+}
+
 fn events_of(ledger: &Path, route_id: &str) -> Vec<(String, serde_json::Value)> {
     RoutingLedger::open(ledger)
         .expect("reopen routing ledger")
@@ -241,17 +254,21 @@ async fn a_real_browser_reviews_native_acp_form_and_url_elicitation() {
     assert!(
         report["form_context"]
             .as_str()
-            .is_some_and(|value| value.contains("ACP agent"))
+            .is_some_and(|value| value.contains("elicitation-agent asks")),
+        "the form does not say who asks: {report}"
+    );
+    assert!(
+        report["url_context"]
+            .as_str()
+            .is_some_and(|value| value.contains("https://example.invalid/connect")
+                && value.contains("at example.invalid")),
+        "the link does not say where it leads: {report}"
     );
     assert_eq!(
         report["pages_after"].as_u64(),
         report["pages_before"].as_u64().map(|n| n + 1)
     );
-    let connection = report["connection"].as_str().expect("browser connection");
-    state
-        .disconnect(connection)
-        .await
-        .expect("disconnect elicitation browser connection after the browser closes");
+    state.let_go_of(None).await;
     let initialize: serde_json::Value = serde_json::from_slice(
         &fs::read(root.join("initialize-elicitation-receipt.json"))
             .expect("read initialize elicitation receipt"),
@@ -276,11 +293,27 @@ async fn a_real_browser_reviews_native_acp_form_and_url_elicitation() {
     )
     .expect("URL receipt JSON");
     assert_eq!(url_receipt, serde_json::json!({"action": "accept"}));
-    let route = report["route"].as_str().expect("browser route");
-    let durable = serde_json::to_string(&events_of(&ledger, route)).expect("encode events");
+    // Everything the chat's record holds: the engine's own events and what
+    // the host wrote about the questions and their answers.
+    let chat = report["chat"].as_str().expect("the chat");
+    let (events, _, _) = RoutingLedger::open(&ledger)
+        .expect("open ledger")
+        .timeline(chat, None, 5000)
+        .expect("read the chat");
+    let durable = serde_json::to_string(&events).expect("encode events");
     assert!(
         durable.contains("acp/elicitation_complete"),
         "known URL completion was not projected"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "chat/question"
+                && event.payload["state"] == "answered"
+                && event.payload["answer"]["action"] == "accept")
+            .count(),
+        3,
+        "three questions were asked and answered: before the session, the form, the link"
     );
     for forbidden in [
         "bold",
@@ -292,7 +325,7 @@ async fn a_real_browser_reviews_native_acp_form_and_url_elicitation() {
     ] {
         assert!(
             !durable.contains(forbidden),
-            "durable route leaked {forbidden}"
+            "the chat's record leaked {forbidden}"
         );
     }
 
@@ -455,8 +488,8 @@ async fn a_real_browser_drives_the_generic_apps_host_through_the_whole_acceptanc
     .expect("parse driver report");
     assert_eq!(report["app_server"], "notes");
     assert_eq!(report["app_uri"], NOTES_URI);
-    let main_route = report["main_route"].as_str().expect("main route");
-    let hostile_route = report["hostile_route"].as_str().expect("hostile route");
+    let main_route = &route_of(&ledger, &report, "main");
+    let hostile_route = &route_of(&ledger, &report, "hostile");
 
     // The browser click inside the sandboxed App really ran the tool.
     let receipt: serde_json::Value = serde_json::from_slice(
@@ -701,7 +734,7 @@ async fn a_real_browser_receives_the_native_agent_call_input_and_result() {
             .expect("driver report"),
     )
     .expect("parse driver report");
-    let route = report["route"].as_str().expect("route id");
+    let route = &route_of(&ledger, &report, "main");
     assert_eq!(report["app_server"], "notes");
 
     let agent_receipt: serde_json::Value = serde_json::from_slice(
@@ -880,9 +913,9 @@ async fn a_real_browser_preserves_terminal_states_and_cannot_cancel_on_teardown(
             .expect("driver report"),
     )
     .expect("parse driver report");
-    let error_route = report["errorRoute"].as_str().expect("error route");
-    let cancel_route = report["cancelRoute"].as_str().expect("cancel route");
-    let delay_route = report["delayRoute"].as_str().expect("delay route");
+    let error_route = &route_of(&ledger, &report, "error");
+    let cancel_route = &route_of(&ledger, &report, "cancel");
+    let delay_route = &route_of(&ledger, &report, "delay");
 
     let terminal_receipts = fs::read_to_string(root.join("terminal-receipts.jsonl"))
         .expect("read App-only terminal receipts")

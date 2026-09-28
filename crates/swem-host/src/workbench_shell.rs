@@ -4855,7 +4855,7 @@ pub async fn serve_workbench_http_with_apps_at(
                     connections.spawn(async move {
                         let service = hyper::service::service_fn(move |request| {
                             let state = Arc::clone(&state);
-                            async move { Ok::<_, Infallible>(route_shell(&state, request).await) }
+                            async move { Ok::<_, Infallible>(Box::pin(route_shell(&state, request)).await) }
                         });
                         let _ = hyper::server::conn::http1::Builder::new()
                             .serve_connection(hyper_util::rt::TokioIo::new(stream), service)

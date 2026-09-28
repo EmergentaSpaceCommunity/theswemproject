@@ -129,7 +129,9 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
   let port = null;
   for (let i = 0; i < 100 && port === null; i++) {
     await sleep(200);
-    try { port = Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]); }
+    // The file is there before the port is written into it: an empty one
+    // is a browser that has not said yet.
+    try { port = Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]) || null; }
     catch {}
   }
   if (!port) cleanup(2, `${label}: browser never opened a DevTools port${browserEpitaph()}`);
@@ -587,7 +589,7 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
   /// Go to an agent: its chat, its files, its terminal or its settings.
   b.openAgent = async (profile, tab = "chat") => {
     const agent = await b.agentOf(profile);
-    if (!agent) cleanup(1, `there is no agent ${profile}`);
+    if (!agent) cleanup(1, `there is no agent ${profile}: ${JSON.stringify(await b.ask("/api/people"))}`);
     await b.goTo(`#/agents/${agent}${tab === "chat" ? "" : `/${tab}`}`);
     await b.waitFor(`the agent's ${tab}`, async () => b.exists(`nav[aria-label] .k-tab.k-active`), 100);
     return agent;
@@ -625,6 +627,17 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
       return chat !== null && chat.deliveries.length === 0 && chat.messages.length >= before + 2;
     }, 400);
     return b.said();
+  };
+  /// Put an agent to sleep from its header, once the page offers it: the
+  /// page learns that a turn ended a moment after the record does.
+  b.putToSleep = async (chat, agent) => {
+    await b.waitFor("the agent free to be put to sleep", async () => b.evaluate(`(() => {
+      const found = [...document.querySelectorAll(".w-head button")].find((one) => one.innerText.includes("Put to sleep"));
+      return Boolean(found) && !found.disabled;
+    })()`), 300);
+    await b.pressText(".w-head button", "Put to sleep");
+    await b.waitFor("the agent sleeps", async () =>
+      (await b.ask(`/api/chats/${chat}/agents/${agent}/session`)).body?.connection_id === null, 300);
   };
   b.close = async () => {
     try { ws.close(); } catch {}

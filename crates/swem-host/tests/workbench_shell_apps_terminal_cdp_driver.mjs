@@ -1,184 +1,86 @@
-// Real-browser gate for agent-initiated MCP Apps terminal states. The driver
-// controls only the outer Workbench viewport; App receipts and the routing
-// ledger remain the independent semantic oracles.
-import {spawn} from "node:child_process";
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
-import {tmpdir} from "node:os";
-import {join} from "node:path";
+// How a call that brought an App can end, in the chat it was made in.
+//
+// Three chats with one agent. In the first the tool answers with an error,
+// in the second the agent calls the tool off, and the App is given each
+// ending and acknowledges it. In the third the person closes the App while
+// the tool still works: the call is the agent's, and closing what shows it
+// ends nothing.
+
+import {writeFileSync} from "node:fs";
+
+import {launchBrowser, cleanup} from "./cdp_browser.mjs";
 
 const [browser, url, delayRelease] = process.argv.slice(2);
-if (!browser || !url || !delayRelease) process.exit(2);
-const profile = mkdtempSync(join(tmpdir(), "swem-terminal-app-cdp-"));
-/// Chromium refuses to start its sandbox as uid 0, which is how the container
-/// gates run. This is a property of the machine, not of any one driver, so it
-/// is decided here once rather than threaded through ten argument lists.
-const sandboxArgs = process.env.SWEM_BROWSER_NO_SANDBOX === "1" ? ["--no-sandbox"] : [];
-const child = spawn(browser, [
-  "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-  "--window-size=1280,1000", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
-  ...sandboxArgs, "about:blank",
-], {stdio: "ignore"});
-// A verdict ends the walk where it was reached. `cleanup` used to arm
-// `process.exit` on a timer and return, so the driver carried on and printed
-// steps it never took, and the exit code that decided the walk survived only
-// because one timer was longer than another. The latch makes the
-// first verdict final; the throw stops the caller.
-const walkStopped = {walkStopped: true};
-let walkHasItsVerdict = false;
-const cleanup = (code, message) => {
-  if (walkHasItsVerdict) { throw walkStopped; }
-  if (message) console.error(message);
-  walkHasItsVerdict = true;
-  try { child.kill(); } catch {}
-  setTimeout(() => {
-    try { rmSync(profile, {recursive: true, force: true}); } catch {}
-    process.exit(code);
-  }, 300);
-  throw walkStopped;
+if (!browser || !url || !delayRelease) {
+  console.error("usage: node workbench_shell_apps_terminal_cdp_driver.mjs <browser> <url> <delay-release>");
+  process.exit(2);
+}
+const b = await launchBrowser({browser, url, label: "terminal"});
+
+const panel = '.w-apps:not([hidden])';
+const status = () => b.evaluate(`[...document.querySelectorAll('${panel} > .k-caption')].map((one) => one.textContent).join(" ")`);
+const happened = async () => (await b.chat())?.events ?? [];
+const ended = async (how) => (await happened()).some((event) =>
+  event.kind === "chat/delivery" && event.payload?.state === how);
+
+const agent = await b.agentOf("apps-main");
+if (!agent) cleanup(1, "there is no agent apps-main");
+
+/// Begin another chat with the agent by asking it for something.
+const ask = async (prompt) => {
+  await b.goTo(`#/agents/${agent}/chats/new`);
+  await b.say(JSON.stringify(prompt), {answered: false});
+  await b.waitFor("the chat begun", async () => {
+    const shown = (await b.evaluate("location.hash")).split("/chats/")[1] ?? "new";
+    return shown !== "new";
+  }, 100);
+  return (await b.chat()).chat.chat_id;
 };
-process.on("uncaughtException", (error) => {
-  if (error && error.walkStopped === true) { return; }
-  try { cleanup(2, String(error.stack || error)); } catch {}
-});
-process.on("unhandledRejection", (error) => {
-  if (error && error.walkStopped === true) { return; }
-  try { cleanup(2, String(error.stack || error)); } catch {}
-});
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-let port = null;
-for (let i = 0; i < 100 && port === null; i++) {
-  await sleep(200);
-  try { port = Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]); }
-  catch {}
-}
-if (!port) cleanup(2, "browser never opened a DevTools port");
-let target = null;
-for (let i = 0; i < 50 && !target; i++) {
-  await sleep(200);
-  try {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    target = list.find((entry) => entry.type === "page");
-  } catch {}
-}
-if (!target) cleanup(2, "no page target");
-
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-let nextId = 1;
-const pending = new Map();
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  if (message.id && pending.has(message.id)) {
-    const request = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message));
-    else request.resolve(message.result);
+const closeAndSleep = async (chat) => {
+  if (await b.exists(`${panel} #app-frame`)) {
+    if (!(await b.pressText(`${panel} button`, "Close it"))) cleanup(2, "the App cannot be closed");
+    await b.waitFor("the App closed", async () =>
+      (await happened()).some((event) => event.kind === "host/app_closed"));
   }
+  await b.putToSleep(chat, agent);
 };
-const send = (method, params = {}) => new Promise((resolve, reject) => {
-  const id = nextId++;
-  pending.set(id, {resolve, reject});
-  ws.send(JSON.stringify({id, method, params}));
-});
-await send("Page.enable");
-await send("Runtime.enable");
-await send("Page.navigate", {url});
 
-const evaluate = async (expression) => {
-  const result = await send("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true});
-  if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
-  return result.result.value;
-};
-const textOf = (id) => evaluate(
-  `(document.getElementById(${JSON.stringify(id)}) || {textContent: ""}).textContent`);
-const waitFor = async (label, predicate, attempts = 300) => {
-  for (let i = 0; i < attempts; i++) {
-    try { if (await predicate()) return; } catch {}
-    await sleep(200);
-  }
-  cleanup(2, `timed out waiting for ${label}; apps=${await textOf("apps-status")}; turn=${await textOf("turn-outcome")}`);
-};
-const click = async (selector) => {
-  // Bring it into view first: a control below the fold of a scrolling rail
-  // has a viewport point outside the window, and a click there lands nowhere.
-  await evaluate(`document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block: "center", inline: "center", behavior: "instant"})`);
-  const rect = JSON.parse(await evaluate(
-    `JSON.stringify(document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect())`));
-  const x = rect.left + rect.width / 2;
-  const y = rect.top + rect.height / 2;
-  await send("Input.dispatchMouseEvent", {type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1});
-  await send("Input.dispatchMouseEvent", {type: "mouseReleased", x, y, button: "left", clickCount: 1});
-};
-const eventKinds = () => evaluate(
-  `JSON.stringify([...document.querySelectorAll("#events li")].map((li) => li.dataset.kind))`)
-  .then(JSON.parse);
-
-// The product lands on the Project space (the ladder is the door); the
-// agent's surface is one click away, as a person reaches it.
-await waitFor("the space bar", async () => evaluate(`document.getElementById("space-agent") !== null`));
-await click("#space-agent");
-await waitFor("the agent space", async () =>
-  evaluate(`document.querySelector('.app-shell[data-active-space="agent"]') !== null`));
-await waitFor("profile", async () =>
-  (await evaluate(`document.getElementById("profiles").options.length`)) === 1);
-
-async function openAndPrompt(prompt) {
-  // A fresh fixture connection must not accidentally reuse the previous
-  // durable route left in the shell's handoff field.
-  await evaluate(`document.getElementById("route-id").value = ""`);
-  await click("#open-new");
-  await waitFor("connection", async () => (await textOf("connection-id")) !== "-");
-  const route = await textOf("route");
-  await evaluate(`document.getElementById("prompt-text").value = ${JSON.stringify(JSON.stringify(prompt))}`);
-  await click("#send");
-  return route;
-}
-
-async function closeAndDisconnect() {
-  await click("#app-close");
-  await waitFor("App close", async () => (await textOf("apps-status")) === "app closed");
-  await click("#disconnect");
-  await waitFor("disconnect", async () => evaluate(`document.getElementById("disconnect").disabled`));
-}
-
-const errorRoute = await openAndPrompt({
+const error_chat = await ask({
   fixture: "mcp-apps-error-v0.1", server: "notes",
   nonce: "browser-tool-error-0.57", text: "deliver exact isError result",
 });
-await waitFor("tool error delivery", async () =>
-  (await textOf("apps-status")) === "agent App tool error delivered");
-await waitFor("tool error App acknowledgement", async () =>
-  (await eventKinds()).includes("host/app_tool_call"));
-await waitFor("tool error native turn", async () =>
-  (await textOf("turn-outcome")).includes("turn: end_turn / completed"));
-await closeAndDisconnect();
+await b.waitFor("the tool's error given to the App", async () =>
+  (await status()).includes("agent App tool error delivered"), 600);
+await b.waitFor("the App's acknowledgement of the error", async () =>
+  (await happened()).some((event) => event.kind === "host/app_tool_call"));
+await b.waitFor("the turn ended by itself", async () => ended("done"), 300);
+await closeAndSleep(error_chat);
 
-const cancelRoute = await openAndPrompt({
+const cancel_chat = await ask({
   fixture: "mcp-apps-cancel-v0.1", server: "notes",
   nonce: "browser-cancel-0.57", text: "native MCP cancellation",
 });
-await waitFor("cancellation delivery", async () =>
-  (await textOf("apps-status")) === "agent App cancellation delivered");
-await waitFor("cancellation App acknowledgement", async () =>
-  (await eventKinds()).includes("host/app_tool_call"));
-await waitFor("cancelled native turn", async () =>
-  (await textOf("turn-outcome")).includes("turn: cancelled / cancelled"));
-await closeAndDisconnect();
+await b.waitFor("the calling off given to the App", async () =>
+  (await status()).includes("agent App cancellation delivered"), 600);
+await b.waitFor("the App's acknowledgement of the calling off", async () =>
+  (await happened()).some((event) => event.kind === "host/app_tool_call"));
+await b.waitFor("the turn called off", async () => ended("stopped"), 300);
+await closeAndSleep(cancel_chat);
 
-const delayRoute = await openAndPrompt({
+const delay_chat = await ask({
   fixture: "mcp-apps-delay-v0.1", server: "notes",
   nonce: "browser-teardown-race-0.57", text: "View teardown cannot own this call",
   delay_ms: 3000,
 });
-await waitFor("pending App", async () => (await textOf("apps-status")) === "app ready");
-await click("#app-close");
-await waitFor("pending App close", async () => (await textOf("apps-status")) === "app closed");
+await b.waitFor("the App of a call still going", async () =>
+  (await b.exists(`${panel} #app-frame`)) && (await status()).includes("app ready"), 600);
+if (!(await b.pressText(`${panel} button`, "Close it"))) cleanup(2, "the App of a call still going cannot be closed");
+await b.waitFor("the App closed", async () =>
+  (await happened()).some((event) => event.kind === "host/app_closed"));
 writeFileSync(delayRelease, "view-closed\n", {flag: "wx"});
-await waitFor("native delayed turn", async () =>
-  (await textOf("turn-outcome")).includes("turn: end_turn / completed"));
-await click("#disconnect");
-await waitFor("final disconnect", async () => evaluate(`document.getElementById("disconnect").disabled`));
+await b.waitFor("the call ended by itself after its App was closed", async () => ended("done"), 300);
+if (await b.exists(`${panel} #app-frame`)) cleanup(1, "the App a person closed came back by itself");
+await closeAndSleep(delay_chat);
 
-console.log(JSON.stringify({errorRoute, cancelRoute, delayRoute}));
+console.log(JSON.stringify({error_chat, error_agent: agent, cancel_chat, cancel_agent: agent, delay_chat, delay_agent: agent}));
 cleanup(0);

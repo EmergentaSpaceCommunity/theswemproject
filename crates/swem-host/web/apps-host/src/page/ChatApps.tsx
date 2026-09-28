@@ -11,6 +11,7 @@ import type { AppAttachment, OpenedApp } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
 import { Cross, Tiles } from "./icons.tsx";
 import { sessionOf } from "./session.ts";
+import type { Brought } from "./timeline.ts";
 
 const part = encodeURIComponent;
 const post = (body: unknown): RequestInit => ({
@@ -29,6 +30,11 @@ interface Observed {
   observation: { cursor: number; status?: string; observation_id?: string };
 }
 
+/// Per chat and agent, the place of the last App shown because a tool
+/// brought it. It is kept beside the page, not in the panel: a person who
+/// looked at another chat and came back is not shown the same App again.
+const shownThrough = new Map<string, number>();
+
 export function ChatApps({
   chat,
   agent,
@@ -41,15 +47,14 @@ export function ChatApps({
   chat: string;
   agent: string;
   name: string;
-  /// The place at which a tool of the agent last brought an App.
-  brought: number;
+  /// The App a tool of the agent brought while the page was open.
+  brought: Brought | undefined;
   shown: boolean;
   onShow: () => void;
   onHide: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mounted = useRef<{ app: MountedApp; opened: OpenedApp; connection: string } | null>(null);
-  const seen = useRef(0);
   const [attachments, setAttachments] = useState<AppAttachment[] | null>(null);
   const [status, setStatus] = useState("");
   const [open, setOpen] = useState<OpenedApp | null>(null);
@@ -58,6 +63,8 @@ export function ChatApps({
     const closing = mounted.current;
     mounted.current = null;
     setOpen(null);
+    // What was said about an App is said about that App only.
+    setStatus("");
     if (!closing) return;
     await closing.app.teardown().catch(() => {});
     await fetchJson(`/api/connections/${part(closing.connection)}/apps/${part(closing.opened.app_id)}/close`, post({})).catch(() => {});
@@ -106,16 +113,19 @@ export function ChatApps({
 
   // What a tool of the agent brought: it is shown as it arrives.
   useEffect(() => {
-    if (!brought || brought <= seen.current) return;
+    const key = `${chat} ${agent}`;
+    if (!brought || brought.place <= (shownThrough.get(key) ?? 0)) return;
+    shownThrough.set(key, brought.place);
     void (async () => {
       try {
         const connection = await sessionOf(chat, agent, false);
         if (!connection) return;
         const observed = await fetchJson<Observed | null>(
-          `/api/connections/${part(connection)}/apps/observations/next?after=${seen.current}&wait_ms=2000`,
+          `/api/connections/${part(connection)}/apps/observations/next?after=${brought.call - 1}&wait_ms=2000`,
         );
-        if (!observed) return;
-        seen.current = Math.max(brought, observed.observation.cursor);
+        // The session counts its calls from one: a call of an earlier
+        // session is not this one.
+        if (!observed || observed.observation.cursor !== brought.call) return;
         onShow();
         await mount(connection, observed.opened, observed.observation);
       } catch (error) {
@@ -124,7 +134,7 @@ export function ChatApps({
     })();
     // `mount` and `onShow` are this component's own and change with every draw.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brought, chat, agent]);
+  }, [brought?.place, chat, agent]);
 
   useEffect(() => () => void close(), []);
 

@@ -106,10 +106,12 @@ turn's ten-minute deadline.
   - [x] 6d the gate's drivers go to places by their address, make an agent in the form and
     talk through the composer (`cdp_browser.mjs` gained a person's vocabulary: `makeAgent`,
     `openAgent`, `say`, `said`); what they read of the record is read from `/api/chats`
-  - [ ] 6e the host's Apps suites (`workbench_shell_apps_browser`,
-    `workbench_apps_engine_probe_browser`) still drive the old page and are red until their
-    drivers are moved; what they cover on the new page - an App opened from the panel, an App
-    a tool brought, a form an agent asks for - was not yet seen in a browser
+  - [x] 6e the host's Apps suites (`workbench_shell_apps_browser`,
+    `workbench_apps_engine_probe_browser`) drive the new page: an App opened from the panel
+    beside the chat, an App a tool of the agent brought, the three ways such a call ends, a
+    form and a link an agent asks for, what a sandboxed App can use. An agent put to sleep
+    stands where Disconnect stood; a chat stands where a route did, and the oracles find the
+    session of the engine through it
 
 ## Discoveries
 
@@ -148,6 +150,22 @@ turn's ten-minute deadline.
   session remembers the revision it was opened with and is opened again when it differs.
 - The old dialog said whose words a question is and what each option does; the first card on
   the new page did not. It does now, in the same words.
+
+- An engine may ask something while its session is being opened, before any turn. Nobody
+  listened then, and the opening would have waited for its deadline. The questions of an
+  opening are heard and kept in the chat the session is opened for.
+- The panel of Apps counted the calls of a session with the places of the record, two
+  different numbers: the second App a tool brought in a chat would never have been shown, and
+  a chat opened with its history would have shown an old one. The record of a call that
+  begins names its number in the session (`cursor`), and the page shows what a tool brought
+  only when it happened after the page began to follow the record.
+- What was said about an App ("app ready") stayed in the panel after the App was closed.
+- A link an agent asks to open was opened before the person agreed. It is opened on "Open it".
+- The browser driver read the file with the browser's port while it was still empty and took
+  that for a browser that never started.
+- Once, in the first of four walks run one after another, the product answered the driver's
+  first `/api/people` without the agent of the only profile. It did not happen again in the
+  next run of the same four; the driver now says what was answered when it does.
 
 ## Decision log
 
@@ -196,6 +214,11 @@ turn's ten-minute deadline.
 - 2026-09-27, step 4: `chat_runtime` gains the page's walk over HTTP: the state whole, a chat
   started, a message said, every event on the one stream in order with each message's sender,
   the chat read and renamed beside it, a page coming back to its place, a lost place reset.
+
+- 2026-09-27, step 6e: the host's browser walks on the new page in Chrome, one after another:
+  `workbench_shell_apps_browser` four green (the fifth needs a live engine and its
+  credential and was not run), `workbench_apps_engine_probe_browser` two green.
+  `chat_runtime`, `chat_ledger`, `workbench_shell_apps` green; the page's own tests 27 green.
 
 ## Outcome / remaining gaps
 

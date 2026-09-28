@@ -98,3 +98,11 @@ test("what changed about the agent since the chat began is said in words", () =>
     "Attached, but not set up on this computer: music. It works without.",
   ]);
 });
+
+test("an App is brought by the call that begins, not by how it ended", () => {
+  const observed = (sequence, payload) => ({ sequence, chat_id: "c", agent_id: "ada", kind: "host/app_tool_observed", source: "host", payload });
+  const begun = read([observed(4, { observation_id: "o2", cursor: 2, phase: "request" })]);
+  assert.deepEqual(begun.brought, { ada: { place: 4, call: 2 } });
+  const ended = takeIn(begun, observed(5, { observation_id: "o2", phase: "response", status: "completed" }));
+  assert.deepEqual(ended.brought, { ada: { place: 4, call: 2 } });
+});

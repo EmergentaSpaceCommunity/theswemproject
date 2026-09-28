@@ -119,6 +119,8 @@ function AskForm({ question, name }: { question: Question; name: string }) {
   }, [asked]);
   const answer = (action: "accept" | "decline" | "cancel") => {
     let body: Record<string, unknown> = { action };
+    // Saying yes to a link is what opens it: nothing is opened before.
+    if (action === "accept" && asked?.mode === "url" && asked.url) window.open(asked.url, "_blank", "noopener,noreferrer");
     if (action === "accept" && Array.isArray(fields) && asked?.mode === "form") {
       try {
         body = { action, content: valueOf(fields, readRaw(form.current)) };
@@ -148,9 +150,9 @@ function AskForm({ question, name }: { question: Question; name: string }) {
         <span className="k-title k-is-warning">{name} asks for something it needs from you</span>
         {asked?.message ? <span>{asked.message}</span> : null}
         {asked?.mode === "url" && asked.url ? (
-          <a href={asked.url} target="_blank" rel="noopener noreferrer" className="k-mono">
-            {asked.url}
-          </a>
+          <span className="k-caption">
+            It opens <code className="k-mono">{asked.url}</code>, at {new URL(asked.url).host}.
+          </span>
         ) : null}
       </div>
       {typeof fields === "string" ? <span className="k-caption k-is-danger">{fields}</span> : null}
@@ -168,7 +170,7 @@ function AskForm({ question, name }: { question: Question; name: string }) {
         : null}
       <div className="k-inline w-tight">
         <button type="submit" className="k-btn k-primary" disabled={sent || asked === null}>
-          {asked?.mode === "url" ? "I opened it" : "Answer"}
+          {asked?.mode === "url" ? "Open it" : "Answer"}
         </button>
         <button type="button" className="k-btn" disabled={sent} onClick={() => answer("decline")}>
           Not this
@@ -634,6 +636,9 @@ export function ChatView({ chat }: { chat: Chat }) {
   const only = several ? undefined : agents[0];
   const offers = useOffers(chat.chat_id, only?.participant_id, only ? (state.timeline.offers[only.participant_id] ?? 0) : 0);
   const [appsShown, setAppsShown] = useState(false);
+  const since = useStore(world, (now) => now.since);
+  const broughtLast = only ? state.timeline.brought[only.participant_id] : undefined;
+  const broughtNow = broughtLast && broughtLast.place > since ? broughtLast : undefined;
   return (
     <>
       <Thread
@@ -663,7 +668,7 @@ export function ChatView({ chat }: { chat: Chat }) {
           chat={chat.chat_id}
           agent={only.participant_id}
           name={only.name}
-          brought={state.timeline.brought[only.participant_id] ?? 0}
+          brought={broughtNow}
           shown={appsShown}
           onShow={() => setAppsShown(true)}
           onHide={() => setAppsShown(false)}

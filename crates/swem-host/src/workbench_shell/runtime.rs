@@ -54,8 +54,27 @@ const HISTORY: crate::Fitting = crate::Fitting {
 #[derive(Clone, Debug)]
 struct Asked {
     connection_id: String,
-    delivery_id: String,
+    delivery_id: Option<String>,
     sequence: u64,
+}
+
+/// Whose a question is: the chat and the agent it was asked in, and the
+/// delivery it was asked for, when it was asked in a turn.
+#[derive(Clone, Debug)]
+struct AskedIn {
+    chat: String,
+    agent: String,
+    delivery: Option<String>,
+}
+
+impl AskedIn {
+    fn turn(delivery: &Delivery) -> Self {
+        Self {
+            chat: delivery.chat_id.clone(),
+            agent: delivery.agent_id.clone(),
+            delivery: Some(delivery.delivery_id.clone()),
+        }
+    }
 }
 
 /// What runs now.
@@ -255,7 +274,7 @@ impl WorkbenchShellState {
         if begins {
             let state = Arc::clone(self);
             let agent_id = agent_id.to_owned();
-            tokio::spawn(async move { state.work(agent_id, wake).await });
+            tokio::spawn(Box::pin(state.work(agent_id, wake)));
         }
     }
 
@@ -369,7 +388,7 @@ impl WorkbenchShellState {
             .asked
             .lock()
             .await
-            .retain(|_, asked| asked.delivery_id != delivery.delivery_id);
+            .retain(|_, asked| asked.delivery_id.as_deref() != Some(&delivery.delivery_id));
         let delivery_id = delivery.delivery_id.clone();
         let _ = self
             .with_ledger(move |ledger| ledger.end_delivery(&delivery_id, state, outcome.as_deref()))
@@ -483,12 +502,18 @@ impl WorkbenchShellState {
                 agent.handle
             ))
         })?;
+        let asked_in = AskedIn {
+            chat: chat.chat_id.clone(),
+            agent: agent.participant_id.clone(),
+            delivery: None,
+        };
         let (connection_id, _fresh) = self
             .connection_of_session(
                 &chat.chat_id,
                 &agent.participant_id,
                 session.as_ref(),
                 &profile_id,
+                &asked_in,
             )
             .await?;
         // Somebody lets go of it when the agent has been idle.
@@ -499,25 +524,65 @@ impl WorkbenchShellState {
     /// The connection the agent is live on in the chat, opened when it has
     /// none, and whether its session there is a fresh one.
     async fn connection_in_chat(
-        &self,
+        self: &Arc<Self>,
         prepared: &Prepared,
         profile_id: &str,
+        asked_in: &AskedIn,
     ) -> Result<(String, bool), WorkbenchShellError> {
         self.connection_of_session(
             &prepared.chat.chat_id,
             &prepared.agent.participant_id,
             prepared.session.as_ref(),
             profile_id,
+            asked_in,
         )
         .await
     }
 
+    /// Open a session and hear what its engine asks while it is opened.
+    async fn open_heard(
+        self: &Arc<Self>,
+        mut opening: Opening,
+        asked_in: &AskedIn,
+    ) -> Result<String, WorkbenchShellError> {
+        let connection_id = format!(
+            "chat-{}",
+            crate::new_id("o").map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+        );
+        opening.requested_connection_id = Some(connection_id.clone());
+        let heard = tokio::spawn(
+            Arc::clone(self).keep_questions_of_opening(connection_id.clone(), asked_in.clone()),
+        );
+        let opened = self.open_as(opening).await;
+        heard.abort();
+        if opened.is_err() {
+            // What it asked and was not answered can no longer be.
+            let unanswered: Vec<String> = {
+                let mut asked = self.chat_runtime.asked.lock().await;
+                let gone: Vec<String> = asked
+                    .iter()
+                    .filter(|(_, asked)| asked.connection_id == connection_id)
+                    .map(|(question_id, _)| question_id.clone())
+                    .collect();
+                asked.retain(|_, asked| asked.connection_id != connection_id);
+                gone
+            };
+            for question_id in unanswered {
+                let _ = self
+                    .with_ledger(move |ledger| ledger.lapse_question(&question_id))
+                    .await;
+            }
+        }
+        opened.map(|(connection_id, _route, _session)| connection_id)
+    }
+
     async fn connection_of_session(
-        &self,
+        self: &Arc<Self>,
         chat_id: &str,
         agent_id: &str,
         session: Option<&ChatSession>,
         profile_id: &str,
+        asked_in: &AskedIn,
     ) -> Result<(String, bool), WorkbenchShellError> {
         // One session is opened at a time, so a page asking for an agent's
         // session and a worker about to give it a message open one between
@@ -580,31 +645,33 @@ impl WorkbenchShellState {
         };
         let continued = match session {
             Some(session) => Some(
-                self.open_as(opening(
-                    ShellConnectionMode::Resume,
-                    Some(session.route_id.clone()),
-                    "",
-                ))
+                self.open_heard(
+                    opening(
+                        ShellConnectionMode::Resume,
+                        Some(session.route_id.clone()),
+                        "",
+                    ),
+                    asked_in,
+                )
                 .await,
             ),
             None => None,
         };
-        let ((connection_id, _route, _session), fresh) = match continued {
+        let (connection_id, fresh) = match continued {
             Some(Ok(opened)) => (opened, false),
             // The engine cannot go on with the session this chat holds. The
             // chat goes on in a fresh one; if that cannot be opened either,
             // why it cannot is what is said.
             Some(Err(refusal)) => (
-                self.open_as(opening(
-                    ShellConnectionMode::New,
-                    None,
-                    &refusal.to_string(),
-                ))
+                self.open_heard(
+                    opening(ShellConnectionMode::New, None, &refusal.to_string()),
+                    asked_in,
+                )
                 .await?,
                 true,
             ),
             None => (
-                self.open_as(opening(ShellConnectionMode::New, None, ""))
+                self.open_heard(opening(ShellConnectionMode::New, None, ""), asked_in)
                     .await?,
                 true,
             ),
@@ -747,7 +814,9 @@ impl WorkbenchShellState {
             .inventory
             .select(&profile_id)
             .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
-        let (connection_id, fresh) = self.connection_in_chat(&prepared, &profile_id).await?;
+        let (connection_id, fresh) = self
+            .connection_in_chat(&prepared, &profile_id, &AskedIn::turn(delivery))
+            .await?;
         let connection = self.connection(&connection_id).await?;
         let attached: BTreeSet<String> = profile
             .attachments
@@ -773,7 +842,7 @@ impl WorkbenchShellState {
             tokio::spawn(Arc::clone(self).keep_form_questions(
                 connection_id.clone(),
                 connection.control.clone(),
-                delivery.clone(),
+                AskedIn::turn(delivery),
             )),
         ];
         let answered = self
@@ -884,7 +953,10 @@ impl WorkbenchShellState {
                 "asked_by": request.provenance,
                 "options": options,
             });
-            let Some(question) = self.keep_question(&delivery, "permission", asked).await else {
+            let Some(question) = self
+                .keep_question(&AskedIn::turn(&delivery), "permission", asked)
+                .await
+            else {
                 continue;
             };
             waiting.spawn(Arc::clone(&self).carry_answer_back(
@@ -929,11 +1001,19 @@ impl WorkbenchShellState {
         self: Arc<Self>,
         connection_id: String,
         control: NativeSessionControl,
-        delivery: Delivery,
+        asked_in: AskedIn,
     ) {
         let mut after = 0;
         while let Some(request) = control.elicitation_request_after(after).await {
             after = request.sequence;
+            // Kept already, by whoever listened while the session was
+            // being opened.
+            let known = self.chat_runtime.asked.lock().await.values().any(|asked| {
+                asked.connection_id == connection_id && asked.sequence == request.sequence
+            });
+            if known {
+                continue;
+            }
             // What a form asks and where a link leads are the engine's and
             // may be secret; the ledger keeps that something is asked, and
             // the question is read from the session while it waits.
@@ -941,12 +1021,12 @@ impl WorkbenchShellState {
                 ElicitationMode::Url(_) => "link",
                 _ => "form",
             };
-            if let Some(question) = self.keep_question(&delivery, kind, json!({})).await {
+            if let Some(question) = self.keep_question(&asked_in, kind, json!({})).await {
                 self.chat_runtime.asked.lock().await.insert(
                     question.question_id,
                     Asked {
                         connection_id: connection_id.clone(),
-                        delivery_id: delivery.delivery_id.clone(),
+                        delivery_id: asked_in.delivery.clone(),
                         sequence: request.sequence,
                     },
                 );
@@ -954,19 +1034,35 @@ impl WorkbenchShellState {
         }
     }
 
+    /// Listen for what an engine asks while its session is being opened:
+    /// an engine may ask before there is a session at all, to be signed in
+    /// or to be told where it works, and would wait for ever unheard.
+    async fn keep_questions_of_opening(self: Arc<Self>, connection_id: String, asked_in: AskedIn) {
+        let control = loop {
+            if let Ok(connection) = self.connection(&connection_id).await {
+                break connection.control.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        };
+        self.keep_form_questions(connection_id, control, asked_in)
+            .await;
+    }
+
     async fn keep_question(
         &self,
-        delivery: &Delivery,
+        asked_in: &AskedIn,
         kind: &'static str,
         asked: Value,
     ) -> Option<Question> {
-        let (chat_id, agent_id, delivery_id) = (
-            delivery.chat_id.clone(),
-            delivery.agent_id.clone(),
-            delivery.delivery_id.clone(),
-        );
+        let asked_in = asked_in.clone();
         self.with_ledger(move |ledger| {
-            ledger.ask(&chat_id, &agent_id, Some(&delivery_id), kind, &asked)
+            ledger.ask(
+                &asked_in.chat,
+                &asked_in.agent,
+                asked_in.delivery.as_deref(),
+                kind,
+                &asked,
+            )
         })
         .await
         .ok()

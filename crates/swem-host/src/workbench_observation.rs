@@ -300,6 +300,9 @@ impl ObservationIngress {
                         format!("{event_namespace}-{cursor}-request"),
                         json!({
                             "observation_id": observation_id,
+                            // Where the call stands among the calls of this
+                            // session, for a page to ask for this one.
+                            "cursor": cursor,
                             "server": authenticated.stream_server,
                             "tool": event.tool,
                             "phase": "request",

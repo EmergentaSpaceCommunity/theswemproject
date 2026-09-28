@@ -26,6 +26,9 @@ export interface World {
   questions: Record<string, Question>;
   /// Per agent, why it last could not answer; nothing once it has.
   failed: Record<string, string>;
+  /// The place the record had reached when the page began to follow it:
+  /// what is after it happened while the page was open.
+  since: number;
 }
 
 export interface ChatState {
@@ -49,6 +52,7 @@ export const world = createStore<World>(() => ({
   deliveries: {},
   questions: {},
   failed: {},
+  since: 0,
 }));
 
 const opened = new Map<string, StoreApi<ChatState>>();
@@ -57,8 +61,9 @@ const PAGE = 400;
 const byId = <T,>(rows: T[], id: (row: T) => string): Record<string, T> =>
   Object.fromEntries(rows.map((row) => [id(row), row]));
 
-function stands(now: Now): void {
+function stands(now: Now, anew = false): void {
   world.setState({
+    ...(anew || !world.getState().ready ? { since: now.head } : {}),
     ready: true,
     lost: false,
     owner: now.owner,
@@ -142,7 +147,7 @@ export function follow(): void {
   stream.addEventListener("reset", (message) => {
     // The record is another one: nothing read from the old one holds.
     opened.clear();
-    whole(message as MessageEvent<string>);
+    stands(JSON.parse((message as MessageEvent<string>).data) as Now, true);
   });
   stream.addEventListener("event", (message) => happened(JSON.parse((message as MessageEvent<string>).data) as Happened));
   stream.addEventListener("open", () => world.setState({ lost: false }));

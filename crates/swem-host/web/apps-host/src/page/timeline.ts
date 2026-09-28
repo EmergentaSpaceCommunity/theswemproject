@@ -22,6 +22,13 @@ export type Item =
   | { kind: "ask"; key: string; by: string; question: Question }
   | { kind: "note"; key: string; by?: string; tone: Tone; text: string };
 
+/// An App a tool of an agent brought: where in the record, and which call
+/// of the session it was.
+export interface Brought {
+  place: number;
+  call: number;
+}
+
 export interface Timeline {
   items: Item[];
   /// The last place taken in.
@@ -35,8 +42,8 @@ export interface Timeline {
   /// Per agent, the place at which what its session lets a person choose
   /// last changed; what it offers is read from the session again then.
   offers: Record<string, number>;
-  /// Per agent, the place at which a tool of its last brought an App.
-  brought: Record<string, number>;
+  /// Per agent, the App a tool of its last brought.
+  brought: Record<string, Brought>;
 }
 
 export const emptyTimeline = (): Timeline => ({ items: [], through: 0, open: {}, commands: {}, usage: {}, offers: {}, brought: {} });
@@ -285,8 +292,14 @@ function taken(timeline: Timeline, happened: Happened): Timeline {
     case "acp/session_load":
     case "acp/session_resume":
       return agent ? { ...timeline, offers: { ...timeline.offers, [agent]: happened.sequence } } : timeline;
-    case "host/app_tool_observed":
-      return agent ? { ...timeline, brought: { ...timeline.brought, [agent]: happened.sequence } } : timeline;
+    case "host/app_tool_observed": {
+      // The call is brought once, when it begins; how it ended is given to
+      // the App that is already open.
+      const call = payload["cursor"];
+      return agent && payload["phase"] === "request" && typeof call === "number"
+        ? { ...timeline, brought: { ...timeline.brought, [agent]: { place: happened.sequence, call } } }
+        : timeline;
+    }
     case "host/artifact_available":
       return {
         ...timeline,
