@@ -217,6 +217,11 @@ impl WorkbenchShellState {
         let environment = match &body.environment {
             Some(chosen) => {
                 crate::environment_backend(chosen).map_err(WorkbenchShellError::Invalid)?;
+                // Staying where it is asks for nothing; moving somewhere
+                // that cannot take it is refused in the look's own words.
+                if chosen != &existing.environment_profile_id {
+                    self.check_environment(chosen)?;
+                }
                 chosen.clone()
             }
             None => existing.environment_profile_id.clone(),

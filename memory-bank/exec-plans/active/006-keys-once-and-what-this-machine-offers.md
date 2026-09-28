@@ -91,13 +91,19 @@ profile's own secret stays possible, as "this agent uses its own".
       this machine get its provider's key, then its own over it; an agent's key of its provider's kind
       moves to the provider at start
 - [ ] 1c Providers on the rail, Models
-- [ ] 2a the look at this machine
+- [x] 2a the look at this machine (`host/this_machine.rs`, `workbench_shell/hosts.rs`): taken while the
+      door opens and when asked, kept under `<data>/hosts`; `GET /api/hosts`,
+      `POST /api/hosts/this-machine/look`; `/api/environments` says whether each can be chosen today and
+      why not; moving an agent where it cannot live is refused in the look's words
 - [ ] 2b Hosts in Providers; where an agent may run, from what was found
 - [ ] 3a Settings in sections on the kit
 - [ ] 3b a terminal on this machine has the machine's home
 - [ ] 4 the record of hosts
 
 ## Discoveries
+
+- The system's facts come from the `sysinfo` crate (system and disks only); the engines are asked
+  by running them, each given eight seconds, the whole look forty-five.
 
 ## Decision log
 
@@ -113,6 +119,10 @@ profile's own secret stays possible, as "this agent uses its own".
   none; what a page is told never holds it; a shared key moves to the provider, a different one
   and one with no provider stay. Lint clean; `model_providers`, `workbench_shell`, `chat_runtime`
   green.
+
+- 2026-09-27, step 2a: `hosts` green on this machine, where Podman is installed and has no machine:
+  before a look nothing is refused; after it a container is not offered and moving an agent into
+  one is refused with the reason; the next start says what was found.
 
 ## Outcome / remaining gaps
 

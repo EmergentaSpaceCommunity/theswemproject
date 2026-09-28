@@ -3701,7 +3701,7 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_executable(name: &str) -> Option<PathBuf> {
     let candidates = if cfg!(windows) {
         vec![format!("{name}.exe"), format!("{name}.cmd"), name.into()]
     } else {

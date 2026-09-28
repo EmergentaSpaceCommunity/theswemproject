@@ -409,6 +409,9 @@ impl Product {
         state
             .enable_model_providers(&root.model_providers())
             .map_err(|error| error.to_string())?;
+        state
+            .enable_machine_look(root.path())
+            .map_err(|error| error.to_string())?;
         // After the providers: a key an agent held for its provider moves
         // to the provider, and that needs both.
         state
@@ -462,6 +465,8 @@ impl Assembled {
         self.state
             .enable_schedules(&self.root.schedules())
             .map_err(|error| error.to_string())?;
+        // What this machine has is looked at while the door opens.
+        self.state.look_at_the_machine_meanwhile();
         // What the chats were left owing when the product last stopped.
         self.state
             .take_up_chats()

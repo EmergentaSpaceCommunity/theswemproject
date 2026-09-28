@@ -27,6 +27,7 @@ mod editor_door;
 mod envelope;
 mod environment;
 mod environment_profile;
+mod host;
 mod install;
 mod keys;
 pub mod mcp_observer;
@@ -52,6 +53,7 @@ pub use envelope::{
 };
 pub use environment::*;
 pub use environment_profile::*;
+pub use host::{ContainerEngineLook, EngineStanding, MachineLook};
 pub use install::*;
 pub use keys::{KeyError, KeyHeld, KeyStore, PROVIDER_KEY_SCHEMA, ProviderKey};
 pub use permission_profile::*;

@@ -39,8 +39,10 @@ use crate::routing::{NativeOutputProjectionRequest, project_native_session_event
 use crate::workbench_apps::{self, ConnectionApps, OpenApp, OpenedApp, RelayRefusal};
 #[path = "workbench_shell/agent_environment.rs"]
 mod agent_environment;
+mod hosts;
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
+pub use hosts::{EnvironmentOffered, HostStanding};
 mod model_providers;
 mod provider_keys;
 pub use model_providers::{
@@ -780,6 +782,9 @@ pub struct WorkbenchShellState {
     mcp_catalogue: std::sync::OnceLock<McpCatalogue>,
     /// The model providers a profile may name, shipped and declared.
     model_providers: std::sync::OnceLock<ModelProviderBook>,
+    /// Where what is found of this machine is kept, and what was found.
+    machine_root: std::sync::OnceLock<PathBuf>,
+    machine_look: std::sync::RwLock<Option<crate::MachineLook>>,
     /// The keys of providers, given once for every agent.
     provider_keys: std::sync::OnceLock<crate::KeyStore>,
     /// Where what this product installs lands (`<data root>/installed`), when
@@ -998,6 +1003,8 @@ impl WorkbenchShellState {
             mcp_catalogue: std::sync::OnceLock::new(),
             model_providers: std::sync::OnceLock::new(),
             provider_keys: std::sync::OnceLock::new(),
+            machine_root: std::sync::OnceLock::new(),
+            machine_look: std::sync::RwLock::new(None),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
             schedules: std::sync::OnceLock::new(),
@@ -3977,8 +3984,24 @@ async fn route_shell(
             "profiles": crate::permission_profiles(),
         }))),
         (&Method::GET, ["api", "environments"]) => json_result(Ok(json!({
-            "environments": crate::environment_profiles(),
+            "environments": state.environments_offered(),
         }))),
+        // What this machine is and where on it an agent may live.
+        (&Method::GET, ["api", "hosts"]) => json_result(
+            state
+                .hosts()
+                .map(|hosts| json!({ "machine": state.machine(), "hosts": hosts })),
+        ),
+        (&Method::POST, ["api", "hosts", "this-machine", "look"]) => {
+            match state.look_at_the_machine().await {
+                Ok(_) => json_result(
+                    state
+                        .hosts()
+                        .map(|hosts| json!({ "machine": state.machine(), "hosts": hosts })),
+                ),
+                Err(error) => error_response(&error),
+            }
+        }
         (&Method::GET, ["api", "mcp-servers"]) => json_result(
             state
                 .mcp_servers()
