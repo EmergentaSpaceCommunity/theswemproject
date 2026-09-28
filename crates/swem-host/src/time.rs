@@ -57,6 +57,10 @@ pub(crate) const TIME_SCHEMA: &str = "
 const LATE_AFTER_MS: u64 = 2 * 60_000;
 /// A run that would begin this long after it was due is not begun.
 const TOO_LATE_MS: u64 = 24 * 60 * 60_000;
+/// An agent makes a schedule no more often than this, in minutes.
+const AN_AGENTS_LEAST_MINUTES: u64 = 5;
+/// An agent has at most this many schedules of its own.
+const AN_AGENTS_MOST: usize = 20;
 /// The most words a schedule says.
 const MOST_WORDS: usize = 16_000;
 
@@ -417,20 +421,6 @@ fn words(say: &str) -> Result<&str, RoutingError> {
     Ok(said)
 }
 
-/// What a schedule is called as a speaker: the beginning of what it says.
-fn called(say: &str) -> String {
-    let line = say.lines().next().unwrap_or_default().trim();
-    let mut name: String = line.chars().take(60).collect();
-    if line.chars().count() > 60 {
-        name.push('…');
-    }
-    if name.is_empty() {
-        "A schedule".into()
-    } else {
-        name
-    }
-}
-
 fn schedule_in(
     transaction: &Transaction<'_>,
     schedule_id: &str,
@@ -457,6 +447,40 @@ impl RoutingLedger {
     /// say nothing and a time that cannot be kept.
     pub fn keep_schedule(&mut self, new: &NewTimedMessage) -> Result<TimedMessage, RoutingError> {
         self.keep_schedule_made_at(new, unsigned(now_ms()), None)
+    }
+
+    /// Keep a schedule an agent makes for itself: no more often than every
+    /// five minutes, and no more than twenty of them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::keep_schedule`], and refuses what is over an agent's
+    /// limits, in words.
+    pub fn keep_schedule_of_an_agent(
+        &mut self,
+        new: &NewTimedMessage,
+    ) -> Result<TimedMessage, RoutingError> {
+        new.when.check().map_err(RoutingError::InvalidBinding)?;
+        if new
+            .when
+            .least_apart(unsigned(now_ms()))
+            .is_some_and(|apart| apart < AN_AGENTS_LEAST_MINUTES)
+        {
+            return Err(RoutingError::InvalidBinding(format!(
+                "a schedule an agent makes is at least {AN_AGENTS_LEAST_MINUTES} minutes apart from itself"
+            )));
+        }
+        let has = self
+            .schedules(Some(&new.agent_id))?
+            .iter()
+            .filter(|schedule| schedule.made_by == new.made_by)
+            .count();
+        if has >= AN_AGENTS_MOST {
+            return Err(RoutingError::InvalidBinding(format!(
+                "an agent has at most {AN_AGENTS_MOST} schedules; remove one first"
+            )));
+        }
+        self.keep_schedule(new)
     }
 
     /// [`Self::keep_schedule`], made at a moment and first due at one: how
@@ -506,7 +530,9 @@ impl RoutingLedger {
         }
         let schedule_id = new_id("s")?;
         let speaker_id = new_id("p")?;
-        let name = called(&say);
+        // A schedule is called by when it speaks: what it says is under
+        // its name in the chat, and would only be said twice.
+        let name = new.when.in_words();
         transaction.execute(
             "INSERT INTO participants(participant_id, kind, handle, name, made_by, created_ms)
              VALUES (?1, 'schedule', ?2, ?3, ?4, ?5)",
@@ -610,6 +636,12 @@ impl RoutingLedger {
                 next_due.map(signed)
             ],
         )?;
+        if when != was.when {
+            transaction.execute(
+                "UPDATE participants SET name = ?2 WHERE participant_id = ?1",
+                params![was.speaker_id, when.in_words()],
+            )?;
+        }
         let kept = schedule_in(&transaction, schedule_id)?;
         transaction.commit()?;
         Ok(kept)

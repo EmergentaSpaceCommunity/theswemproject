@@ -174,6 +174,7 @@ pub struct Product {
     container_image: Option<String>,
     agent_in_image: String,
     mcp_observer: Option<(PathBuf, Vec<String>)>,
+    time_tools: Option<(PathBuf, Vec<String>)>,
 }
 
 impl Product {
@@ -193,6 +194,7 @@ impl Product {
             container_image: None,
             agent_in_image: AGENT_IN_THE_IMAGE.to_owned(),
             mcp_observer: None,
+            time_tools: None,
         }
     }
 
@@ -261,6 +263,15 @@ impl Product {
     #[must_use]
     pub fn mcp_observer(mut self, executable: PathBuf, args: Vec<String>) -> Self {
         self.mcp_observer = Some((executable, args));
+        self
+    }
+
+    /// The command that serves an agent its own schedules: an executable
+    /// that runs [`crate::serve_time_tools`] over its standard streams when
+    /// given these arguments and then `--ledger`, `--agent` and `--chat`.
+    #[must_use]
+    pub fn time_tools(mut self, executable: PathBuf, args: Vec<String>) -> Self {
+        self.time_tools = Some((executable, args));
         self
     }
 
@@ -420,6 +431,9 @@ impl Product {
             .map_err(|error| error.to_string())?;
         if let Some((executable, args)) = self.mcp_observer {
             state.set_mcp_observer_command(executable, args);
+        }
+        if let Some((executable, args)) = self.time_tools {
+            state.set_time_tools_command(executable, args);
         }
         Ok(Assembled {
             state: Arc::new(state),

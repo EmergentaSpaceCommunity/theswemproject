@@ -38,6 +38,7 @@ mod routing;
 mod session;
 mod surface;
 mod time;
+mod time_tools;
 pub mod workbench_apps;
 mod workbench_content;
 mod workbench_files;
@@ -65,6 +66,7 @@ pub use session::*;
 pub(crate) use surface::NativeOutputProjection;
 pub use surface::{NativeSessionEvent, SurfaceEventSource};
 pub use time::{Due, NewTimedMessage, RunState, TimedMessage, TimedMessageChange, TimedRun, When};
+pub use time_tools::{TIME_TOOLS, serve_time_tools};
 pub use workbench_apps::{
     AppAttachmentView, DiscoveredAppResource, DiscoveredAppTool, MCP_APP_MIME, OpenedApp,
     RelayRefusal,

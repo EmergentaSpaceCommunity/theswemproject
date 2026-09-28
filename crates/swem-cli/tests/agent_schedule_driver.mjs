@@ -117,6 +117,29 @@ await b.waitFor("what was written is still there", async () =>
   b.exists('[data-files-area="outbox"] [data-file-name="from-the-clock.txt"]'), 100);
 step("the schedule stops when a person stops it, and what it did stays");
 
+// Asked to check back, the agent makes a schedule itself. It is in the
+// list, made by the agent, said in the chat it was asked in, and the person
+// can switch it off.
+await b.openAgent(profile);
+const asked = (await b.say(JSON.stringify({
+  server: "swem-time",
+  tool: "make_schedule",
+  arguments: {say: "Check back on the release branch", every_minutes: 10},
+}))).at(-1) ?? "";
+if (!asked.includes("Every 10 minutes")) cleanup(1, `the agent could not make a schedule: ${asked}`);
+const asked_in = (await b.chat()).chat.chat_id;
+await b.openAgent(profile, "schedules");
+await b.waitFor("the agent's own schedule", async () => (await shown()).includes("Check back on the release branch"), 100);
+const its_own = (await kept()).schedules[0];
+if (its_own.made_by !== agent || its_own.chat_id !== asked_in) {
+  cleanup(1, `the schedule is not the agent's own, in the chat it was asked in: ${JSON.stringify(its_own)}`);
+}
+const row = await b.evaluate(`[...document.querySelectorAll(${JSON.stringify(`${panel} tbody tr`)})].map((one) => one.innerText).join(" / ")`);
+if (!row.includes("Every 10 minutes") || !row.includes(profile)) cleanup(1, `the list does not say the agent made it: ${row}`);
+await b.click(`${panel} button[role="switch"]`);
+await b.waitFor("the agent's schedule paused by the person", async () => (await kept()).schedules[0]?.enabled === false, 100);
+step("the agent made a schedule of its own, and the person switched it off");
+
 console.log("schedule OK");
-console.log(JSON.stringify({served, wrote, schedule: made, run}));
+console.log(JSON.stringify({served, wrote, schedule: made, run, its_own}));
 cleanup(0, "agent schedule done");

@@ -46,6 +46,15 @@ A library plus test fixtures. It owns:
   the key of the agent's provider under the variable that kind of key is read from, then what
   the agent holds of its own over it. A key is never written into a profile, the ledger or a
   command line.
+- **Time** (`time.rs`, `workbench_shell/timekeeper.rs`, `time_tools.rs`). A schedule is a message
+  that arrives on time: what is said, when (every so often, a cron line in a named zone,
+  once), to which agent, in which chat, made by whom. Schedules and their runs are tables of
+  the ledger, added beside the rest without moving its version. One process keeps time, the
+  one that holds the keeper's lock beside the ledger; a run is claimed by its schedule and
+  the moment it was due. What was missed is said once, late; a question asked with nobody
+  there is refused after half an hour in the engine's own words. An agent makes schedules
+  for itself through a server handed to its session (`swem-time`), whose agent and chat are
+  fixed when it is started. Nothing about time lives in an agent's machine.
 - **Hosts** (`host/`, `workbench_shell/hosts.rs`). This machine is looked at while the door
   opens and when a person asks: system, processors, memory, disk, and whether Podman and
   Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an
@@ -59,8 +68,7 @@ A library plus test fixtures. It owns:
   (`stream.rs`, server-sent events from a place in the ledger's order). What an engine is told
   about who spoke is one block the host makes per turn (`envelope.rs`). Beside them: the MCP
   catalogue (`mcp_servers.rs`), model providers
-  (`model_providers.rs`), schedules (a schedule says its message into a chat as a participant),
-  terminals, the editor door (`editor_door.rs`: the same chats
+  (`model_providers.rs`), terminals, the editor door (`editor_door.rs`: the same chats
   answered over stdio to an editor that speaks ACP), and MCP Apps (`workbench_apps.rs`: a server's
   surface rendered in a sandboxed origin, its calls relayed through the host: `tools/call` of a
   tool its server declares as App-visible, and `resources/read`; a tool the host has not seen is
@@ -80,7 +88,7 @@ A library plus test fixtures. It owns:
   back, by descriptor.
 - **The page** (`web/apps-host`): React over the shell's HTTP surface. A rail of agents and
   chats, Providers, the Store, and one place per server that offers a home App; an agent has
-  its chat, its files, its terminal and its settings, which are forms by part
+  its chat, its files, its terminal, its schedules and its settings, which are forms by part
   (`react-hook-form`). A chat is drawn from a store per chat, fed by the one
   stream. The thread and composer are `@assistant-ui/react` over those stores, text is
   `react-markdown`, code is coloured by `shiki`, dialogs and selects are Base UI. It is styled

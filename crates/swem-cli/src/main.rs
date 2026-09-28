@@ -322,6 +322,17 @@ enum McpCommand {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// An agent's own schedules, served to its session over stdio. The
+    /// Workbench starts this; it is handed to an engine with a session.
+    #[command(hide = true)]
+    TimeTools {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        chat: String,
+    },
 }
 
 #[tokio::main]
@@ -429,6 +440,11 @@ fn product(
         .mcp_observer(
             std::env::current_exe()?,
             vec!["mcp".into(), "observe-stdio".into()],
+        )
+        // And so does what serves an agent its own schedules.
+        .time_tools(
+            std::env::current_exe()?,
+            vec!["mcp".into(), "time-tools".into()],
         );
     // Projects are served by the Cycle, which is not this binary: it is the
     // `swem-cycle` hub installed from the Store, beside this binary, or on
@@ -785,6 +801,13 @@ async fn run_mcp(mcp: Mcp) -> Result<()> {
             .await
             .map_err(anyhow::Error::msg)
         }
+        McpCommand::TimeTools {
+            ledger,
+            agent,
+            chat,
+        } => swem_host::serve_time_tools(ledger, agent, chat)
+            .await
+            .map_err(anyhow::Error::msg),
     }
 }
 

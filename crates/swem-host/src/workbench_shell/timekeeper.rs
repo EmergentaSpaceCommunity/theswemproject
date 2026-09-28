@@ -29,10 +29,6 @@ use crate::{
 const LOOK: Duration = Duration::from_secs(5);
 /// How long a question in a turn a schedule began waits for a person.
 const WAITS_FOR_A_PERSON_MS: u64 = 30 * 60_000;
-/// An agent makes a schedule no more often than this, in minutes.
-const AN_AGENTS_LEAST_MINUTES: u64 = 5;
-/// An agent has at most this many schedules.
-const AN_AGENTS_MOST: usize = 20;
 
 /// What the page gives to make a schedule.
 #[derive(Clone, Debug, Deserialize)]
@@ -494,9 +490,7 @@ impl WorkbenchShellState {
         Ok((self.shown(schedules).await?, runs))
     }
 
-    /// Make a schedule. One a person makes is the person's; one an agent
-    /// makes is the agent's, no more often than every five minutes and no
-    /// more than twenty of them.
+    /// Make a schedule, as the person the Workbench is.
     ///
     /// # Errors
     ///
@@ -504,36 +498,10 @@ impl WorkbenchShellState {
     pub async fn make_schedule(
         &self,
         body: NewScheduleBody,
-        made_by: Option<String>,
     ) -> Result<ScheduleShown, WorkbenchShellError> {
         let kept = self
             .with_ledger(move |ledger| {
-                let by_the_agent = made_by.is_some();
-                let made_by = match made_by {
-                    Some(made_by) => made_by,
-                    None => ledger.owner()?.participant_id,
-                };
-                if by_the_agent {
-                    if body
-                        .when
-                        .least_apart(now_ms())
-                        .is_some_and(|apart| apart < AN_AGENTS_LEAST_MINUTES)
-                    {
-                        return Err(crate::RoutingError::InvalidBinding(format!(
-                            "a schedule an agent makes is at least {AN_AGENTS_LEAST_MINUTES} minutes apart from itself"
-                        )));
-                    }
-                    let has = ledger
-                        .schedules(Some(&body.agent_id))?
-                        .iter()
-                        .filter(|schedule| schedule.made_by == made_by)
-                        .count();
-                    if has >= AN_AGENTS_MOST {
-                        return Err(crate::RoutingError::InvalidBinding(format!(
-                            "an agent has at most {AN_AGENTS_MOST} schedules; remove one first"
-                        )));
-                    }
-                }
+                let made_by = ledger.owner()?.participant_id;
                 ledger.keep_schedule(&NewTimedMessage {
                     agent_id: body.agent_id,
                     made_by,

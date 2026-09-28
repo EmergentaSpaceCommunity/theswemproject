@@ -9,9 +9,11 @@ use swem_host::{NewTimedMessage, RoutingLedger, RunState, TimedMessageChange, Wh
 const MINUTE: u64 = 60_000;
 const HOUR: u64 = 60 * MINUTE;
 
-fn fixture() -> (PathBuf, RoutingLedger, String, String, String) {
+/// A ledger of its own for a test, named for it: two tests that begin in
+/// the same instant must not be given one ledger.
+fn fixture(name: &str) -> (PathBuf, RoutingLedger, String, String, String) {
     let root = std::env::temp_dir().join(format!(
-        "swem-time-{}-{}",
+        "swem-time-{name}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -104,7 +106,7 @@ fn when_a_schedule_is_next_due_and_how_a_person_says_it() {
 
 #[test]
 fn what_is_due_is_claimed_once_said_late_or_passed_over() {
-    let (root, mut ledger, owner, agent, chat) = fixture();
+    let (root, mut ledger, owner, agent, chat) = fixture("claimed");
     let made = now();
     let schedule = ledger
         .keep_schedule(&NewTimedMessage {
@@ -119,7 +121,7 @@ fn what_is_due_is_claimed_once_said_late_or_passed_over() {
     let first = schedule.next_due_ms.expect("it is due some time");
     assert!(first >= made + 10 * MINUTE && first <= now() + 10 * MINUTE);
     let speaker = ledger.participant(&schedule.speaker_id).expect("its voice");
-    assert_eq!(speaker.name, "Check the changelog against what was merged");
+    assert_eq!(speaker.name, "Every 10 minutes");
     assert_eq!(speaker.made_by.as_deref(), Some(owner.as_str()));
 
     // Not yet.
@@ -206,7 +208,7 @@ fn what_is_due_is_claimed_once_said_late_or_passed_over() {
 
 #[test]
 fn a_schedule_is_paused_changed_due_once_and_forgotten() {
-    let (root, mut ledger, owner, agent, chat) = fixture();
+    let (root, mut ledger, owner, agent, chat) = fixture("paused");
     let new = |when: When| NewTimedMessage {
         agent_id: agent.clone(),
         made_by: owner.clone(),

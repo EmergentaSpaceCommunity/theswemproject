@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { emptyTimeline, grouped, takeIn } from "../src/page/timeline.ts";
+import { emptyTimeline, grouped, takeIn, toolCalled } from "../src/page/timeline.ts";
 
 const update = (sequence, agent, body) => ({
   sequence, chat_id: "c", agent_id: agent, kind: "acp/session_update", source: "native_live", payload: { update: body },
@@ -105,4 +105,13 @@ test("an App is brought by the call that begins, not by how it ended", () => {
   assert.deepEqual(begun.brought, { ada: { place: 4, call: 2 } });
   const ended = takeIn(begun, observed(5, { observation_id: "o2", phase: "response", status: "completed" }));
   assert.deepEqual(ended.brought, { ada: { place: 4, call: 2 } });
+});
+
+test("a tool of a server is called by what it does and whose it is", () => {
+  assert.equal(toolCalled("mcp__swem-time__make_schedule"), "make schedule · swem-time");
+  assert.equal(toolCalled("mcp__notes__save_note"), "save note · notes");
+  assert.equal(toolCalled("Read 14 pull requests"), "Read 14 pull requests");
+  assert.equal(toolCalled(undefined), undefined);
+  const timeline = [update(1, "ada", { sessionUpdate: "tool_call", toolCallId: "t1", title: "mcp__swem-time__make_schedule", status: "pending" })].reduce(takeIn, emptyTimeline());
+  assert.equal(timeline.items[0].tool.title, "make schedule · swem-time");
 });

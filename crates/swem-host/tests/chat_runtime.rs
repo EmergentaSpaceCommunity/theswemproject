@@ -879,7 +879,7 @@ async fn what_the_old_clock_kept_is_said_on_time_by_the_schedule() {
         .find(|member| member.kind == swem_host::ParticipantKind::Schedule)
         .expect("the schedule is in the chat it speaks in");
     assert_eq!(clock.participant_id, schedule.schedule.speaker_id);
-    assert_eq!(clock.name, "how are we doing");
+    assert_eq!(clock.name, "Every hour");
     assert_eq!(
         clock.made_by.as_deref(),
         Some(page.chat.created_by.as_str())
@@ -894,9 +894,7 @@ async fn what_the_old_clock_kept_is_said_on_time_by_the_schedule() {
     let block = given[0].last().expect("the block");
     assert!(block.contains("via: \"schedule\""));
     assert!(
-        block.contains(
-            "\"name\":\"how are we doing\",\"kind\":\"schedule\",\"trust\":\"principal\""
-        ),
+        block.contains("\"name\":\"Every hour\",\"kind\":\"schedule\",\"trust\":\"principal\""),
         "{block}"
     );
 
@@ -947,15 +945,12 @@ async fn what_an_agent_asks_with_nobody_there_is_refused_for_it_in_time() {
     let wants =
         json!({ "fixture": "mcp-echo-permission-v0.1", "server": "echo", "nonce": "unattended" });
     let made = state
-        .make_schedule(
-            swem_host::workbench_shell::NewScheduleBody {
-                agent_id: agent,
-                chat_id: None,
-                say: wants.to_string(),
-                when: swem_host::When::Every { minutes: 30 },
-            },
-            None,
-        )
+        .make_schedule(swem_host::workbench_shell::NewScheduleBody {
+            agent_id: agent,
+            chat_id: None,
+            say: wants.to_string(),
+            when: swem_host::When::Every { minutes: 30 },
+        })
         .await
         .expect("make a schedule");
     assert_eq!(made.chat_title, None);
@@ -1042,6 +1037,157 @@ async fn what_an_agent_asks_with_nobody_there_is_refused_for_it_in_time() {
     assert_eq!(
         runs.iter().map(|run| run.state).collect::<Vec<_>>(),
         [swem_host::RunState::Skipped, swem_host::RunState::Answered]
+    );
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
+}
+
+/// Ask the agent to call one of its schedule tools, and read what the tool
+/// answered.
+async fn through_its_tools(
+    state: &Arc<WorkbenchShellState>,
+    chat_id: &str,
+    said_before: usize,
+    tool: &str,
+    arguments: Value,
+) -> Value {
+    let asks = json!({
+        "fixture": "mcp-call-v0.1", "server": "swem-time", "nonce": tool,
+        "tool": tool, "arguments": arguments,
+    });
+    state
+        .say_in_chat(chat_id, saying(&asks.to_string()))
+        .await
+        .expect("say");
+    let page = until(
+        state,
+        chat_id,
+        "the tool's answer",
+        settled(said_before + 2),
+    )
+    .await;
+    reply(&page, said_before + 1)["mcp_result"].clone()
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk: made, refused, told of, not its own, paused"
+)]
+async fn an_agent_makes_its_own_schedule_in_the_chat_it_was_asked_in() {
+    let root = fixture_root("its-own");
+    let (state, _ledger) = shell_of_two(&root);
+    state.set_time_tools_command(
+        PathBuf::from(env!("CARGO_BIN_EXE_swem-time-tools")),
+        Vec::new(),
+    );
+    let chat = state
+        .start_chat(StartChatBody {
+            title: "Release 0.9".into(),
+            agents: vec!["coder".into()],
+        })
+        .await
+        .expect("chat");
+    let agent = chat
+        .members
+        .iter()
+        .find(|member| member.kind == swem_host::ParticipantKind::Agent)
+        .expect("the agent")
+        .participant_id
+        .clone();
+
+    // Asked to check back, it makes a schedule: its own, in this chat.
+    let made = through_its_tools(
+        &state,
+        &chat.chat_id,
+        0,
+        "make_schedule",
+        json!({ "say": "Look for a new release branch and say so", "every_minutes": 30 }),
+    )
+    .await;
+    assert_eq!(made["when"], "Every 30 minutes", "{made}");
+    assert_eq!(made["made_by_you"], true);
+    let (schedules, _) = state
+        .schedules_shown(Some(agent.clone()))
+        .await
+        .expect("schedules");
+    assert_eq!(schedules.len(), 1);
+    assert_eq!(schedules[0].schedule.made_by, agent);
+    assert_eq!(
+        schedules[0].schedule.chat_id.as_deref(),
+        Some(chat.chat_id.as_str())
+    );
+    assert_eq!(schedules[0].chat_title.as_deref(), Some("Release 0.9"));
+    let its_own = schedules[0].schedule.schedule_id.clone();
+
+    // Too often for an agent, and it is told so.
+    let refused = through_its_tools(
+        &state,
+        &chat.chat_id,
+        2,
+        "make_schedule",
+        json!({ "say": "Again", "every_minutes": 1 }),
+    )
+    .await;
+    assert!(
+        refused.to_string().contains("at least 5 minutes"),
+        "{refused}"
+    );
+
+    // What a person made is theirs: the agent is told of it and cannot
+    // remove it. What it made itself it pauses.
+    let theirs = state
+        .make_schedule(swem_host::workbench_shell::NewScheduleBody {
+            agent_id: agent.clone(),
+            chat_id: Some(chat.chat_id.clone()),
+            say: "Check the changelog".into(),
+            when: swem_host::When::Every { minutes: 60 },
+        })
+        .await
+        .expect("a person's schedule");
+    let listed = through_its_tools(&state, &chat.chat_id, 4, "list_schedules", json!({})).await;
+    let listed = listed["schedules"].as_array().expect("schedules").clone();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|one| (
+                one["say"].as_str().unwrap_or(""),
+                one["made_by_you"] == true
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("Look for a new release branch and say so", true),
+            ("Check the changelog", false)
+        ]
+    );
+    let refused = through_its_tools(
+        &state,
+        &chat.chat_id,
+        6,
+        "remove_schedule",
+        json!({ "schedule_id": theirs.schedule.schedule_id }),
+    )
+    .await;
+    assert!(
+        refused.to_string().contains("made by a person"),
+        "{refused}"
+    );
+    let paused = through_its_tools(
+        &state,
+        &chat.chat_id,
+        8,
+        "pause_schedule",
+        json!({ "schedule_id": its_own, "paused": true }),
+    )
+    .await;
+    assert_eq!(paused["paused"], true, "{paused}");
+    let (schedules, _) = state.schedules_shown(Some(agent)).await.expect("schedules");
+    assert_eq!(
+        schedules
+            .iter()
+            .map(|shown| shown.schedule.enabled)
+            .collect::<Vec<_>>(),
+        [false, true]
     );
     state.let_go_of(None).await;
     fs::remove_dir_all(root).expect("remove fixture root");

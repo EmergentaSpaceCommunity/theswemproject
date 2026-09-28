@@ -5,6 +5,8 @@
 | Install an agent from the plan the page shows; any id the ACP registry lists | proven | GJ-01; `swem agents install <registry-id>` walked by `a_person_installs_an_agent_the_product_never_heard_of` |
 | Agent settings in parts: what it is put together from, its name and handle, what it is for, where it works, servers, skills, how it asks, how it signs in | proven | GJ-02; the gate's walks press every part but the name and the two folders, which were done by hand |
 | A provider's key given once and handed to every agent that answers from it | proven | GJ-10; `provider_keys`, `keys` |
+| A schedule said on time in a chat, paused, forgotten; its runs kept, late ones said late | proven | GJ-11; `time`, `chat_runtime` |
+| An agent makes, lists, pauses and removes its own schedules | proven | GJ-11; `chat_runtime::an_agent_makes_its_own_schedule_in_the_chat_it_was_asked_in`; by hand with a real engine |
 | This machine as it was found; a container offered only where one can start | proven below the page and by hand | GJ-10; `hosts` |
 | Store over the ACP registry and added catalogs; servers and skills installed and used | proven | GJ-03; `tests/store.rs` |
 | Chats listed, read with each message under its sender, gone on with, kept across restarts | proven by hand and below the page | GJ-04 |

@@ -10,6 +10,10 @@ swem (product binary)
         +-- installer and Store (<data>/installed, <data>/indexes)
         +-- MCP catalogue (<data>/mcp-servers), model providers (<data>/model-providers)
         +-- keys of providers (<data>/keys, its owner's alone)
+        +-- the keeper of time: the process holding <ledger>.timekeeper.lock; schedules and
+        |     their runs are tables of the ledger (<data>/schedules.v1 is what the clock
+        |     before it kept, set aside)
+        +-- `swem mcp time-tools`: an agent's own schedules, a child of its engine
         +-- what was found of this machine (<data>/hosts/this-machine.json)
         +-- environments: this machine, or a Podman container per profile
         +-- HTTP surface for the page (127.0.0.1:<port>, per-run token); one stream per page

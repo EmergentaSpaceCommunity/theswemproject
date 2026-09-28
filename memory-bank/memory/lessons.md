@@ -115,3 +115,9 @@ slice because only the suites a change "touches" were run. Before a slice ends, 
 "No server asks this way" was concluded from a search piped through `head -10`, whose ten
 lines were all one file. The eleventh was the Cycle's server. A claim that something does not
 exist needs the whole result: count the matches, or list the files, before the lines.
+
+## A fixture named for the instant is two tests' fixture
+
+Two tests of one file begin in the same microsecond often enough. A directory named for the
+process and the time was given to both, and one read the other's rows. Name a fixture for its
+test as well.

@@ -61,8 +61,13 @@ export function useStanding(agent: Participant | undefined): { profile: Profile 
   return { profile, engine, host };
 }
 
+/// Who is in a chat, by name. A schedule speaks in a chat and is not
+/// somebody who is in it.
 export const names = (members: Participant[], owner: Participant | null): string =>
-  members.map((member) => (member.participant_id === owner?.participant_id ? "You" : member.name)).join(", ");
+  members
+    .filter((member) => member.kind !== "schedule")
+    .map((member) => (member.participant_id === owner?.participant_id ? "You" : member.name))
+    .join(", ");
 
 export function when(at?: number): string {
   if (!at) return "";

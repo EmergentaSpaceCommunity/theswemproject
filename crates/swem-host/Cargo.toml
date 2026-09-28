@@ -25,6 +25,10 @@ name = "swem-mcp-echo"
 path = "src/bin/swem-mcp-echo.rs"
 
 [[bin]]
+name = "swem-time-tools"
+path = "src/bin/swem-time-tools.rs"
+
+[[bin]]
 name = "swem-mcp-apps-fixture"
 path = "src/bin/swem-mcp-apps-fixture.rs"
 

@@ -94,6 +94,16 @@ interface Update {
   currency?: string;
 }
 
+/// What a tool is called, as a person reads it. An engine names a tool of
+/// a server by the way it addresses it (`mcp__notes__save_note`); said in
+/// words that is what it does and whose it is ("save note · notes").
+export function toolCalled(title: string | undefined): string | undefined {
+  const named = /^mcp__(.+?)__(.+)$/.exec(title ?? "");
+  if (!named) return title;
+  const [, server, tool] = named;
+  return `${(tool ?? "").replace(/_/g, " ")} · ${server}`;
+}
+
 const toolStatus = (status: unknown, fallback: ToolCard["status"]): ToolCard["status"] =>
   status === "pending" || status === "in_progress" || status === "completed" || status === "failed" ? status : fallback;
 
@@ -120,7 +130,7 @@ function withTool(timeline: Timeline, agent: string, sequence: number, update: U
           by: agent,
           tool: {
             toolCallId: id,
-            title: update.title ?? id,
+            title: toolCalled(update.title) ?? id,
             kind: update.kind ?? null,
             status: toolStatus(update.status, "pending"),
             content: lines,
@@ -139,7 +149,7 @@ function withTool(timeline: Timeline, agent: string, sequence: number, update: U
             ...item,
             tool: {
               ...item.tool,
-              title: update.title ?? item.tool.title,
+              title: toolCalled(update.title) ?? item.tool.title,
               kind: update.kind ?? item.tool.kind,
               status: toolStatus(update.status, item.tool.status),
               content: [...item.tool.content, ...lines],

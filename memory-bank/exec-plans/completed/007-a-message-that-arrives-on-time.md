@@ -89,7 +89,9 @@ a window that was missed runs once and not once per window - is kept.
       its book of files and its addresses are gone
 - [x] 3 a question nobody answers: after half an hour the schedule answers with the engine's own
       refusal, and the turn ends
-- [ ] 4 the agent's own schedules
+- [x] 4 the agent's own schedules (`time_tools.rs`, `swem mcp time-tools`, `swem-time-tools`): make, list,
+      pause, remove over stdio; handed to every session opened for a chat on this machine; no more
+      often than five minutes and no more than twenty when an agent makes them
 - [x] 5 the page: an agent's Schedules (who keeps time, the list with its switch, New schedule, Last
       runs), Providers Time; "On its own" left Settings; the gate's walk makes its schedule there
 
@@ -97,6 +99,13 @@ a window that was missed runs once and not once per window - is kept.
 
 - A schedule made every so often is first due one interval after it is made, not at once as the
   old clock's was. The gate's walk makes one of every minute and waits for it.
+- A schedule spoke in a chat under the beginning of its own words, so every message of it was
+  said twice, once as a name. It is called by when it speaks ("Every day at 06:00"), and is not
+  listed among who is in the chat.
+- The real engine said when its schedule is next due in universal time, because that is what it
+  was told. It is told in the time of this computer.
+- An engine names a tool of a server by how it addresses it (`mcp__swem-time__make_schedule`), and
+  the page showed that. The page says what the tool does and whose it is.
 - The time of day on the page is said the way the person's system says it, with or without AM.
 
 ## Decision log
@@ -116,6 +125,35 @@ a window that was missed runs once and not once per window - is kept.
   one that has not ended is passed over. Lint clean for the workspace. The page's tests 29 green.
   The gate's walk of a schedule through the real binary in Chrome: green.
 
+- 2026-09-28, step 4: `chat_runtime::an_agent_makes_its_own_schedule_in_the_chat_it_was_asked_in`
+  green: made through the tool in the chat it was asked in; one of every minute refused with the
+  reason; a person's schedule listed and not the agent's to remove; its own paused. The gate's
+  walk makes the agent's own schedule through the real binary and the person switches it off.
+- 2026-09-28, the acceptance scenario by hand in Chrome on a copy of the owner's data root, the
+  real binary and the real engine: an instruction of the old clock was there as a schedule of
+  every two hours, made by the person; a schedule of every minute was made in the form, said by
+  the schedule and answered (five times, each kept as a run); the product was stopped five
+  seconds before a run and started three and a half minutes after it, and the run was said once
+  and kept as said late; asked to check back every ten minutes, the engine asked before it used
+  its tool, was allowed, and made a schedule that stands in the list as made by the agent.
+
+- 2026-09-28, the end of the slice, the computer kept awake for the run: lint clean; the product
+  gate fourteen green in one run; `scripts/suites.sh` green but `time`, where two tests that
+  began in the same instant were given one ledger by a fixture named for the instant alone.
+  The fixture is named for its test; `time` is green five times of five.
+
 ## Outcome / remaining gaps
 
-Not started.
+Done 2026-09-28. A person makes a schedule in an agent's Schedules, it is said on time by the
+schedule and answered with nobody watching, they pause and forget it and read its runs; the
+agent makes its own when asked; Providers says who keeps time.
+
+Remaining:
+
+- One keeper, the running SWEM: nothing is said while it is closed. The system's own scheduler
+  and an outside one are not built; what they would stand on is `claim_due`.
+- A schedule in a chat of several names its agent by its handle; choosing who is named is A6.
+- A schedule is changed by pausing, forgetting and making another: the page has no form to
+  change what one says or when, though the host takes the change.
+- An agent in a container is handed no schedule tools until roadmap B5.
+- The owner's own data root was not opened by this build; the scenario was walked on a copy.

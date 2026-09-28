@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::v1::{
     ContentBlock, ElicitationAction as AcpElicitationAction, ElicitationCapabilities,
     ElicitationFormCapabilities, ElicitationUrlCapabilities, EmbeddedResourceResource,
-    FileSystemCapabilities, McpServer,
+    FileSystemCapabilities, McpServer, McpServerStdio,
 };
 use base64::Engine as _;
 use futures_util::TryStreamExt as _;
@@ -794,6 +794,8 @@ pub struct WorkbenchShellState {
     store: std::sync::OnceLock<store::StoreHome>,
     /// The standing instructions a clock runs, and the directory they are
     /// kept in. Absent until a host enables them.
+    /// The command that serves an agent's own schedules to its session.
+    time_tools: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The keeper's lock, held for as long as this process keeps time.
     timekeeper: std::sync::OnceLock<std::fs::File>,
     /// The terminals open on this host. A terminal runs in the environment of
@@ -1008,6 +1010,7 @@ impl WorkbenchShellState {
             machine_look: std::sync::RwLock::new(None),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
+            time_tools: std::sync::OnceLock::new(),
             timekeeper: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
             chat_runtime: runtime::ChatRuntime::default(),
@@ -1604,6 +1607,8 @@ impl WorkbenchShellState {
             file_callbacks,
             place,
         } = opening;
+        // The chat the session is asked for, for what is handed to it.
+        let asked_in = place.as_ref().map(|place| place.chat_id.clone());
         let profile_id = profile_id.as_str();
         let profile = self
             .inventory
@@ -1902,6 +1907,30 @@ impl WorkbenchShellState {
             capabilities,
             boundary: profile.workspace.clone(),
         });
+        // Its own schedules, in the chat the session is opened for. The
+        // command runs where the engine runs, so only on this machine.
+        if let (Some((executable, prefix)), Some(chat_id)) = (self.time_tools.get(), &asked_in)
+            && matches!(connection.environment, ResolvedAgentEnvironment::Direct)
+        {
+            let profile_id = profile.profile_id.clone();
+            let agent = self
+                .with_ledger(move |ledger| ledger.agent_of_profile(&profile_id))
+                .await;
+            if let Ok(agent) = agent {
+                let mut args = prefix.clone();
+                args.extend([
+                    "--ledger".to_owned(),
+                    self.ledger_path.display().to_string(),
+                    "--agent".to_owned(),
+                    agent.participant_id,
+                    "--chat".to_owned(),
+                    chat_id.clone(),
+                ]);
+                session_mcp_servers.push(McpServer::Stdio(
+                    McpServerStdio::new(crate::TIME_TOOLS, executable.clone()).args(args),
+                ));
+            }
+        }
         options.mcp_servers = session_mcp_servers;
         options.start = start;
         let workspace = profile.workspace.clone();
@@ -3309,6 +3338,13 @@ impl WorkbenchShellState {
         !APPS_BRIDGE.is_empty()
     }
 
+    /// The command that serves an agent's own schedules to its session:
+    /// an executable and what it is given before the ledger, the agent and
+    /// the chat. Without it an agent makes no schedules.
+    pub fn set_time_tools_command(&self, executable: PathBuf, prefix_args: Vec<String>) {
+        let _ = self.time_tools.set((executable, prefix_args));
+    }
+
     /// Configure the product-internal observer command. The command is inert
     /// unless the Apps bundle is also enabled and a stdio tool declares a UI.
     pub fn set_mcp_observer_command(&self, executable: PathBuf, prefix_args: Vec<String>) {
@@ -4172,7 +4208,7 @@ async fn route_shell(
                 Ok(body) => body,
                 Err(error) => return error_response(&error),
             };
-            json_result(state.make_schedule(body, None).await)
+            json_result(state.make_schedule(body).await)
         }
         (&Method::PATCH, ["api", "schedules", schedule_id]) => {
             let schedule_id = (*schedule_id).to_owned();

@@ -29,6 +29,15 @@ today says why and is not offered in an agent's settings. Walk:
 `product_front_door::a_person_gives_an_agent_a_role_and_a_model` (the key); Hosts by hand and by
 `hosts::where_an_agent_may_live_is_offered_from_what_was_found`.
 
+## GJ-11 — A message that arrives on time
+
+A person opens an agent's Schedules and makes a schedule: what the agent is told, when, and the
+chat it is said in. It is said on time by the schedule and answered like anything else said
+there, with nobody watching. They pause it with its switch and forget it; what it did stays.
+They read the last runs. Asked to check back, the agent makes a schedule itself, and the
+person switches it off. Providers says who keeps time. Walk:
+`product_front_door::a_person_leaves_a_standing_instruction_and_the_product_carries_it_out`.
+
 ## GJ-03 — Install from the Store
 
 A person opens the Store, adds a catalog by address, installs an agent, an MCP server and a skill,
