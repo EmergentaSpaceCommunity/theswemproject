@@ -29,6 +29,14 @@ today says why and is not offered in an agent's settings. Walk:
 `product_front_door::a_person_gives_an_agent_a_role_and_a_model` (the key); Hosts by hand and by
 `hosts::where_an_agent_may_live_is_offered_from_what_was_found`.
 
+Where Podman is there and has no machine, Set up beside it says what would be done - the machine
+and its size, what is downloaded, the two commands - and what this computer cannot give; agreed
+to as offered, it is done step by step where the person sees it, the machine is looked at again,
+and a failure is said in Podman's own words with what to do. Proven by
+`hosts::containers_are_set_up_by_the_plan_a_person_agreed_to`; by hand up to the refusal on a
+computer where QEMU does not start, and with Podman's machine commands stood in for. Not yet
+done on a computer where the machine really starts.
+
 ## GJ-11 — A message that arrives on time
 
 A person opens an agent's Schedules and makes a schedule: what the agent is told, when, and the

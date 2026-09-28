@@ -47,6 +47,33 @@ export interface HostStanding {
   said: string;
 }
 
+export interface SetUpStep {
+  what: string;
+  /// The command that does it, as it is run.
+  command: string;
+  state: "waiting" | "running" | "done" | "failed";
+  said: string;
+}
+
+/// Setting containers up on this machine: what would be done, what is being
+/// done, or how it ended.
+export interface SetUp {
+  plan_id: string;
+  steps: SetUpStep[];
+  effects: string[];
+  blockers: string[];
+  state: "offered" | "running" | "done" | "failed";
+  said: string;
+  hint?: string | null;
+}
+
+/// The machine containers run in, as a person sizes it.
+export interface MachineWanted {
+  cpus: number;
+  memory_mib: number;
+  disk_gib: number;
+}
+
 interface Providers {
   models: ModelProviderStanding[] | null;
   /// What keeps the keys, in the host's words.
@@ -56,6 +83,7 @@ interface Providers {
   machine: MachineLook | null;
   hosts: HostStanding[] | null;
   looking: boolean;
+  settingUp: SetUp | null;
   problem: string;
 }
 
@@ -66,6 +94,7 @@ export const providers = createStore<Providers>(() => ({
   machine: null,
   hosts: null,
   looking: false,
+  settingUp: null,
   problem: "",
 }));
 
@@ -79,6 +108,19 @@ const said = (error: unknown): string => (error instanceof Error ? error.message
 interface Hosts {
   machine: MachineLook | null;
   hosts: HostStanding[];
+  setting_up?: SetUp | null;
+}
+
+let watching: ReturnType<typeof setTimeout> | null = null;
+/// While containers are being set up, ask how it goes.
+function watch(): void {
+  if (watching !== null) return;
+  const again = async () => {
+    watching = null;
+    await providing.hosts();
+    if (providers.getState().settingUp?.state === "running") watching = setTimeout(again, 1500);
+  };
+  watching = setTimeout(again, 1000);
 }
 
 export const providing = {
@@ -112,10 +154,23 @@ export const providing = {
   async hosts(): Promise<void> {
     try {
       const answer = await fetchJson<Hosts>("/api/hosts");
-      providers.setState({ machine: answer.machine, hosts: answer.hosts, problem: "" });
+      providers.setState({ machine: answer.machine, hosts: answer.hosts, settingUp: answer.setting_up ?? null, problem: "" });
+      if (answer.setting_up?.state === "running") watch();
     } catch (error) {
       providers.setState({ problem: said(error) });
     }
+  },
+  /// What setting containers up here would do, for a machine of that size.
+  async planContainers(wanted: MachineWanted): Promise<SetUp> {
+    const plan = await fetchJson<SetUp>("/api/hosts/this-machine/containers/plan", send("POST", wanted));
+    providers.setState({ settingUp: plan });
+    return plan;
+  },
+  /// Do what was offered, as a person agreed to it.
+  async setContainersUp(plan: string): Promise<void> {
+    const run = await fetchJson<SetUp>("/api/hosts/this-machine/containers/set-up", send("POST", { plan_id: plan }));
+    providers.setState({ settingUp: run });
+    watch();
   },
   async lookAgain(): Promise<void> {
     providers.setState({ looking: true, problem: "" });

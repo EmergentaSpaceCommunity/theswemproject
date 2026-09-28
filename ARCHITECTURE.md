@@ -59,6 +59,9 @@ A library plus test fixtures. It owns:
   opens and when a person asks: system, processors, memory, disk, and whether Podman and
   Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an
   agent may live is offered from it, and a place that cannot take an agent today says why.
+  Setting containers up is the plan the command line has (`podman_provisioning_plan`), kept by
+  the shell until a person agrees to it by its id; its steps are run one by one, how each went
+  is read from `GET /api/hosts`, and the machine is looked at again at the end.
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
   to, guarded by the page's own origin and a per-run secret. Chats (`chats.rs`: who a message is
   for - who it names, every agent where the chat says so, and the agent that asked), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the

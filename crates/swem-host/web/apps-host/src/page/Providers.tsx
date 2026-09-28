@@ -2,10 +2,11 @@
 // then used by any number of agents.
 
 import { Dialog } from "@base-ui/react/dialog";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { useStore } from "zustand";
 
+import { ContainersSetUp } from "./ContainersSetUp.tsx";
 import { Box, Brain, Clock, Laptop, Plus } from "./icons.tsx";
 import { go, type ProvidersTab } from "./place.ts";
 import { gigabytes, providers, providing, when, type EngineLook, type HostStanding, type ModelProviderStanding } from "./providers.ts";
@@ -293,15 +294,43 @@ function Models() {
   );
 }
 
-function Engine({ name, found }: { name: string; found: EngineLook }) {
+function Engine({ name, found, children }: { name: string; found: EngineLook; children?: ReactNode }) {
   const tone = found.standing === "ready" ? "ready" : found.standing === "not_ready" ? "asking" : "none";
   const words = found.standing === "not_ready" ? found.said.replace(/^./, (first) => first.toUpperCase()) : found.said;
   return (
     <div className="w-fact">
       <span className="k-caption">{name}</span>
       <Standing tone={tone}>{found.standing === "ready" && found.version ? `Ready · ${found.version}` : words}</Standing>
+      {children}
     </div>
   );
+}
+
+/// What a person can do about Podman as it was found.
+function AboutPodman({ found, onSetUp }: { found: EngineLook; onSetUp: () => void }) {
+  const run = useStore(providers, (state) => state.settingUp);
+  if (run?.state === "running") {
+    return (
+      <button type="button" className="k-btn k-quiet w-start" onClick={onSetUp}>
+        Being set up… Show
+      </button>
+    );
+  }
+  if (found.standing === "not_ready") {
+    return (
+      <button type="button" className="k-btn k-primary w-start" onClick={onSetUp}>
+        Set up
+      </button>
+    );
+  }
+  if (found.standing === "not_found") {
+    return (
+      <a className="k-btn k-quiet w-start" href="https://podman.io/docs/installation" target="_blank" rel="noreferrer">
+        Get Podman
+      </a>
+    );
+  }
+  return null;
 }
 
 function Fact({ name, children }: { name: string; children: string }) {
@@ -313,7 +342,7 @@ function Fact({ name, children }: { name: string; children: string }) {
   );
 }
 
-function Host({ host }: { host: HostStanding }) {
+function Host({ host, onSetUp }: { host: HostStanding; onSetUp?: () => void }) {
   return (
     <tr>
       <td>
@@ -336,6 +365,11 @@ function Host({ host }: { host: HostStanding }) {
       <td className="w-end">
         <Standing tone={host.ready ? "ready" : "asking"}>{host.ready ? "Ready" : "Cannot start"}</Standing>
         {host.ready ? null : <div className="k-caption">{host.said}</div>}
+        {!host.ready && onSetUp ? (
+          <button type="button" className="k-btn k-quiet" onClick={onSetUp}>
+            Set up
+          </button>
+        ) : null}
       </td>
     </tr>
   );
@@ -345,11 +379,13 @@ function Hosts() {
   const machine = useStore(providers, (state) => state.machine);
   const hosts = useStore(providers, (state) => state.hosts);
   const looking = useStore(providers, (state) => state.looking);
+  const [settingUp, setSettingUp] = useState(false);
   useEffect(() => {
     void providing.hosts();
   }, []);
   return (
     <>
+      <ContainersSetUp open={settingUp} onClose={() => setSettingUp(false)} />
       <section className="k-card k-stack">
         <div className="k-spread">
           <div className="k-inline w-nowrap">
@@ -369,7 +405,9 @@ function Hosts() {
             <Fact name="Processor">{`${machine.processors} cores`}</Fact>
             <Fact name="Memory">{`${gigabytes(machine.memory_bytes)} · ${gigabytes(machine.memory_free_bytes)} free`}</Fact>
             <Fact name="Disk">{machine.disk_free_bytes == null ? "Not known" : `${gigabytes(machine.disk_free_bytes)} free`}</Fact>
-            <Engine name="Podman" found={machine.podman} />
+            <Engine name="Podman" found={machine.podman}>
+              <AboutPodman found={machine.podman} onSetUp={() => setSettingUp(true)} />
+            </Engine>
             <Engine name="Docker" found={machine.docker} />
           </div>
         ) : null}
@@ -386,7 +424,11 @@ function Hosts() {
               <th scope="col" className="k-eyebrow w-end">State</th>
             </tr>
           </thead>
-          <tbody>{(hosts ?? []).map((host) => <Host host={host} key={host.id} />)}</tbody>
+          <tbody>
+            {(hosts ?? []).map((host) => (
+              <Host host={host} key={host.id} onSetUp={host.kind !== "Built in" && machine?.podman.standing === "not_ready" ? () => setSettingUp(true) : undefined} />
+            ))}
+          </tbody>
         </table>
       </section>
     </>

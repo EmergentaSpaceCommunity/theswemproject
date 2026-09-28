@@ -189,3 +189,9 @@ Remaining:
 - The walks still find some controls of Settings by names the old panel had (`.server-attach`,
   `.skill-row`); new walks find controls by what they say.
 - The owner's own data root was not opened by this build; the scenario was walked on a copy.
+
+Afterwards (2026-09-28): Hosts only said what was found, and the owner asked where Podman is set
+up. Set up was added beside Podman: the plan in words, agreement to it as offered, its steps as
+they go, the look afterwards. A machine is refused before anything is downloaded when QEMU does
+not start or the computer lacks the memory, processors or disk. Docker has no set-up; the image
+an agent runs in is still consented to when the agent is put in a container.

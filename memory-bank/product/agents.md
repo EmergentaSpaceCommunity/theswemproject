@@ -101,7 +101,7 @@ Nothing is offered that was not looked at. Three looks, each stored with its tim
 
 | Look | When | What it finds | Today |
 |---|---|---|---|
-| The machine SWEM runs on | at start, and on request | system, architecture, processor, memory, disk; Docker and Podman and whether they are ready | built (roadmap A4), shown under Providers, Hosts |
+| The machine SWEM runs on | at start, and on request | system, architecture, processor, memory, disk; Docker and Podman and whether they are ready | built (roadmap A4), shown under Providers, Hosts; containers are set up from there |
 | A host | when added, and on request | reachable, who we are there, system and resources, which container engine, what an agent gets there | nothing |
 | Inside an agent's machine | when the agent is made, after a move, on request | the engine and its version, signed in or not, the tools it has, its workspace, its network, **whether it can start containers of its own** | the engine's handshake only |
 

@@ -42,7 +42,7 @@ mod agent_environment;
 mod hosts;
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
-pub use hosts::{EnvironmentOffered, HostStanding};
+pub use hosts::{EnvironmentOffered, HostStanding, MachineWanted, SetUp, SetUpStep};
 mod model_providers;
 mod provider_keys;
 pub use model_providers::{
@@ -785,6 +785,8 @@ pub struct WorkbenchShellState {
     /// Where what is found of this machine is kept, and what was found.
     machine_root: std::sync::OnceLock<PathBuf>,
     machine_look: std::sync::RwLock<Option<crate::MachineLook>>,
+    /// The plan to set containers up that was offered, and how it goes.
+    container_setup: std::sync::Mutex<Option<(crate::ProvisioningPlan, SetUp)>>,
     /// The keys of providers, given once for every agent.
     provider_keys: std::sync::OnceLock<crate::KeyStore>,
     /// Where what this product installs lands (`<data root>/installed`), when
@@ -1008,6 +1010,7 @@ impl WorkbenchShellState {
             provider_keys: std::sync::OnceLock::new(),
             machine_root: std::sync::OnceLock::new(),
             machine_look: std::sync::RwLock::new(None),
+            container_setup: std::sync::Mutex::new(None),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
             time_tools: std::sync::OnceLock::new(),
@@ -4024,11 +4027,32 @@ async fn route_shell(
             "environments": state.environments_offered(),
         }))),
         // What this machine is and where on it an agent may live.
-        (&Method::GET, ["api", "hosts"]) => json_result(
-            state
-                .hosts()
-                .map(|hosts| json!({ "machine": state.machine(), "hosts": hosts })),
-        ),
+        (&Method::GET, ["api", "hosts"]) => json_result(state.hosts().map(|hosts| {
+            json!({
+                "machine": state.machine(),
+                "hosts": hosts,
+                "setting_up": state.setting_up(),
+            })
+        })),
+        // Setting containers up here: what would be done, and doing it
+        // once a person agreed to exactly that.
+        (&Method::POST, ["api", "hosts", "this-machine", "containers", "plan"]) => {
+            let wanted = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<MachineWanted>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(wanted) => wanted,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.plan_containers(wanted).await)
+        }
+        (&Method::POST, ["api", "hosts", "this-machine", "containers", "set-up"]) => {
+            let plan_id = match read_json(request).await {
+                Ok(body) => body["plan_id"].as_str().unwrap_or_default().to_owned(),
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.set_containers_up(&plan_id))
+        }
         (&Method::POST, ["api", "hosts", "this-machine", "look"]) => {
             match state.look_at_the_machine().await {
                 Ok(_) => json_result(
