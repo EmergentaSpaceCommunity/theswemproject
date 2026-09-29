@@ -34,7 +34,13 @@ pub struct FileOpened {
 #[derive(Clone, Debug, Deserialize)]
 pub struct SaveFileBody {
     pub path: String,
+    /// What a person wrote.
+    #[serde(default)]
     pub text: String,
+    /// A file a person brought from their own machine, in standard
+    /// base64; it is what is written when it is there.
+    #[serde(default)]
+    pub bytes: Option<String>,
     /// What was read; nothing for a file that is new.
     #[serde(default)]
     pub was: Option<String>,
@@ -213,7 +219,9 @@ impl WorkbenchShellState {
             .ask_about_files(profile_id, move |root| FsRequest::Write {
                 root,
                 path: body.path,
-                bytes: STANDARD.encode(body.text.as_bytes()),
+                bytes: body
+                    .bytes
+                    .unwrap_or_else(|| STANDARD.encode(body.text.as_bytes())),
                 was: body.was,
                 over: body.over,
             })

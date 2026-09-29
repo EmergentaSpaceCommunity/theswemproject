@@ -1,6 +1,8 @@
 # ExecPlan 010 — An agent's files, and a machine of its own
 
-**Status:** active (2026-09-28). Roadmap B1; `product/agents.md` (Hosts).
+**Status:** completed (2026-09-28) for its first part; its second part is taken up by a plan of
+its own once a container can be started on the computer it is done on. Roadmap B1;
+`product/agents.md` (Hosts).
 
 ## Outcome
 
@@ -89,10 +91,13 @@ Part two (after Podman is set up here):
 - [x] 2 the shell's routes
 - [x] 3 the page
 - [x] 4 part one by hand, suites, gate
-- [ ] 5-9 part two
+- [x] 5 the runner's `exec`, `probe`, `idle`; static builds for Linux (`reap` with the container)
+- [ ] 6-9 part two: not begun here; a plan of its own takes it up
 
 ## Discoveries
 
+- "Written by Ada 4 minutes ago" on the board cannot be said: a file says when it was changed
+  and not by whom. The page says "Changed 4 minutes ago".
 - The page's bundle was 2.56 MB before this plan and is 3.29 MB with the tree and the editor
   (eight languages). Both are over the 2.5 MB the plan of 2026-09-27 named. It is one file
   because it is embedded in the binary; what it costs is the first load, and it is served
@@ -120,6 +125,24 @@ Part two (after Podman is set up here):
 
 ## Decision log
 
+- 2026-09-28: the page was first made without the board "Agent: files" of the approved
+  design, which the copy at hand lacked, and was then brought in line with it: Upload and New
+  file in words, "From you" and "From" the agent above the tree, where the workspace is said
+  under it, a file opened to be read with Download and Edit. Rename, Remove, a new folder and
+  the question before leaving what was not saved are not on the board and were kept.
+
+- 2026-09-28: the header of `exec` is one line on standard input and the program replaces
+  the runner, so there is one process, its streams are the ones the runner was given, and a
+  signal reaches the program itself. For a program that is given a terminal the header is a
+  file read once and removed, because a terminal echoes what is typed into it.
+- 2026-09-28: the runner is linked for Linux by the toolchain's own linker
+  (`scripts/build-runner.sh`). It is Rust alone, so no cross compiler is needed, and it is
+  under one megabyte for either architecture.
+- 2026-09-28: the runner does not reap what it started. `idle` is what a machine runs while
+  no engine does, and the container is started with the engine's own init, which reaps.
+  Ending what an engine left behind needs a call the runner cannot make without unsafe code
+  or a dependency; it is decided with the container, where it can be tried.
+
 - 2026-09-28: part one first. It does not need a container, it is what a person misses on the
   page today, and it makes the one way to reach files that part two sends into the machine.
 
@@ -139,6 +162,35 @@ Part one:
   saved, and the agent asked in its chat for the note's last line answered with the line that
   was written; the note written by somebody else meanwhile - "It changed since you opened it.
   Nothing was saved." - and saved over by choice; leaving a changed file asked first; a file
-  made in a folder, written, renamed and removed.
+  made in a folder, written, renamed and removed; a picture and a file whose name was taken
+  brought from the person's machine - the second asked about and replaced - and the picture
+  shown on the page, the same bytes on the disk.
+
+Part two, what can be done without a container:
+
+- `swem-runner/tests/exec.rs` (5), on macOS: what follows the header reaches the program byte
+  for byte; a key given in the header is in the program's variables and in no process's
+  command line, the program is the process the runner was, and only the variables that were
+  to be kept are kept; a header in a file is removed once read; a program that is not there
+  is said and nothing starts; the machine looked at from inside; `idle` stays.
+- `scripts/build-runner.sh` gives two static programs for Linux, x86_64 and aarch64. They
+  were built and not run: there is no Linux machine here.
 
 ## Outcome / remaining gaps
+
+Part one is done 2026-09-28. A person reads and changes an agent's files on the page, and what
+is asked about them is asked of the runner. The runner can start a program as a header says
+and look at a machine from inside, and is built as one static program for Linux.
+
+Remaining:
+
+- Part two, the machine of an agent's own. It needs Podman able to start a machine on the
+  computer it is done on; on the owner's that waits for Podman's installer, which asks for
+  their password. What the container path is today is in Discoveries, for the plan that
+  takes it up. Nothing of it was changed here.
+- What was handed over and back is still read from this machine's disk by the harness itself
+  (ADR-0008).
+- The walks of the gate find what was handed over and back by attributes of the old panel.
+- The page's bundle is 3.29 MB.
+- A file bigger than two megabytes is not opened on the page; it is downloaded.
+- The static programs for Linux were built and not run.

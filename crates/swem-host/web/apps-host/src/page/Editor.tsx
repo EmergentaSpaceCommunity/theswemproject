@@ -12,7 +12,7 @@ import { rust } from "@codemirror/lang-rust";
 import { yaml } from "@codemirror/lang-yaml";
 import { HighlightStyle, bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
@@ -102,8 +102,12 @@ const colours = HighlightStyle.define([
 
 /// The editor of one file as it was opened. A file opened anew is a new
 /// editor: the parent gives it a key.
-export function Editor({ place, text, onChange, onSave }: { place: string; text: string; onChange: (text: string) => void; onSave: () => void }) {
+const read = (only: boolean): Extension => [EditorState.readOnly.of(only), EditorView.editable.of(!only)];
+
+export function Editor({ place, text, editing, onChange, onSave }: { place: string; text: string; editing: boolean; onChange: (text: string) => void; onSave: () => void }) {
   const at = useRef<HTMLDivElement | null>(null);
+  const shown = useRef<EditorView | null>(null);
+  const whether = useRef(new Compartment());
   const changed = useRef(onChange);
   const saved = useRef(onSave);
   changed.current = onChange;
@@ -138,6 +142,7 @@ export function Editor({ place, text, onChange, onSave }: { place: string; text:
             ...historyKeymap,
             ...searchKeymap,
           ]),
+          whether.current.of(read(!editing)),
           written(place),
           syntaxHighlighting(colours),
           look,
@@ -148,10 +153,21 @@ export function Editor({ place, text, onChange, onSave }: { place: string; text:
         ],
       }),
     });
-    return () => view.destroy();
+    shown.current = view;
+    return () => {
+      shown.current = null;
+      view.destroy();
+    };
     // The text is what the file said when it was opened; what is written
     // afterwards lives in the editor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [place]);
+  // Reading becomes editing in the same editor, at the same place in it.
+  useEffect(() => {
+    const view = shown.current;
+    if (!view) return;
+    view.dispatch({ effects: whether.current.reconfigure(read(!editing)) });
+    if (editing) view.focus();
+  }, [editing]);
   return <div className="w-editor-body" ref={at} />;
 }

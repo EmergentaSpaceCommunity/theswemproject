@@ -92,6 +92,7 @@ async fn a_person_reads_the_tree_and_saves_what_they_changed() {
             SaveFileBody {
                 path: "src/main.rs".into(),
                 text: "fn main() { println!(\"hi\"); }\n".into(),
+                bytes: None,
                 was: Some(opened.sha256.clone()),
                 over: false,
             },
@@ -110,6 +111,7 @@ async fn a_person_reads_the_tree_and_saves_what_they_changed() {
     let mine = SaveFileBody {
         path: "src/main.rs".into(),
         text: "fn main() { mine(); }\n".into(),
+        bytes: None,
         was: saved.sha256.clone(),
         over: false,
     };
@@ -159,6 +161,7 @@ async fn nothing_beside_the_folder_it_works_in_is_reached() {
                         SaveFileBody {
                             path: climbing.into(),
                             text: "taken".into(),
+                            bytes: None,
                             was: None,
                             over: true,
                         },
@@ -203,6 +206,7 @@ async fn a_person_makes_renames_and_removes() {
             SaveFileBody {
                 path: "docs/notes.md".into(),
                 text: String::new(),
+                bytes: None,
                 was: None,
                 over: false,
             },
@@ -218,6 +222,7 @@ async fn a_person_makes_renames_and_removes() {
                 SaveFileBody {
                     path: "docs/notes.md".into(),
                     text: "other".into(),
+                    bytes: None,
                     was: None,
                     over: false,
                 },
@@ -225,6 +230,25 @@ async fn a_person_makes_renames_and_removes() {
             .await,
         Err(WorkbenchShellError::Conflict(_))
     ));
+    // What a person brings from their own machine is written as it is.
+    let brought = state
+        .save_agent_file(
+            "ada",
+            SaveFileBody {
+                path: "docs/logo.bin".into(),
+                text: String::new(),
+                bytes: Some("AJ+Slg==".into()),
+                was: None,
+                over: false,
+            },
+        )
+        .await
+        .expect("bring a file");
+    assert!(brought.saved);
+    assert_eq!(
+        fs::read(root.join("workspace/docs/logo.bin")).expect("read"),
+        [0_u8, 159, 146, 150]
+    );
     state
         .change_agent_tree(
             "ada",

@@ -44,6 +44,18 @@ export function whyNotNamed(name: string): string {
   return "";
 }
 
+/// How long ago something was, as a person says it.
+export function ago(ms: number, now: number = Date.now()): string {
+  const minutes = Math.floor(Math.max(0, now - ms) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return days === 1 ? "yesterday" : `${days} days ago`;
+  return new Date(ms).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
 /// What a size reads as.
 export function sized(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -64,6 +76,9 @@ export function languageOf(place: string): string | null {
   return known[ending] ?? null;
 }
 
+/// Whether a file is a picture the page can show.
+export const isPicture = (place: string): boolean => /\.(png|jpe?g|svg)$/i.test(nameOf(place));
+
 export const asItIs = (profile: string, place: string): string => `/api/profiles/${part(profile)}/file?path=${part(place)}&as=it-is`;
 
 export const files = {
@@ -78,6 +93,14 @@ export const files = {
   /// person choosing theirs over what is there.
   save(profile: string, place: string, text: string, was: string | null, over = false): Promise<Saved> {
     return fetchJson<Saved>(`/api/profiles/${part(profile)}/file`, send("PUT", { path: place, text, was, over }));
+  },
+  /// Bring a file from the person's own machine. It does not replace
+  /// what is there unless `over` says so.
+  async bring(profile: string, place: string, file: Blob, over = false): Promise<Saved> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    return fetchJson<Saved>(`/api/profiles/${part(profile)}/file`, send("PUT", { path: place, bytes: btoa(binary), was: null, over }));
   },
   async makeFolder(profile: string, place: string): Promise<void> {
     await fetchJson(`/api/profiles/${part(profile)}/tree`, send("POST", { do: "make_folder", path: place }));

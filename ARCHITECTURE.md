@@ -120,7 +120,9 @@ but the runner.
 ### `swem-runner` - what is put on a host
 
 A library and a small program (ADR-0008). What the product wants of an agent's machine is
-asked of it: today the agent's files (`fs`), confined to the folder the agent works in. On the
+asked of it: the agent's files (`fs`), confined to the folder the agent works in; a program
+started as a header says (`exec`), so that a key is in nobody's command line; a look at the
+machine from inside (`probe`). The harness uses the first today. On the
 machine the product runs on the library answers in the product's own process; in a machine of
 the agent's own the program answers on its standard streams. It depends on nothing of the
 harness.

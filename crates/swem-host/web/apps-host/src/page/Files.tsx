@@ -11,8 +11,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { sessionStore, useSession } from "../agent/store.ts";
 import { Editor } from "./Editor.tsx";
-import { asItIs, files, folderOf, nameOf, sized, whyNotNamed, within, type Entry, type Opened } from "./files.ts";
-import { Chevron, Folder, Plus } from "./icons.tsx";
+import { ago, asItIs, files, folderOf, isPicture, nameOf, sized, whyNotNamed, within, type Entry, type Opened } from "./files.ts";
+import { Again, Chevron, Folder } from "./icons.tsx";
 import { when } from "./providers.ts";
 import type { Participant } from "./types.ts";
 
@@ -20,6 +20,7 @@ interface Node {
   name: string;
   kind: Entry["kind"];
   byte_length: number;
+  modified_ms?: number | null;
 }
 
 // What the tree knows a place by. The folder the agent works in is "/".
@@ -165,11 +166,17 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
   const [said, setSaid] = useState("");
   const [changedSince, setChangedSince] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [changedAt, setChangedAt] = useState<number | null>(null);
+  const { profiles } = useSession();
+  const inAContainer = profiles.find((one) => one.profile_id === profile)?.environment_profile_id === "podman-container-environment";
   const [naming, setNaming] = useState<Parameters<typeof Naming>[0]["asked"]>(null);
   const [named, setNamed] = useState<(name: string) => Promise<void>>(() => async () => {});
   const [asking, setAsking] = useState<Parameters<typeof Asking>[0]["asked"]>(null);
   const changed = opened !== null && opened.text != null && text !== opened.text;
   // What is written is read where a callback made earlier looks for it.
+  // What waits for a person to answer a question before it goes on.
+  const answeredRef = useRef<(() => void) | null>(null);
   const now = useRef({ opened, text, changed });
   now.current = { opened, text, changed };
 
@@ -219,10 +226,12 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
     setChangedSince("");
     setChosen({ place, kind: "file" });
     setOpened(null);
+    setEditing(false);
     try {
-      const file = await files.open(profile, place);
+      const [file, beside] = await Promise.all([files.open(profile, place), files.list(profile, folderOf(place)).catch(() => [])]);
       setOpened(file);
       setText(file.text ?? "");
+      setChangedAt(beside.find((entry) => entry.name === nameOf(place))?.modified_ms ?? null);
     } catch (error) {
       setProblem((error as Error).message);
     }
@@ -238,6 +247,7 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
       if (answer.saved) {
         setOpened({ ...file, text: written, sha256: answer.sha256 ?? file.sha256, byte_length: new TextEncoder().encode(written).length });
         setChangedSince("");
+        setChangedAt(Date.now());
         setSaid(`Saved at ${when(Date.now())}.`);
         readAgain([folderOf(file.path)]);
       } else {
@@ -291,7 +301,7 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
       } catch {
         // The folder it was made in is not shown.
       }
-      if (what === "file") void open(place);
+      if (what === "file") void open(place).then(() => setEditing(true));
       else setChosen({ place, kind: "folder" });
     });
     setNaming({
@@ -300,6 +310,51 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
       name: "",
       does: "Make it",
     });
+  };
+
+  /// Bring files from the person's own machine into a folder. One that
+  /// is there under the same name is replaced only when the person says.
+  const bringInto = async (folder: string, brought: File[]) => {
+    setProblem("");
+    for (const file of brought) {
+      const place = within(folder, file.name);
+      try {
+        await files.bring(profile, place, file);
+      } catch (error) {
+        if (!(error as Error).message.includes("is there already")) {
+          setProblem((error as Error).message);
+          continue;
+        }
+        await new Promise<void>((answered) => {
+          setAsking({
+            title: `${file.name} is there already`,
+            about: folder === "" ? "In the folder it works in." : `In ${folder}.`,
+            choices: [
+              {
+                says: "Replace it",
+                primary: true,
+                does: async () => {
+                  await files.bring(profile, place, file, true);
+                },
+              },
+            ],
+          });
+          answeredRef.current = answered;
+        });
+      }
+    }
+    readAgain([folder]);
+    try {
+      tree.getItemInstance(idOf(folder)).expand();
+    } catch {
+      // The folder is not shown.
+    }
+  };
+  const bringing = useRef<HTMLInputElement | null>(null);
+  const bringTo = useRef("");
+  const bring = (folder: string) => {
+    bringTo.current = folder;
+    bringing.current?.click();
   };
 
   const rename = (place: string) => {
@@ -338,14 +393,37 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
   return (
     <section className="w-files" data-agent-panel="files" hidden={hidden} aria-label={`Files of ${agent.name}`}>
       <Naming asked={naming} onClose={() => setNaming(null)} onNamed={named} />
-      <Asking asked={asking} onClose={() => setAsking(null)} />
+      <Asking
+        asked={asking}
+        onClose={() => {
+          setAsking(null);
+          answeredRef.current?.();
+          answeredRef.current = null;
+        }}
+      />
+      <input
+        type="file"
+        multiple
+        hidden
+        ref={bringing}
+        aria-label="Files to bring"
+        onChange={(event) => {
+          const brought = [...(event.target.files ?? [])];
+          event.target.value = "";
+          if (brought.length > 0) void bringInto(bringTo.current, brought);
+        }}
+      />
       <aside className="w-tree">
         <div className="k-spread w-tree-head">
-          <span className="k-eyebrow w-nowrap-text">Its folder</span>
           <span className="k-inline w-tight w-nowrap">
-            <button type="button" className="k-btn k-quiet" title="A new file" aria-label="New file" onClick={() => makeIn(folderChosen, "file")}>
-              <Plus size={15} />
+            <button type="button" className="k-btn" onClick={() => bring(folderChosen)}>
+              Upload
             </button>
+            <button type="button" className="k-btn" onClick={() => makeIn(folderChosen, "file")}>
+              New file
+            </button>
+          </span>
+          <span className="k-inline w-tight w-nowrap">
             <button type="button" className="k-btn k-quiet" title="A new folder" aria-label="New folder" onClick={() => makeIn(folderChosen, "folder")}>
               <Folder size={15} />
             </button>
@@ -353,14 +431,20 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
               type="button"
               id="files-refresh"
               className="k-btn k-quiet"
+              title="Read again"
+              aria-label="Read again"
               onClick={() => {
                 readAgain();
                 void sessionStore.loadFiles(profile);
               }}
             >
-              Read again
+              <Again size={15} />
             </button>
           </span>
+        </div>
+        <div className="k-stack w-tree-handed">
+          <Handed area="inbox" title="From you" about="What you attach in a chat lands here." />
+          <Handed area="outbox" title={`From ${agent.name}`} about="What it writes into its outbox is here to open." />
         </div>
         <div {...tree.getContainerProps(`Files of ${agent.name}`)} className="w-tree-items">
           {tree.getItems().map((item) => {
@@ -383,9 +467,8 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
           })}
           {tree.getItems().length === 0 ? <span className="k-caption w-tree-empty">Nothing is in it yet.</span> : null}
         </div>
-        <div className="k-stack w-tree-foot">
-          <Handed area="inbox" title="Handed over" about="What you attach in a chat lands in its inbox." />
-          <Handed area="outbox" title="Handed back" about="What it writes into its outbox is here to open." />
+        <div className="k-caption w-tree-foot">
+          {agent.name}'s workspace, {inAContainer ? "shared with its container on this machine" : "on this machine"}.
         </div>
       </aside>
       <div className="w-editor">
@@ -405,6 +488,9 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
                 <button type="button" className="k-btn" onClick={() => makeIn(chosen.place, "folder")}>
                   New folder here
                 </button>
+                <button type="button" className="k-btn" onClick={() => bring(chosen.place)}>
+                  Bring files here
+                </button>
                 <button type="button" className="k-btn k-quiet" onClick={() => rename(chosen.place)}>
                   Rename
                 </button>
@@ -419,26 +505,36 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
             <header className="w-editor-head">
               <span className="k-two">
                 <span className="k-name k-mono">
-                  {chosen.place}
+                  {chosen.place.split("/").join(" / ")}
                   {changed ? <span className="k-caption"> · changed</span> : null}
                 </span>
                 <span className="k-caption" role="status">
-                  {opened ? `${sized(opened.byte_length)}${said ? ` · ${said}` : ""}` : problem ? "" : "Reading…"}
+                  {opened ? [changedAt ? `Changed ${ago(changedAt)}` : "", sized(opened.byte_length), said].filter(Boolean).join(" · ") : problem ? "" : "Reading…"}
                 </span>
               </span>
               <span className="k-inline w-tight w-nowrap">
-                <a className="k-btn k-quiet" href={asItIs(profile, chosen.place)} target="_blank" rel="noopener noreferrer">
-                  Open as it is
-                </a>
                 <button type="button" className="k-btn k-quiet" onClick={() => rename(chosen.place)}>
                   Rename
                 </button>
                 <button type="button" className="k-btn k-quiet k-is-danger" onClick={() => remove(chosen.place, "file")}>
                   Remove
                 </button>
-                <button type="button" className="k-btn k-primary" disabled={!changed || saving} onClick={() => void save()}>
-                  {saving ? "Saving…" : "Save"}
-                </button>
+                <a className="k-btn" href={asItIs(profile, chosen.place)} download={nameOf(chosen.place)}>
+                  Download
+                </a>
+                {opened?.text == null ? (
+                  <a className="k-btn" href={asItIs(profile, chosen.place)} target="_blank" rel="noopener noreferrer">
+                    Open as it is
+                  </a>
+                ) : editing ? (
+                  <button type="button" className="k-btn k-primary" disabled={!changed || saving} onClick={() => void save()}>
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                ) : (
+                  <button type="button" className="k-btn k-primary" onClick={() => setEditing(true)}>
+                    Edit
+                  </button>
+                )}
               </span>
             </header>
             {problem ? <div className="k-notice k-danger w-editor-says">{problem}</div> : null}
@@ -456,9 +552,15 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
               </div>
             ) : null}
             {opened === null ? null : opened.text == null ? (
-              <div className="w-editor-none k-caption">This is not text. Open it as it is to look at it or keep it.</div>
+              isPicture(opened.path) ? (
+                <div className="w-editor-none w-scroll">
+                  <img className="w-picture" src={asItIs(profile, opened.path)} alt={nameOf(opened.path)} />
+                </div>
+              ) : (
+                <div className="w-editor-none k-caption">This is not text. Open it as it is to look at it or keep it.</div>
+              )
             ) : (
-              <Editor place={opened.path} text={opened.text} onChange={setText} onSave={() => void save()} key={`${opened.path} ${opened.sha256}`} />
+              <Editor place={opened.path} text={opened.text} editing={editing} onChange={setText} onSave={() => void save()} key={opened.path} />
             )}
           </>
         )}

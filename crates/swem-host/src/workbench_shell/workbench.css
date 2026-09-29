@@ -85,14 +85,17 @@ html, body, #workbench-root { height: 100%; }
 .w-composer { position: relative; }
 .w-commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; max-height: 280px; overflow: auto; }
 .w-commands .k-mono { white-space: nowrap; }
+/* A link that is a button reads as a button. */
+a.k-btn { color: inherit; text-decoration: none; }
+
 /* An agent's files: the tree, and beside it what is chosen in it. */
 .w-files { flex: 1 1 auto; min-height: 0; display: flex; }
 .w-files[hidden] { display: none; }
 .w-tree { width: 320px; flex: none; min-height: 0; display: flex; flex-direction: column;
   background: var(--color-background-secondary); border-right: var(--border-width-regular) solid var(--color-border-secondary); }
-.w-tree-head { padding: 10px 8px 6px 14px; flex: none; }
-.w-nowrap-text { white-space: nowrap; }
-.w-tree-items { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 6px 10px; display: flex; flex-direction: column; }
+.w-tree-head { padding: 12px 10px 10px 12px; flex: none; }
+.w-tree-handed { flex: none; max-height: 40%; overflow: auto; padding: 4px 14px 12px; border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-tree-items { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 6px 10px; display: flex; flex-direction: column; }
 .w-tree-item { display: flex; align-items: center; gap: 4px; width: 100%; flex: none; padding: 3px 8px; border: 0; background: none;
   color: var(--color-text-primary); font: inherit; text-align: left; cursor: pointer; border-radius: var(--border-radius-sm); }
 .w-tree-item:hover, .w-tree-item:focus-visible { background: var(--color-background-ghost); outline: none; }
@@ -102,7 +105,7 @@ html, body, #workbench-root { height: 100%; }
 .w-tree-empty { padding: 6px 8px; }
 .w-twist { width: 14px; flex: none; display: inline-flex; color: var(--color-text-tertiary); }
 .w-twist.w-open { transform: rotate(90deg); }
-.w-tree-foot { flex: none; max-height: 40%; overflow: auto; padding: 12px 14px; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-tree-foot { flex: none; padding: 10px 14px; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
 .w-handed { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
 .w-editor { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .w-editor-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px;
@@ -112,6 +115,7 @@ html, body, #workbench-root { height: 100%; }
 .w-editor-body { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .w-editor-none { padding: 24px 32px; }
 .w-editor-none > .k-card { max-width: 640px; }
+.w-picture { max-width: 100%; height: auto; display: block; }
 @media (max-width: 900px) {
   .w-tree { width: 220px; }
 }

@@ -112,3 +112,4 @@ export const Box = (props: Sized) => (
     <path d="M4 8l8 4 8-4M12 12v8" />
   </Sign>
 );
+export const Again = (props: Sized) => <Sign {...props}><path d="M20 12a8 8 0 11-2.6-5.9M20 4v5h-5" /></Sign>;
