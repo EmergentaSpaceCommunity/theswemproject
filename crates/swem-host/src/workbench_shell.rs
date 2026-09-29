@@ -69,6 +69,9 @@ pub use files::{ChangeTreeBody, FileOpened, SaveFileBody, SavedOrNot};
 #[path = "workbench_shell/looks.rs"]
 mod looks;
 pub use looks::{EngineLooked, LOOK_INSIDE_SCHEMA, LookInside};
+#[path = "workbench_shell/removal.rs"]
+mod removal;
+pub use removal::AgentRemoved;
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
@@ -809,6 +812,8 @@ pub struct WorkbenchShellState {
     time_tools: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The keeper's lock, held for as long as this process keeps time.
     timekeeper: std::sync::OnceLock<std::fs::File>,
+    /// Where what is removed is kept aside.
+    removed_root: std::sync::OnceLock<PathBuf>,
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
     /// The command the system's scheduler starts to keep time once.
@@ -1028,6 +1033,7 @@ impl WorkbenchShellState {
             store: std::sync::OnceLock::new(),
             time_tools: std::sync::OnceLock::new(),
             timekeeper: std::sync::OnceLock::new(),
+            removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
             keep_time_command: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
@@ -4401,6 +4407,10 @@ async fn route_shell(
                 body.name.as_deref(),
                 &body.value,
             ))
+        }
+        // An agent is removed: what it said and wrote stays.
+        (&Method::DELETE, ["api", "profiles", profile_id]) => {
+            json_result(state.remove_agent(profile_id).await)
         }
         (&Method::DELETE, ["api", "profiles", profile_id, "secrets", name]) => {
             json_result(state.remove_profile_secret(profile_id, name))

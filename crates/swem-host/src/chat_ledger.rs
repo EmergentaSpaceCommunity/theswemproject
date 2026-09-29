@@ -1041,6 +1041,57 @@ impl RoutingLedger {
         self.chat(chat_id)
     }
 
+    /// Retire an agent: it is in no list of who can be written to, what
+    /// waited for it is not begun, and its profile and its handle are let
+    /// go of, so that a new agent can be given either. What it said stays
+    /// in its chats under its name.
+    ///
+    /// # Errors
+    ///
+    /// Refuses somebody who is not an agent, and one retired already.
+    pub fn retire_agent(&mut self, participant_id: &str) -> Result<Participant, RoutingError> {
+        let agent = self.participant(participant_id)?;
+        if agent.kind != ParticipantKind::Agent || agent.retired {
+            return Err(RoutingError::InvalidBinding(format!(
+                "{} is not an agent that can be removed",
+                agent.name
+            )));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let kept: String = agent.handle.chars().take(24).collect();
+        let handle = free_handle(&transaction, &format!("{kept}-removed"))?;
+        transaction.execute(
+            "UPDATE participants SET retired_ms = ?2, profile_id = NULL, handle = ?3
+             WHERE participant_id = ?1",
+            params![participant_id, now_ms(), handle],
+        )?;
+        transaction.execute(
+            "UPDATE deliveries SET state = 'stopped', ended_ms = ?2,
+                                   outcome = 'its agent was removed'
+             WHERE agent_id = ?1 AND state = 'queued'",
+            params![participant_id, now_ms()],
+        )?;
+        let chats: Vec<String> = {
+            let mut statement = transaction
+                .prepare("SELECT chat_id FROM chat_members WHERE participant_id = ?1")?;
+            statement
+                .query_map([participant_id], |row| row.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        for chat_id in chats {
+            chat_event_in(
+                &transaction,
+                &chat_id,
+                "chat/retired",
+                &json!({ "participant_id": participant_id }),
+            )?;
+        }
+        transaction.commit()?;
+        self.participant(participant_id)
+    }
+
     /// Set a chat's rules: whether agents answer only when they are named
     /// (`named`) or whatever a person says (`always`), and after how many
     /// replies of agents to each other the chain waits for a person. What

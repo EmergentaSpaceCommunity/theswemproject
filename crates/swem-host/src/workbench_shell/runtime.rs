@@ -1326,6 +1326,24 @@ impl WorkbenchShellState {
         Ok(json!({ "stopped": stopped, "not_begun": not_begun.len() }))
     }
 
+    /// Stop what an agent is doing, in whichever chat it is doing it.
+    pub async fn stop_agent(&self, agent_id: &str) {
+        let running: Vec<Running> = self
+            .chat_runtime
+            .running
+            .lock()
+            .await
+            .values()
+            .filter(|running| running.agent == agent_id)
+            .cloned()
+            .collect();
+        for running in running {
+            if let Ok(connection) = self.connection(&running.connection).await {
+                let _ = connection.control.cancel_active_turn();
+            }
+        }
+    }
+
     /// Close the session this process holds open for one agent in one
     /// chat, when it holds one.
     pub async fn let_go_of_in(&self, chat_id: &str, agent_id: &str) {

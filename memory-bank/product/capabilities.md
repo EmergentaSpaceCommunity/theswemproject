@@ -4,6 +4,7 @@
 |---|---|---|
 | Install an agent from the plan the page shows; any id the ACP registry lists | proven | GJ-01; `swem agents install <registry-id>` walked by `a_person_installs_an_agent_the_product_never_heard_of` |
 | A new agent in four steps; a look inside its machine before it is used | proven below the page, in the gate for the first two steps, and by hand | GJ-01; `looks`, every walk that makes an agent |
+| An agent removed: retired in its chats, its profile set aside, its folder left where it is | proven below the page and by hand | GJ-02; `removal` |
 | Agent settings in parts: what it is put together from, its name and handle, what it is for, where it works, servers, skills, how it asks, how it signs in | proven | GJ-02; the gate's walks press every part but the name and the two folders, which were done by hand |
 | A provider's key given once and handed to every agent that answers from it | proven | GJ-10; `provider_keys`, `keys` |
 | A schedule said on time in a chat, paused, forgotten; its runs kept, late ones said late | proven | GJ-11; `time`, `chat_runtime` |

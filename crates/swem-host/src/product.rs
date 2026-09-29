@@ -153,6 +153,13 @@ impl DataRoot {
         )
     }
 
+    /// What was removed and is kept aside: the profiles of agents that
+    /// were removed.
+    #[must_use]
+    pub fn removed(&self) -> PathBuf {
+        self.root.join("removed")
+    }
+
     /// Who keeps time for whom, and when a keeper looked last.
     #[must_use]
     pub fn time(&self) -> PathBuf {
@@ -464,6 +471,9 @@ impl Product {
         if let Some((executable, args)) = self.time_tools {
             state.set_time_tools_command(executable, args);
         }
+        state
+            .enable_removal(&root.removed())
+            .map_err(|error| error.to_string())?;
         state
             .enable_keepers(&root.time())
             .map_err(|error| error.to_string())?;

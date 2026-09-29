@@ -27,6 +27,14 @@ it is for, gives it skills and servers by name; what opens a provider is given i
 (GJ-10); the agent gets them in its own layout before launch, and the session's option
 shows the model. Walk: `product_front_door::a_person_gives_an_agent_a_role_and_a_model`.
 
+An agent a person no longer wants is removed in its Settings, under Remove, after what goes and
+what stays is read: it is stopped and is nobody to write to; its chats stay with what it said,
+under its name; its schedules are forgotten and what it held of its own with them; the folder
+it worked in stays on the disk and the page says where; its name and handle can be given to a
+new agent, which starts with no chats. Under the agent's Channels a person reads the doors into
+its chats - the Workbench, an editor, by the command to copy - and who may write to it. Proven
+by `removal::an_agent_is_removed_and_what_it_said_stays` and by hand.
+
 ## GJ-10 — Providers: a key given once, and what this machine offers
 
 A person opens Providers from the rail. Under Models they add a place a model is served from

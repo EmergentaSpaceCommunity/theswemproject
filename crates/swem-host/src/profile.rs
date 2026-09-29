@@ -531,6 +531,36 @@ impl PersonalAgentProfileStore {
         Ok(amended)
     }
 
+    /// Set a profile aside under `aside`, out of the inventory: what it
+    /// was put together from is kept there, what it held of its own - a
+    /// key - is not. The folder it worked in and its home are not touched.
+    /// Where it was set aside.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProfileError`] for an unknown profile, and for a folder
+    /// that cannot be moved.
+    pub fn set_aside(&self, profile_id: &str, aside: &Path) -> Result<PathBuf, ProfileError> {
+        let secrets = self.secrets_path(profile_id)?;
+        let directory = self.root.join(profile_id);
+        let io = |path: &Path, error: std::io::Error| ProfileError::Io {
+            path: path.to_owned(),
+            message: error.to_string(),
+        };
+        match fs::remove_file(&secrets) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io(&secrets, error)),
+        }
+        fs::create_dir_all(aside).map_err(|error| io(aside, error))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis());
+        let target = aside.join(format!("{profile_id}-{stamp}"));
+        fs::rename(&directory, &target).map_err(|error| io(&directory, error))?;
+        Ok(target)
+    }
+
     /// Reload and revalidate one exact profile after a host restart.
     ///
     /// # Errors

@@ -6,7 +6,7 @@ import { createStore } from "zustand/vanilla";
 
 import { useSession } from "../../agent/store.ts";
 
-export type Part = "together" | "identity" | "place" | "tools" | "skills" | "permissions" | "signin";
+export type Part = "together" | "identity" | "place" | "tools" | "skills" | "permissions" | "signin" | "remove";
 
 const last = createStore<{ part: Part | null }>(() => ({ part: null }));
 

@@ -6,6 +6,7 @@
 // was done in it. What is chosen from a list is taken when it is chosen;
 // what is written is taken when the person says so.
 
+import { Dialog } from "@base-ui/react/dialog";
 import { useEffect, useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { useStore } from "zustand";
@@ -29,6 +30,7 @@ const PARTS: { part: Part; label: string }[] = [
   { part: "skills", label: "Skills" },
   { part: "permissions", label: "Permissions" },
   { part: "signin", label: "Signing in" },
+  { part: "remove", label: "Remove" },
 ];
 
 function Card({ part, title, about, children }: { part: Part; title: string; about?: string; children: ReactNode }) {
@@ -606,6 +608,67 @@ function Permissions({ profile }: { profile: Profile }) {
   );
 }
 
+/// Removing the agent: what goes and what stays is read before it is
+/// agreed to.
+function Remove({ profile, agent }: { profile: Profile; agent: Participant }) {
+  const [asking, setAsking] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [problem, setProblem] = useState("");
+  const remove = async () => {
+    setRemoving(true);
+    setProblem("");
+    try {
+      await fetchJson(`/api/profiles/${encodeURIComponent(profile.profile_id)}`, { method: "DELETE" });
+      setAsking(false);
+      await Promise.all([sessionStore.loadProfiles(), act.people()]);
+      const left = Object.values(world.getState().participants).find((one) => one.kind === "agent" && !one.retired && one.profile_id);
+      if (left) go({ at: "agent", agent: left.participant_id, tab: "chat" });
+      else go({ at: "new-agent" });
+    } catch (error) {
+      setProblem((error as Error).message);
+    } finally {
+      setRemoving(false);
+    }
+  };
+  return (
+    <Card part="remove" title="Remove" about={`${agent.name} stops being somebody to write to.`}>
+      <ul className="w-list">
+        <li>Its chats stay, with what was said in them.</li>
+        <li>Its schedules stop, and what it held of its own, a key, is forgotten.</li>
+        <li>
+          The folder it works in and its home stay on its machine: <code className="k-mono">{profile.workspace}</code>
+        </li>
+        <li>Its name and its handle can be given to a new agent.</li>
+      </ul>
+      <div className="k-inline w-tight">
+        <button type="button" className="k-btn k-is-danger" onClick={() => setAsking(true)}>
+          Remove {agent.name}
+        </button>
+      </div>
+      <Dialog.Root open={asking} onOpenChange={(next) => (next ? undefined : setAsking(false))}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="w-scrim" />
+          <Dialog.Popup className="k-dialog w-dialog">
+            <Dialog.Title className="k-heading">Remove {agent.name}?</Dialog.Title>
+            <Dialog.Description className="k-caption">
+              It is stopped if it is working. What it said stays in its chats; its folder stays on the disk. It cannot be brought back as it was: a new agent of the same name starts with no chats.
+            </Dialog.Description>
+            {problem ? <div className="k-notice k-danger">{problem}</div> : null}
+            <div className="k-inline w-end">
+              <Dialog.Close className="k-btn k-quiet" type="button">
+                Not now
+              </Dialog.Close>
+              <button type="button" className="k-btn k-primary" disabled={removing} onClick={() => void remove()}>
+                {removing ? "Removing…" : "Remove"}
+              </button>
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </Card>
+  );
+}
+
 export function AgentSettings({ agent, hidden }: { agent: Participant; hidden: boolean }) {
   const state = useSession();
   const profile = state.profiles.find((candidate) => candidate.profile_id === state.profileId) ?? null;
@@ -643,6 +706,7 @@ export function AgentSettings({ agent, hidden }: { agent: Participant; hidden: b
               <SignIn needsSignIn={needsSignIn} />
             </Card>
             <span className="k-caption">What is changed here is what it starts with the next time it starts.</span>
+            <Remove profile={profile} agent={agent} />
           </div>
         </>
       )}

@@ -128,7 +128,7 @@ function happened(event: Happened): void {
   // And one whose members or rules changed, or where agents may be
   // answering each other: how far their chain has gone is the chat's.
   const several = (chat?.members.filter((member) => member.kind === "agent").length ?? 0) > 1;
-  const changed = ["chat/joined", "chat/left", "chat/ruled", "chat/started", "chat/held"].includes(event.kind);
+  const changed = ["chat/joined", "chat/left", "chat/retired", "chat/ruled", "chat/started", "chat/held"].includes(event.kind);
   if (!chat || changed || (event.kind === "chat/renamed" && !payload["title"]) || (!named && event.message) || (several && event.message)) {
     void learn(chatId);
   }
