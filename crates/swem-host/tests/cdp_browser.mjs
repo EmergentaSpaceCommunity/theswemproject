@@ -567,6 +567,15 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
     await sleep(300);
     return true;
   };
+  /// Answer what the page asks before it installs something, and hand
+  /// back what it said: a consent is to words, and a walk reads them.
+  b.consent = async (agree = true) => {
+    await b.waitFor("the consent question", async () => b.exists('[role="dialog"]'), 200);
+    const asked = await b.evaluate(`document.querySelector('[role="dialog"]')?.innerText ?? ""`);
+    if (!(await b.pressText('[role="dialog"] button', agree ? "Install" : "Not now"))) cleanup(1, `the question has no way to answer it: ${JSON.stringify(asked)}`);
+    await b.waitFor("the question is answered", async () => !(await b.exists('[role="dialog"]')), 100);
+    return asked;
+  };
   /// The participant an agent is, by the name it was given.
   b.agentOf = async (profile) => {
     const people = (await b.ask("/api/people")).body;

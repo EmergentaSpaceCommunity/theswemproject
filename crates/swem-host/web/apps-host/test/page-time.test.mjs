@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { moment, ran, took, until, whenOf } from "../src/page/time.ts";
+import { moment, ran, took, until, whenOf, chosenOf } from "../src/page/time.ts";
 
 const chosen = { how: "daily", every: 30, unit: "minutes", at: "06:05", day: "1", once: "2026-09-28T10:00", line: "0 9 * * 1-5" };
 
@@ -31,4 +31,25 @@ test("how long until it is due, and how a run went, are said as a person says th
   assert.match(ran(run, now), /^today \d\d:\d\d( [AP]M)? · 41 s$/);
   assert.match(ran({ ...run, late: true, claimed_ms: now - 60_000, ended_ms: now - 54_000 }, now), /nobody kept time then, said at \d\d:\d\d( [AP]M)? · 6 s$/);
   assert.match(ran({ ...run, state: "skipped", note: "the run before it had not ended" }, now), /· the run before it had not ended$/);
+});
+
+test("when a schedule speaks is read back into what the form chooses from", () => {
+  const usual = { how: "daily", every: 30, unit: "minutes", at: "09:00", day: "1", once: "", line: "0 9 * * 1-5" };
+  assert.deepEqual(chosenOf({ kind: "every", minutes: 30 }, usual), { ...usual, how: "every", every: 30, unit: "minutes" });
+  assert.deepEqual(chosenOf({ kind: "every", minutes: 120 }, usual), { ...usual, how: "every", every: 2, unit: "hours" });
+  assert.deepEqual(chosenOf({ kind: "every", minutes: 2880 }, usual), { ...usual, how: "every", every: 2, unit: "days" });
+  assert.deepEqual(chosenOf({ kind: "cron", line: "5 7 * * *", zone: "UTC" }, usual), { ...usual, how: "daily", at: "07:05" });
+  assert.deepEqual(chosenOf({ kind: "cron", line: "0 10 * * 1", zone: "UTC" }, usual), { ...usual, how: "weekly", at: "10:00", day: "1" });
+  // What is not a time of day stays the line it is.
+  assert.deepEqual(chosenOf({ kind: "cron", line: "0 9 * * 1-5", zone: "UTC" }, usual), { ...usual, how: "cron", line: "0 9 * * 1-5" });
+  assert.deepEqual(chosenOf({ kind: "cron", line: "*/15 * * * *", zone: "UTC" }, usual), { ...usual, how: "cron", line: "*/15 * * * *" });
+  // And what is read back is what it was.
+  for (const when of [
+    { kind: "every", minutes: 45 },
+    { kind: "cron", line: "5 7 * * *", zone: "UTC" },
+    { kind: "cron", line: "0 10 * * 1", zone: "UTC" },
+    { kind: "cron", line: "0 9 * * 1-5", zone: "UTC" },
+  ]) {
+    assert.deepEqual(whenOf(chosenOf(when, usual), "UTC"), when);
+  }
 });

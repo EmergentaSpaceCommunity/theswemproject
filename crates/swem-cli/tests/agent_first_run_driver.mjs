@@ -50,12 +50,10 @@ await b.clickAt(row.x, row.y);
 
 // The consent question is a dialog of the page, and says what is fetched and
 // what described it before anything is.
-await b.waitFor("the consent question", async () => b.exists('[role="dialog"]'), 100);
-const question = await b.evaluate(`document.querySelector('[role="dialog"]')?.innerText ?? ""`);
+const question = await b.consent();
 if (!/Install/.test(question) || !/registry|described by/i.test(question)) {
   cleanup(1, `the consent question does not say what is being installed: ${JSON.stringify(question)}`);
 }
-if (!(await b.pressText('[role="dialog"] button', "Install"))) cleanup(1, "the consent question has no way to agree");
 step("consent given to a named distribution");
 
 // The install fetches and unpacks. Either the engine is this computer's

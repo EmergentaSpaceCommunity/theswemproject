@@ -45,10 +45,8 @@ step(`catalog added: ${JSON.stringify(indexes)}`);
 
 // One install at a time, each against its own consent question.
 const install = async (kind, id) => {
-  const before = b.dialogs.length;
   await b.click(`.store-install[data-kind="${kind}"][data-id="${id}"]`);
-  await b.waitFor(`the consent question for ${id}`, async () => b.dialogs.length > before, 200);
-  const question = b.dialogs[before].message;
+  const question = await b.consent();
   if (!/^Install /.test(question) || !/described by/.test(question)) {
     cleanup(1, `the consent question for ${id} does not say what is fetched: ${JSON.stringify(question)}`);
   }

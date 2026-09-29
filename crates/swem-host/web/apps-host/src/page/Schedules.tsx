@@ -8,7 +8,7 @@ import { useStore } from "zustand";
 
 import { Clock, Plus } from "./icons.tsx";
 import { go } from "./place.ts";
-import { HOW_A_RUN_ENDED, KEEPER_NAMES, keeperOf, ran, time, timing, until, whenOf, type Chosen, type Schedule } from "./time.ts";
+import { HOW_A_RUN_ENDED, KEEPER_NAMES, asAField, chosenOf, keeperOf, ran, time, timing, until, whenOf, type Chosen, type Schedule } from "./time.ts";
 import type { Participant } from "./types.ts";
 import { chatsOf, world } from "./world.ts";
 
@@ -19,22 +19,21 @@ interface Made extends Chosen {
   chat: string;
 }
 
-/// A moment an hour from now, as a field of date and time takes it.
-function inAnHour(): string {
-  const at = new Date(Date.now() + 60 * 60_000);
-  at.setSeconds(0, 0);
-  const local = new Date(at.getTime() - at.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
+const USUAL: Chosen = { how: "daily", every: 30, unit: "minutes", at: "09:00", day: "1", once: "", line: "0 9 * * 1-5" };
 
-function NewSchedule({ agent, open, onClose }: { agent: Participant; open: boolean; onClose: () => void }) {
+/// A schedule made, or one that is there changed: what is said and when.
+function ScheduleForm({ agent, open, changing, onClose }: { agent: Participant; open: boolean; changing: Schedule | null; onClose: () => void }) {
   const zone = useStore(time, (known) => known.keeper?.zone ?? "UTC");
   const order = useStore(world, (state) => chatsOf(state, agent.participant_id).map((chat) => chat.chat_id).join(" "));
   const known = useStore(world, (state) => state.chats);
   const chats = order.split(" ").filter(Boolean).flatMap((id) => (known[id] ? [known[id]] : []));
   const [problem, setProblem] = useState("");
+  const usual = { ...USUAL, once: asAField(Date.now() + 60 * 60_000) };
   const form = useForm<Made>({
-    defaultValues: { say: "", chat: chats[0]?.chat_id ?? "", how: "daily", every: 30, unit: "minutes", at: "09:00", day: "1", once: inAnHour(), line: "0 9 * * 1-5" },
+    values: changing
+      ? { say: changing.say, chat: changing.chat_id ?? "", ...chosenOf(changing.when, usual) }
+      : { say: "", chat: chats[0]?.chat_id ?? "", ...usual },
+    resetOptions: { keepDirtyValues: true },
   });
   const how = form.watch("how");
   const close = () => {
@@ -45,7 +44,9 @@ function NewSchedule({ agent, open, onClose }: { agent: Participant; open: boole
   const make = form.handleSubmit(async (made) => {
     setProblem("");
     try {
-      await timing.make(agent.participant_id, made.say, whenOf(made, zone), made.chat || null);
+      const when = whenOf(made, changing?.when.kind === "cron" ? changing.when.zone : zone);
+      if (changing) await timing.change(agent.participant_id, changing.schedule_id, made.say, when);
+      else await timing.make(agent.participant_id, made.say, when, made.chat || null);
       close();
     } catch (error) {
       setProblem((error as Error).message);
@@ -56,7 +57,7 @@ function NewSchedule({ agent, open, onClose }: { agent: Participant; open: boole
       <Dialog.Portal>
         <Dialog.Backdrop className="w-scrim" />
         <Dialog.Popup className="k-dialog w-dialog">
-          <Dialog.Title className="k-heading">New schedule</Dialog.Title>
+          <Dialog.Title className="k-heading">{changing ? "Change the schedule" : "New schedule"}</Dialog.Title>
           <Dialog.Description className="k-caption">
             What {agent.name} is told, when, and where. It is said by the schedule, and answered like anything else said there.
           </Dialog.Description>
@@ -121,24 +122,28 @@ function NewSchedule({ agent, open, onClose }: { agent: Participant; open: boole
                 <input className="k-field k-mono" spellCheck={false} {...form.register("line", { required: true })} />
               </label>
             ) : null}
-            <label className="k-stack w-close">
-              <span className="k-caption">Said in</span>
-              <select className="k-field" {...form.register("chat")}>
-                {chats.map((chat) => (
-                  <option value={chat.chat_id} key={chat.chat_id}>
-                    {chat.title || "Its chat"}
-                  </option>
-                ))}
-                <option value="">A new chat each time</option>
-              </select>
-            </label>
+{changing ? (
+              <span className="k-caption">Said in {changing.chat_id ? changing.chat_title || "its chat" : "a new chat each time"}.</span>
+            ) : (
+                          <label className="k-stack w-close">
+                <span className="k-caption">Said in</span>
+                <select className="k-field" {...form.register("chat")}>
+                  {chats.map((chat) => (
+                    <option value={chat.chat_id} key={chat.chat_id}>
+                      {chat.title || "Its chat"}
+                    </option>
+                  ))}
+                  <option value="">A new chat each time</option>
+                </select>
+              </label>
+            )}
             {problem ? <div className="k-notice k-danger">{problem}</div> : null}
             <div className="k-inline w-end">
               <Dialog.Close className="k-btn k-quiet" type="button">
                 Not now
               </Dialog.Close>
               <button type="submit" className="k-btn k-primary" disabled={form.formState.isSubmitting}>
-                Make the schedule
+                {changing ? "Save" : "Make the schedule"}
               </button>
             </div>
           </form>
@@ -148,7 +153,7 @@ function NewSchedule({ agent, open, onClose }: { agent: Participant; open: boole
   );
 }
 
-function Row({ agent, schedule, now, onProblem }: { agent: Participant; schedule: Schedule; now: number; onProblem: (said: string) => void }) {
+function Row({ agent, schedule, now, onProblem, onChange }: { agent: Participant; schedule: Schedule; now: number; onProblem: (said: string) => void; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const act = (what: Promise<void>) => {
     setBusy(true);
@@ -191,6 +196,9 @@ function Row({ agent, schedule, now, onProblem }: { agent: Participant; schedule
           >
             <span />
           </button>
+          <button type="button" className="k-btn k-quiet" disabled={busy} onClick={onChange}>
+            Change
+          </button>
           <button type="button" className="k-btn k-quiet" disabled={busy} onClick={() => act(timing.forget(agent.participant_id, schedule.schedule_id))}>
             Forget
           </button>
@@ -205,6 +213,7 @@ export function Schedules({ agent, hidden }: { agent: Participant; hidden: boole
   const keeper = useStore(time, (known) => known.keeper);
   const mine = keeperOf(keeper, agent.profile_id);
   const [making, setMaking] = useState(false);
+  const [changing, setChanging] = useState<Schedule | null>(null);
   const [problem, setProblem] = useState("");
   const [now, setNow] = useState(Date.now());
   // What is due and how it went changes by itself: it is read again while
@@ -292,7 +301,7 @@ export function Schedules({ agent, hidden }: { agent: Participant; hidden: boole
             </thead>
             <tbody>
               {kept.schedules.map((schedule) => (
-                <Row agent={agent} schedule={schedule} now={now} onProblem={setProblem} key={schedule.schedule_id} />
+                <Row agent={agent} schedule={schedule} now={now} onProblem={setProblem} onChange={() => setChanging(schedule)} key={schedule.schedule_id} />
               ))}
             </tbody>
           </table>
@@ -319,7 +328,15 @@ export function Schedules({ agent, hidden }: { agent: Participant; hidden: boole
           </div>
         </section>
       ) : null}
-      <NewSchedule agent={agent} open={making} onClose={() => setMaking(false)} />
+      <ScheduleForm
+        agent={agent}
+        open={making || changing !== null}
+        changing={changing}
+        onClose={() => {
+          setMaking(false);
+          setChanging(null);
+        }}
+      />
     </section>
   );
 }

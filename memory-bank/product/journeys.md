@@ -68,7 +68,8 @@ A person opens an agent's Schedules and makes a schedule: what the agent is told
 chat it is said in. It is said on time by the schedule and answered like anything else said
 there, with nobody watching. They pause it with its switch and forget it; what it did stays.
 They read the last runs. Asked to check back, the agent makes a schedule itself, and the
-person switches it off. Providers says who keeps time. Walk:
+person switches it off. A schedule is changed, what it says and when, in the form it was made
+in. Providers says who keeps time. Walk:
 `product_front_door::a_person_leaves_a_standing_instruction_and_the_product_carries_it_out`.
 
 Under Providers, Time a person reads who can keep time and what each cannot do. They turn the

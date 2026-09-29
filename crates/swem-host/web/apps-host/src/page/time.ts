@@ -117,6 +117,11 @@ export const timing = {
     await fetchJson("/api/schedules", send("POST", { agent_id: agent, say, when, chat_id: chat }));
     await timing.read(agent);
   },
+  /// Change what a schedule says and when.
+  async change(agent: string, schedule: string, say: string, when: When): Promise<void> {
+    await fetchJson(`/api/schedules/${part(schedule)}`, send("PATCH", { say, when }));
+    await timing.read(agent);
+  },
   async turn(agent: string, schedule: string, on: boolean): Promise<void> {
     await fetchJson(`/api/schedules/${part(schedule)}`, send("PATCH", { enabled: on }));
     await timing.read(agent);
@@ -185,6 +190,37 @@ export interface Chosen {
   day: string;
   once: string;
   line: string;
+}
+
+/// A moment as a field of date and time takes it, in this computer's
+/// own time.
+export function asAField(ms: number): string {
+  const at = new Date(ms);
+  at.setSeconds(0, 0);
+  return new Date(at.getTime() - at.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+const two = (n: number): string => String(n).padStart(2, "0");
+
+/// What a form chooses from, read back from when a schedule speaks: a
+/// time of day reads as a time of day when it is one, and as its cron
+/// line otherwise.
+export function chosenOf(when: When, usual: Chosen): Chosen {
+  if (when.kind === "every") {
+    const [every, unit]: [number, Chosen["unit"]] =
+      when.minutes % 1440 === 0 ? [when.minutes / 1440, "days"] : when.minutes % 60 === 0 ? [when.minutes / 60, "hours"] : [when.minutes, "minutes"];
+    return { ...usual, how: "every", every, unit };
+  }
+  if (when.kind === "once") return { ...usual, how: "once", once: asAField(when.at_ms) };
+  const parts = when.line.trim().split(/\s+/);
+  const [minute, hour, day, month, weekday] = parts;
+  const plain = (one: string | undefined, most: number) => one !== undefined && /^\d+$/.test(one) && Number(one) <= most;
+  if (parts.length === 5 && plain(minute, 59) && plain(hour, 23) && day === "*" && month === "*") {
+    const at = `${two(Number(hour))}:${two(Number(minute))}`;
+    if (weekday === "*") return { ...usual, how: "daily", at };
+    if (plain(weekday, 6)) return { ...usual, how: "weekly", at, day: String(Number(weekday)) };
+  }
+  return { ...usual, how: "cron", line: when.line };
 }
 
 export function whenOf(chosen: Chosen, zone: string): When {

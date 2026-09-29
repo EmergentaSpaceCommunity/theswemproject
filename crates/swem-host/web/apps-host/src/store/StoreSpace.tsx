@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import { sessionStore } from "../agent/store.ts";
 import { fetchJson } from "../http.ts";
+import { Consent } from "../page/Consent.tsx";
 
 type Kind = "agent" | "server" | "skill" | "tool";
 
@@ -74,6 +75,7 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
   const [indexUrl, setIndexUrl] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [consent, setConsent] = useState<{ asked: string; answer: (yes: boolean) => void } | null>(null);
 
   const load = async () => {
     try {
@@ -129,7 +131,7 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
         `Install ${KIND_WORDS[entry.kind]} ${plan.registry_id} ${plan.version}?\n\n` +
         `It fetches ${what}, described by ${plan.registry_index}, ` +
         "under this product's install root. Nothing else on this machine changes.";
-      if (!window.confirm(question)) {
+      if (!(await new Promise<boolean>((answer) => setConsent({ asked: question, answer })))) {
         setStatus("");
         return;
       }
@@ -164,6 +166,13 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
 
   return (
     <div id="store-space" className="space store-space" data-workbench-space="store" hidden={hidden}>
+      <Consent
+        asked={consent?.asked ?? null}
+        onAnswer={(yes) => {
+          consent?.answer(yes);
+          setConsent(null);
+        }}
+      />
       <aside className="store-sources">
         <div className="k-eyebrow">Where it comes from</div>
         <p className="k-caption k-muted">

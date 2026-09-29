@@ -28,9 +28,8 @@ await b.click("#index-add");
 await b.waitFor("the catalog's server", async () => b.exists('.store-entry[data-kind="server"][data-id="notes"]'), 300);
 step("the catalog lists the server");
 
-const before = b.dialogs.length;
 await b.click('.store-install[data-kind="server"][data-id="notes"]');
-await b.waitFor("the consent question", async () => b.dialogs.length > before, 200);
+await b.consent();
 await b.waitFor("the server installed", async () =>
   b.exists('.store-entry[data-kind="server"][data-id="notes"][data-installed="true"]'), 600, 500);
 step("the server is installed from the Store");
