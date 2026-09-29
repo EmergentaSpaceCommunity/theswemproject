@@ -160,8 +160,9 @@ made by whom. It is not a process inside the agent's machine.
   clock inside it would either keep it awake or die with it.
   Who keeps it differs by what it can do. The running SWEM keeps time only while it runs. The
   system's own scheduler starts SWEM when the Workbench is closed, and needs the computer to
-  be on. An outside scheduler calls a SWEM that runs where it can be reached, and is what
-  wakes an agent whose machine sleeps elsewhere. Each agent has one keeper: the one chosen
+  be on. An outside scheduler calls a SWEM that runs where it can be reached, and that SWEM
+  is what wakes an agent whose machine sleeps elsewhere. A keeper only says that it is time
+  to look; the turn is run by SWEM and by nothing else (ADR-0010). Each agent has one keeper: the one chosen
   for it, or the one agents have when nothing was chosen.
 - **When a schedule is due** the keeper tells the product; the product wakes the agent's machine,
   delivers the message as a turn in the schedule's chat with the schedule as its sender, and lets

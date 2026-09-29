@@ -141,9 +141,18 @@ closing and reopening the editor returns to the same conversation. Walks:
 ## GJ-07 — Embed the harness in another application
 
 An application starts a Workbench through the crate's product builder in a page of code and, with
-a client credential, drives a session from a page of its own on another origin. Status: the
+a token, drives a session from a page of its own on another origin. Status: the
 builder and the example are done (roadmap C1; `tests/product::an_embedder_serves_a_workbench_
-from_a_page_of_code`); the client credential is planned (roadmap C2).
+from_a_page_of_code`); the token comes with roadmap S1.
+
+## GJ-14 — A Workbench on a server of one's own
+
+A person starts the Workbench on a server, at a name, and is given a word that is used once.
+They open the address on their laptop, give the word and register the laptop; they are shown
+words to come back with. From the laptop they add their phone. Anybody else who opens the
+address is asked to sign in and gets nothing. Under Settings, Access they read which devices
+may come in and when each last did, take one away, make a token for a program and withdraw it,
+and read what was done and what was refused. Status: being built (roadmap S1, ExecPlan 015).
 
 ## GJ-08 — A project server's own space
 

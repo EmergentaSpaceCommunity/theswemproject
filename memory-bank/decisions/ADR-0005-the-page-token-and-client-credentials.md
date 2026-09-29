@@ -1,6 +1,7 @@
 # ADR-0005 — The API answers the page's own token, and a client credential an embedder mints
 
-**Status:** proposed (lands with roadmap item C2).
+**Status:** superseded by ADR-0011 (2026-09-29) before it was built: a program is given a
+token that says what it may do.
 
 ## Context
 
