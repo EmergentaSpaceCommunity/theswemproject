@@ -5,13 +5,13 @@ import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { AgentSettings } from "./settings/AgentSettings.tsx";
-import { AgentFiles } from "../agent/AgentFiles.tsx";
 import { sessionStore } from "../agent/store.ts";
 import { TerminalPanel } from "../agent/TerminalPanel.tsx";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
 import { ChatSign, Clock, Folder, Gear, Moon, People, Plus, Prompt } from "./icons.tsx";
 import { AddSomeone, Members } from "./Members.tsx";
+import { Files } from "./Files.tsx";
 import { go, type AgentTab } from "./place.ts";
 import { Schedules } from "./Schedules.tsx";
 import type { Chat, Participant } from "./types.ts";
@@ -134,9 +134,6 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
   useEffect(() => {
     if (agent.profile_id) sessionStore.selectProfile(agent.profile_id);
   }, [agent.profile_id]);
-  useEffect(() => {
-    if (tab === "files" && agent.profile_id) void sessionStore.loadFiles(agent.profile_id);
-  }, [tab, agent.profile_id]);
   const alone = chats.find((one) => one.members.filter((member) => member.kind === "agent").length === 1);
   const chosen = chat === "new" ? null : ((chat && known[chat]) || alone || chats[0] || null);
   return (
@@ -156,7 +153,7 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
       ) : null}
       <div className="w-panel" hidden={tab === "chat"}>
         <Guard what="The agent's files">
-          <AgentFiles hidden={tab !== "files"} />
+          <Files agent={agent} hidden={tab !== "files"} key={agent.profile_id ?? agent.participant_id} />
         </Guard>
         <Guard what="The agent's terminal">
           <TerminalPanel hidden={tab !== "terminal"} />

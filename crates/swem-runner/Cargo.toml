@@ -1,0 +1,30 @@
+[package]
+name = "swem-runner"
+description = "What SWEM puts on a host to reach an agent's machine: its files first."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "swem_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "swem-runner"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

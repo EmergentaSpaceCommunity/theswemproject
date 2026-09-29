@@ -43,4 +43,4 @@ echo "==> the Workbench's node suite"
 cargo test -p swem-host --test web_suite -- --ignored
 
 echo "==> the crate suites"
-exec cargo test -p swem-host -p swem-cli --no-fail-fast "$@"
+exec cargo test -p swem-runner -p swem-host -p swem-cli --no-fail-fast "$@"

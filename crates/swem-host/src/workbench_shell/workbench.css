@@ -85,8 +85,36 @@ html, body, #workbench-root { height: 100%; }
 .w-composer { position: relative; }
 .w-commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; max-height: 280px; overflow: auto; }
 .w-commands .k-mono { white-space: nowrap; }
-/* What an agent holds reads as a column, not across the screen. */
-.w-panel > .files-panel { width: min(100%, 880px); margin: 0 auto; flex: none; overflow: visible; }
+/* An agent's files: the tree, and beside it what is chosen in it. */
+.w-files { flex: 1 1 auto; min-height: 0; display: flex; }
+.w-files[hidden] { display: none; }
+.w-tree { width: 320px; flex: none; min-height: 0; display: flex; flex-direction: column;
+  background: var(--color-background-secondary); border-right: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-tree-head { padding: 10px 8px 6px 14px; flex: none; }
+.w-nowrap-text { white-space: nowrap; }
+.w-tree-items { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 6px 10px; display: flex; flex-direction: column; }
+.w-tree-item { display: flex; align-items: center; gap: 4px; width: 100%; flex: none; padding: 3px 8px; border: 0; background: none;
+  color: var(--color-text-primary); font: inherit; text-align: left; cursor: pointer; border-radius: var(--border-radius-sm); }
+.w-tree-item:hover, .w-tree-item:focus-visible { background: var(--color-background-ghost); outline: none; }
+.w-tree-item.k-active { background: var(--color-background-tertiary); }
+.w-tree-item.w-faint { color: var(--color-text-tertiary); }
+.w-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-tree-empty { padding: 6px 8px; }
+.w-twist { width: 14px; flex: none; display: inline-flex; color: var(--color-text-tertiary); }
+.w-twist.w-open { transform: rotate(90deg); }
+.w-tree-foot { flex: none; max-height: 40%; overflow: auto; padding: 12px 14px; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-handed { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.w-editor { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.w-editor-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px;
+  border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-editor-head .k-two { min-width: 0; overflow-wrap: anywhere; }
+.w-editor-says { margin: 10px 16px 0; flex: none; }
+.w-editor-body { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.w-editor-none { padding: 24px 32px; }
+.w-editor-none > .k-card { max-width: 640px; }
+@media (max-width: 900px) {
+  .w-tree { width: 220px; }
+}
 
 /* An agent's settings: the parts down the middle, their names beside. */
 .w-settings { display: flex; align-items: flex-start; gap: 24px; padding: 24px 32px; flex: none; }

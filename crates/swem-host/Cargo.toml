@@ -53,6 +53,7 @@ name = "swem-personal-agent-fixture"
 path = "src/bin/swem-personal-agent-fixture.rs"
 
 [dependencies]
+swem-runner = { path = "../swem-runner" }
 base64 = { workspace = true }
 agent-client-protocol.workspace = true
 flate2.workspace = true

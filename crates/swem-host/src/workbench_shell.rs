@@ -63,6 +63,9 @@ mod runtime;
 #[path = "workbench_shell/stream.rs"]
 mod stream;
 pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
+#[path = "workbench_shell/files.rs"]
+mod files;
+pub use files::{ChangeTreeBody, FileOpened, SaveFileBody, SavedOrNot};
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
@@ -4301,6 +4304,55 @@ async fn route_shell(
                 Ok(()) => json_result(state.keeper().await),
                 Err(error) => error_response(&error),
             }
+        }
+        // An agent's files: the folder it works in as a tree, a file as
+        // it is opened, saved and kept, and what a person does to the tree.
+        (&Method::GET, ["api", "profiles", profile_id, "tree"]) => {
+            let dir = query_param(query.as_deref(), "dir").unwrap_or_default();
+            json_result(
+                state
+                    .agent_tree(profile_id, &percent_decode(&dir))
+                    .await
+                    .map(|entries| json!({ "entries": entries })),
+            )
+        }
+        (&Method::POST, ["api", "profiles", profile_id, "tree"]) => {
+            let profile_id = (*profile_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<ChangeTreeBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(
+                state
+                    .change_agent_tree(&profile_id, body)
+                    .await
+                    .map(|()| json!({ "done": true })),
+            )
+        }
+        (&Method::GET, ["api", "profiles", profile_id, "file"]) => {
+            let path = percent_decode(&query_param(query.as_deref(), "path").unwrap_or_default());
+            if query_param(query.as_deref(), "as").as_deref() == Some("it-is") {
+                match state.agent_file_as_it_is(profile_id, &path).await {
+                    Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
+                    Err(error) => error_response(&error),
+                }
+            } else {
+                json_result(state.agent_file(profile_id, &path).await)
+            }
+        }
+        (&Method::PUT, ["api", "profiles", profile_id, "file"]) => {
+            let profile_id = (*profile_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<SaveFileBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.save_agent_file(&profile_id, body).await)
         }
         (&Method::GET, ["api", "profiles", profile_id, "files"]) => {
             json_result(state.profile_files(profile_id).await)

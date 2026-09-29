@@ -2490,6 +2490,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "swem-runner",
  "sysinfo",
  "tar",
  "thiserror 2.0.20",
@@ -2497,6 +2498,17 @@ dependencies = [
  "tokio-util",
  "url",
  "zip",
+]
+
+[[package]]
+name = "swem-runner"
+version = "0.1.0-dev"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

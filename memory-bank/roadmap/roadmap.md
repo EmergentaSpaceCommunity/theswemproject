@@ -22,7 +22,7 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 
 | Item | A person can | State |
 |---|---|---|
-| B1 | run a real engine in a container on this machine, with its key, terminal and files inside | |
+| B1 | run a real engine in a container on this machine, with its key, terminal and files inside | **part one done** (2026-09-28, ExecPlan 010): the runner and an agent's files as a tree with an editor. The container waits for Podman to be set up on this computer |
 | B2 | limit where a sealed agent connects and allow a refused address from the chat | |
 | B3 | make a new agent in four steps from providers that were looked at | |
 | B4 | add a machine over SSH, install an engine there, chat, open a terminal, read files | |

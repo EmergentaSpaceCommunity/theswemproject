@@ -233,7 +233,7 @@ pub async fn read(
 /// refuses that - so an agent's audio, model or project file downloads rather
 /// than opening in the page, and the domain that owns it is what gives it a
 /// player.
-fn media_type_of(name: &str) -> String {
+pub(crate) fn media_type_of(name: &str) -> String {
     let extension = name
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())

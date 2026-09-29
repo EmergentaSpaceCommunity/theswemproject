@@ -8,6 +8,7 @@
 | A schedule said on time in a chat, paused, forgotten; its runs kept, late ones said late | proven | GJ-11; `time`, `chat_runtime` |
 | Time kept while the Workbench is closed, by the system's scheduler; a keeper chosen for an agent | proven on macOS by hand; systemd not checked; Windows not built | GJ-11; `chat_runtime::time_is_kept_once_for_the_agents_of_a_keeper`, `keepers` |
 | An agent makes, lists, pauses and removes its own schedules | proven | GJ-11; `chat_runtime::an_agent_makes_its_own_schedule_in_the_chat_it_was_asked_in`; by hand with a real engine |
+| An agent's files as a tree with an editor; saved only while it is what was opened | proven below the page and by hand | GJ-13; `swem-runner/tests/fs.rs`, `agent_files` |
 | This machine as it was found; a container offered only where one can start | proven below the page and by hand | GJ-10; `hosts` |
 | Store over the ACP registry and added catalogs; servers and skills installed and used | proven | GJ-03; `tests/store.rs` |
 | Chats listed, read with each message under its sender, gone on with, kept across restarts | proven by hand and below the page | GJ-04 |

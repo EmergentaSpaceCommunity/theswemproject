@@ -5,7 +5,7 @@ person, and knows nothing about what the person is making with them: the domain 
 packages, music, software - is the Cycle, a separate MCP server in its own repository, which this
 Workbench hosts like any other server.
 
-## Two crates
+## Three crates
 
 ### `swem-host` - the harness
 
@@ -64,6 +64,10 @@ A library plus test fixtures. It owns:
   for an agent - is kept under `<data root>/time`, not in a profile. A Workbench that found
   the lock taken asks for it again as time passes. The job holds the command, where the data
   is and the search path; never a key.
+- **An agent's files** (`workbench_shell/files.rs`). The folder an agent works in as a tree, a
+  file opened, saved while it is what was opened, made, renamed and removed: each is a request
+  to the runner. What a person handed over and what the agent handed back (`workbench_files.rs`)
+  are two folders of the same place, listed beside the tree.
 - **Hosts** (`host/`, `workbench_shell/hosts.rs`). This machine is looked at while the door
   opens and when a person asks: system, processors, memory, disk, and whether Podman and
   Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an
@@ -103,13 +107,23 @@ A library plus test fixtures. It owns:
   its chat, its files, its terminal, its schedules and its settings, which are forms by part
   (`react-hook-form`). A chat is drawn from a store per chat, fed by the one
   stream. The thread and composer are `@assistant-ui/react` over those stores, text is
-  `react-markdown`, code is coloured by `shiki`, dialogs and selects are Base UI. It is styled
+  `react-markdown`, code is coloured by `shiki`, dialogs and selects are Base UI. An agent's files
+  are a tree (`headless-tree`) and an editor (CodeMirror 6). It is styled
   by the project's kit (`web/view-kit`: the palette's variables only) and its own layout
   (`workbench_shell/workbench.css`), in both themes. No protocol nouns and nothing for
   debugging on screen.
 
 The host names no domain. A structural test (`tests/genericity.rs`) scans its source for domain
-words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate.
+words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate
+but the runner.
+
+### `swem-runner` - what is put on a host
+
+A library and a small program (ADR-0008). What the product wants of an agent's machine is
+asked of it: today the agent's files (`fs`), confined to the folder the agent works in. On the
+machine the product runs on the library answers in the product's own process; in a machine of
+the agent's own the program answers on its standard streams. It depends on nothing of the
+harness.
 
 ### `swem-cli` - the product
 

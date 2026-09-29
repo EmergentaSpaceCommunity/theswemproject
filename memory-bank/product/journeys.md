@@ -87,6 +87,17 @@ answers. Every message has its sender. Evidence: by hand, as above;
 `chat_runtime::two_agents_work_at_once_and_a_question_waits_for_whoever_comes_back` and its
 siblings. No browser walk repeats it by itself yet.
 
+## GJ-13 — An agent's files
+
+A person opens an agent's Files and sees the folder it works in as a tree. They open a file and
+read it coloured, change it and save it, and the agent reads what they wrote. When the agent
+wrote the file meanwhile they are told, nothing is saved, and they choose: read it again or
+save theirs over it. Leaving a file that was changed and not saved asks first. They make a file
+and a folder, rename and remove. What is not text is opened as it is. What they handed over and
+what the agent handed back are listed beside the tree. Proven by `swem-runner`'s `fs`,
+`agent_files`, and by hand with a real engine; the lists of what was handed over and back by
+`product_front_door::a_person_hands_their_agent_a_file_and_gets_one_back`.
+
 ## GJ-05 — An agent in a container
 
 A person puts their agent in a container on this machine and everything still works: the session,
