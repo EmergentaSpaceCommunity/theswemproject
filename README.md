@@ -131,5 +131,7 @@ its exact plan id, and receipted under the install root.
 
 ## Licence
 
-AGPL-3.0-or-later. See `LICENSES.md` for what that means for using, modifying and running SWEM, and
-`NOTICE` for what travels with a copy.
+AGPL-3.0-or-later. Building SWEM into a product that keeps its source closed needs a commercial
+licence from the copyright holder. See `LICENSES.md` for what that means for using, modifying,
+running and embedding SWEM, `CONTRIBUTING.md` and `CLA.md` for how changes are taken, and `NOTICE`
+for what travels with a copy.
