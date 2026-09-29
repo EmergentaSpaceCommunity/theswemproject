@@ -6,13 +6,13 @@ import { useStore } from "zustand";
 
 import { AgentSettings } from "./settings/AgentSettings.tsx";
 import { sessionStore } from "../agent/store.ts";
-import { TerminalPanel } from "../agent/TerminalPanel.tsx";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
 import { ChatSign, Clock, Folder, Gear, Moon, People, Plug, Plus, Prompt } from "./icons.tsx";
 import { AddSomeone, Members } from "./Members.tsx";
 import { AgentChannels } from "./AgentChannels.tsx";
 import { Files } from "./Files.tsx";
+import { Terminals } from "./Terminals.tsx";
 import { go, type AgentTab } from "./place.ts";
 import { Schedules } from "./Schedules.tsx";
 import type { Chat, Participant } from "./types.ts";
@@ -158,7 +158,7 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
           <Files agent={agent} hidden={tab !== "files"} key={agent.profile_id ?? agent.participant_id} />
         </Guard>
         <Guard what="The agent's terminal">
-          <TerminalPanel hidden={tab !== "terminal"} />
+          <Terminals agent={agent} hidden={tab !== "terminal"} key={agent.profile_id ?? agent.participant_id} />
         </Guard>
         <Guard what="The agent's schedules">
           <Schedules agent={agent} hidden={tab !== "schedules"} />

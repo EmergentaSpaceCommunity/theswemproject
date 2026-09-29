@@ -135,13 +135,13 @@ step(`the list calls it: ${named.split("\n")[0]}`);
 step("a terminal in the agent's environment");
 await b.openAgent(agentId, "terminal");
 await b.waitFor("the terminal panel", async () => b.exists('[data-agent-panel="terminal"]:not([hidden])'));
-await b.click("#terminal-open");
+if (!(await b.pressText('[data-agent-panel="terminal"] button', "New terminal"))) cleanup(1, "the page has no way to open a terminal");
 await b.waitFor("a terminal running", async () =>
-  b.evaluate(`(document.getElementById("terminal-id")||{textContent:""}).textContent.length > 0`), 200);
+  b.evaluate(`[...document.querySelectorAll('[data-agent-panel="terminal"] [role="tab"]')].some((one) => one.innerText.includes("yours") && one.getAttribute("aria-selected") === "true")`), 200);
 const screenText = () => b.evaluate(
-  `[...document.querySelectorAll("#terminal-screen .xterm-rows div")].map((row) => row.textContent).join("\\n")`);
+  `[...document.querySelectorAll(".w-terminal-screen .xterm-rows div")].map((row) => row.textContent).join("\\n")`);
 await b.waitFor("a prompt", async () => (await screenText()).trim().length > 0, 200);
-await b.click("#terminal-screen");
+await b.click(".w-terminal-screen");
 await b.send("Input.insertText", {text: "echo swem-no-project"});
 await b.send("Input.dispatchKeyEvent", {type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", text: "\r"});
 await b.send("Input.dispatchKeyEvent", {type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter"});
@@ -150,7 +150,7 @@ await b.waitFor("the command answers", async () => {
   // Once on the line that was typed, once as the shell's answer.
   return text.split("swem-no-project").length > 2;
 }, 150);
-const terminalId = await b.evaluate(`(document.getElementById("terminal-id")||{textContent:""}).textContent`);
+const terminalId = ((await b.ask("/api/terminals")).body?.terminals ?? [])[0]?.terminal_id ?? "";
 step("a command ran in it and answered");
 
 step("a server of the person's own");

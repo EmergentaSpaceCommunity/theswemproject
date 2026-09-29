@@ -1,28 +1,27 @@
-// A terminal, in the product, in the agent's own environment.
+// An agent's terminals: what is open where it lives, each by what runs in
+// it and who started it, and one of them on the screen.
 //
 // Agents are signed in at a prompt: a device code, a browser handshake, a
-// `login` subcommand. Without a terminal here, "configure your agent" means
-// "open another terminal, find the right directory, export the right
-// variables" - which is the product refusing to do its job. This runs a real
-// pty on the host with the profile's working directory, the profile's agent
-// home as HOME and the profile's typed vault in the environment, so what is
-// signed in here is signed in for the agent.
+// `login` subcommand. This runs a real terminal where the agent lives, in
+// the folder it works in and with what it is given, so what is signed in
+// here is signed in for the agent.
 //
-// Bytes go over the same long poll the rest of the shell uses: output is a
-// byte sequence a reader continues from, input is a POST. Nothing here is
-// recorded - a terminal is live, and a secret typed at a prompt must not
-// become a record.
+// One screen. The terminal that is chosen is read from its beginning,
+// which the host keeps, so choosing another loses nothing. Nothing here is
+// recorded: a secret typed at a prompt must not become a record.
 
-import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import xtermCss from "@xterm/xterm/css/xterm.css?raw";
+import { useEffect, useRef, useState } from "react";
 
-import type { TerminalView } from "./session.ts";
-import { sessionStore, useSession } from "./store.ts";
+import type { TerminalView } from "../agent/session.ts";
+import { sessionStore, useSession } from "../agent/store.ts";
+import { Cross, Plus, Prompt } from "./icons.tsx";
+import { running } from "./terminals.ts";
+import type { Participant } from "./types.ts";
 
-/// xterm's own stylesheet, inlined once: the shell is a single script, and a
-/// second file would have to be served and kept in step with it.
+/// xterm's own stylesheet, inlined once: the page is a single script.
 function useXtermStyle() {
   useEffect(() => {
     const id = "xterm-style";
@@ -48,14 +47,20 @@ const encode = (text: string): string => {
   return btoa(binary);
 };
 
-/// One line about a terminal, for a person choosing which to watch.
-function describe(view: TerminalView): string {
-  const who = view.opened_by === "agent" ? "Your agent" : "You";
-  const what = [view.command, ...(view.args ?? [])].join(" ");
-  return view.exit ? `${who} ran ${what} — ${view.exit}` : `${who} started ${what}`;
+/// xterm paints with values, not names: they are read from the palette as
+/// it is now.
+function colours() {
+  const palette = getComputedStyle(document.documentElement);
+  const value = (name: string) => palette.getPropertyValue(name).trim() || undefined;
+  return {
+    background: value("--color-background-primary"),
+    foreground: value("--color-text-primary"),
+    cursor: value("--color-text-info"),
+    selectionBackground: value("--color-background-tertiary"),
+  };
 }
 
-export function TerminalPanel({ hidden }: { hidden: boolean }) {
+export function Terminals({ agent, hidden }: { agent: Participant; hidden: boolean }) {
   const state = useSession();
   useXtermStyle();
   const host = useRef<HTMLDivElement>(null);
@@ -64,7 +69,9 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
   const [open, setOpen] = useState<TerminalView | null>(null);
   const [others, setOthers] = useState<TerminalView[]>([]);
   const [status, setStatus] = useState("");
-  const running = useRef(0);
+  const running_ = useRef(0);
+  const profile = agent.profile_id ?? "";
+  const inAContainer = state.profiles.find((one) => one.profile_id === profile)?.environment_profile_id === "podman-container-environment";
   // A terminal nobody is looking at does not stream. Its output is buffered
   // on the host with a sequence to continue from, so nothing is lost by
   // waiting - and a browser keeps only a handful of connections per origin,
@@ -84,12 +91,12 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
   // started. An agent working alone opens its own to run a command, and a
   // person who cannot see it cannot watch what their agent is doing.
   useEffect(() => {
-    if (hidden || !state.profileId) return;
+    if (hidden || !profile) return;
     let live = true;
     const read = async () => {
       try {
         const answer = await sessionStore.api<{ terminals: TerminalView[] }>("GET", "/api/terminals");
-        if (live) setOthers(answer.terminals.filter((one) => one.profile_id === state.profileId));
+        if (live) setOthers(answer.terminals.filter((one) => one.profile_id === profile));
       } catch {
         // The list is how a person finds a terminal, not how they use one.
       }
@@ -100,27 +107,18 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
       live = false;
       clearInterval(timer);
     };
-  }, [hidden, state.profileId]);
+  }, [hidden, profile]);
 
   // One terminal at a time, owned outside React's render: xterm keeps the
   // screen, so re-rendering must not recreate it.
   useEffect(() => {
     if (hidden || host.current === null || screen.current !== null) return;
-    // xterm paints with values, not names, so the values are read from the
-    // shell's own palette rather than picked here.
-    const palette = getComputedStyle(document.documentElement);
-    const token = (name: string) => palette.getPropertyValue(name).trim() || undefined;
     const terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      theme: {
-        background: token("--bg"),
-        foreground: token("--text"),
-        cursor: token("--accent"),
-        selectionBackground: token("--panel"),
-      },
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "ui-monospace, monospace",
+      theme: colours(),
     });
     const addon = new FitAddon();
     terminal.loadAddon(addon);
@@ -130,21 +128,33 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
     fit.current = addon;
   }, [hidden]);
 
+  // The screen follows the theme, and the room it is given.
+  useEffect(() => {
+    if (hidden || host.current === null) return undefined;
+    const themed = new MutationObserver(() => {
+      if (screen.current) screen.current.options.theme = colours();
+    });
+    themed.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const sized = new ResizeObserver(() => fit.current?.fit());
+    sized.observe(host.current);
+    return () => {
+      themed.disconnect();
+      sized.disconnect();
+    };
+  }, [hidden]);
+
   useEffect(() => {
     if (hidden) return;
     fit.current?.fit();
   }, [hidden, open]);
 
   const start = async () => {
-    if (!state.profileId) {
-      setStatus("Choose an agent first.");
-      return;
-    }
+    if (!profile) return;
     setStatus("Starting…");
     try {
       const terminal = screen.current;
       const view = await sessionStore.api<TerminalView>("POST", "/api/terminals", {
-        profile_id: state.profileId,
+        profile_id: profile,
         cols: terminal?.cols ?? 80,
         rows: terminal?.rows ?? 24,
       });
@@ -152,7 +162,7 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
       terminal?.focus();
       setOpen(view);
       setStatus("");
-      void pump(view.terminal_id, (running.current += 1));
+      void pump(view.terminal_id, (running_.current += 1));
     } catch (error) {
       setStatus((error as Error).message);
     }
@@ -166,13 +176,13 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
     screen.current?.focus();
     setOpen(view);
     setStatus(view.exit ?? "");
-    void pump(view.terminal_id, (running.current += 1));
+    void pump(view.terminal_id, (running_.current += 1));
   };
 
   /// Read output until this terminal is replaced or ends.
   const pump = async (terminalId: string, generation: number) => {
     let after = 0;
-    while (running.current === generation) {
+    while (running_.current === generation) {
       if (!watching.current) {
         await new Promise((resolve) => setTimeout(resolve, 250));
         continue;
@@ -186,7 +196,7 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
           undefined,
           controller.signal,
         );
-        if (running.current !== generation) return;
+        if (running_.current !== generation) return;
         if (answer.dropped) screen.current?.write("\r\n[earlier output dropped]\r\n");
         if (answer.bytes) screen.current?.write(decode(answer.bytes));
         after = answer.next;
@@ -196,7 +206,7 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
           return;
         }
       } catch (error) {
-        if (running.current !== generation) return;
+        if (running_.current !== generation) return;
         // An abort is this panel stepping aside, not a failure.
         if ((error as Error).name === "AbortError" || !watching.current) continue;
         setStatus((error as Error).message);
@@ -227,19 +237,9 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
     };
   }, [open?.terminal_id]);
 
-  // Step away from a terminal without ending it. Watching one the agent
-  // started is looking, not owning: the only way out used to be Close, which
-  // kills the command the agent is in the middle of.
-  const lookAway = () => {
-    running.current += 1;
-    screen.current?.clear();
-    setOpen(null);
-    setStatus("");
-  };
-
   const stop = async () => {
     if (open === null) return;
-    running.current += 1;
+    running_.current += 1;
     try {
       await sessionStore.api("DELETE", `/api/terminals/${encodeURIComponent(open.terminal_id)}`);
     } catch {
@@ -249,64 +249,67 @@ export function TerminalPanel({ hidden }: { hidden: boolean }) {
     setStatus("");
   };
 
+  /// Close a terminal, or end what the agent runs in one.
+  const end = async (view: TerminalView) => {
+    if (view.terminal_id === open?.terminal_id) {
+      await stop();
+      return;
+    }
+    try {
+      await sessionStore.api("DELETE", `/api/terminals/${encodeURIComponent(view.terminal_id)}`);
+    } catch {
+      // A terminal that already ended is already closed.
+    }
+  };
+
   return (
-    <section className="terminal-panel" data-agent-panel="terminal" hidden={hidden} aria-label="Terminal">
-      <div className="terminal-actions">
-        {/* A terminal of their own, whatever else is on the screen. This was
-            disabled while one was running, which read as "start another" and
-            did nothing - and after watching the agent's, the only way to get
-            a prompt back was to close the agent's command. */}
-        <button id="terminal-open" className="primary" onClick={() => void start()}>
-          {open === null ? "Open a terminal" : "Start another"}
+    <section className="w-terminal" data-agent-panel="terminal" hidden={hidden} aria-label={`Terminals of ${agent.name}`}>
+      <div className="k-spread w-terminal-head">
+        <div className="w-terms" role="tablist" aria-label="Open terminals">
+          {others.map((one) => {
+            const shown = one.terminal_id === open?.terminal_id;
+            const theirs = one.opened_by === "agent";
+            return (
+              <span className={`w-term${shown ? " k-active" : ""}`} key={one.terminal_id}>
+                <button type="button" role="tab" aria-selected={shown} className="w-term-name" onClick={() => (shown ? undefined : watch(one))}>
+                  <Prompt size={15} />
+                  <span className="k-two">
+                    <span className="k-name k-mono">{running(one)}</span>
+                    <span className="k-caption">{[theirs ? `started by ${agent.name}` : "yours", one.exit ? "ended" : ""].filter(Boolean).join(" · ")}</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="k-btn k-quiet"
+                  title={theirs && !one.exit ? `End what ${agent.name} runs here` : "Close"}
+                  aria-label={theirs && !one.exit ? `End what ${agent.name} runs in ${running(one)}` : `Close ${running(one)}`}
+                  onClick={() => void end(one)}
+                >
+                  <Cross size={13} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+        <button type="button" className="k-btn k-primary" onClick={() => void start()}>
+          <Plus size={15} />
+          <span>New terminal</span>
         </button>
-        {open?.opened_by === "agent" ? (
-          <button id="terminal-detach" onClick={() => lookAway()}>
-            Stop watching
-          </button>
-        ) : null}
-        <button id="terminal-close" disabled={open === null} onClick={() => void stop()}>
-          {open?.opened_by === "agent" ? "End the agent's command" : "Close"}
-        </button>
-        <span id="terminal-id" className="k-caption k-muted">
-          {open?.terminal_id ?? ""}
-        </span>
-        <span id="terminal-status" className="k-caption">
-          {status}
-        </span>
       </div>
-      {others.length > 0 && (
-        <ul className="terminal-list" aria-label="Open terminals">
-          {others.map((one) => (
-            <li
-              key={one.terminal_id}
-              data-terminal-id={one.terminal_id}
-              data-opened-by={one.opened_by}
-              aria-current={one.terminal_id === open?.terminal_id}
-            >
-              <button
-                className="terminal-watch"
-                disabled={one.terminal_id === open?.terminal_id}
-                onClick={() => watch(one)}
-              >
-                Watch
-              </button>
-              <span className="terminal-what">{describe(one)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="k-caption k-muted">
-        This runs in the agent's environment: its working directory, its home, and the keys you
-        gave the profile. Sign an agent in here and it stays signed in.
-      </p>
+      <div className="k-caption w-terminal-says" role="status">
+        {status ||
+          (inAContainer
+            ? `On this machine, beside ${agent.name}'s container: in its folder and with its home.`
+            : `On this machine, in ${agent.name}'s folder, with its keys and its sign-in.`)}
+      </div>
       {open === null ? (
-        // An empty black rectangle says nothing about what it is for. The
-        // screen stays mounted (xterm owns it), so the line sits above it.
-        <p id="terminal-none" className="k-caption k-muted">
-          Nothing open here yet. Open a terminal, or watch one your agent started.
-        </p>
+        // The screen stays mounted, because xterm owns it; what it is for is
+        // said over it while nothing is on it.
+        <div className="k-caption w-terminal-none">
+          {others.length === 0 ? "Nothing is open here. A new terminal is a shell of yours where the agent lives." : "Choose a terminal to see what it says."}
+        </div>
       ) : null}
-      <div id="terminal-screen" className="terminal-screen" ref={host} />
+      <div className="w-terminal-screen" ref={host} hidden={open === null} />
     </section>
   );
 }

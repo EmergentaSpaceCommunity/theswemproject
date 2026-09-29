@@ -20,6 +20,11 @@ An engine that is not there is installed from the first step, by the plan the pa
 dialog of its own. Every walk of the gate that makes an agent takes the first two steps; the
 four were done by hand with a real engine.
 
+An agent's Terminal lists what is open where it lives, each by what runs in it and who started
+it; one is on the screen, read from its beginning; a person opens their own, watches what the
+agent runs without ending it, and closes theirs. Walk:
+`product_front_door::a_person_watches_their_agent_run_a_command`.
+
 ## GJ-02 — Set up an agent: model, role, skills, keys, servers
 
 A person chooses in an agent's Settings the provider and the model it answers from, writes what

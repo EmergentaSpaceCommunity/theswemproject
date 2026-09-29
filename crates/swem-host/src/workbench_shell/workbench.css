@@ -106,6 +106,21 @@ html, body, #workbench-root { height: 100%; }
 /* A link that is a button reads as a button. */
 a.k-btn { color: inherit; text-decoration: none; }
 
+/* An agent's terminals: what is open across the top, one on the screen. */
+.w-terminal { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.w-terminal[hidden] { display: none; }
+.w-terminal-head { flex: none; gap: 12px; padding: 10px 16px; border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-terms { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.w-term { display: inline-flex; align-items: center; gap: 2px; max-width: 320px; padding: 2px 2px 2px 0;
+  border: var(--border-width-regular) solid var(--color-border-secondary); border-radius: var(--border-radius-md); }
+.w-term.k-active { border-color: var(--color-ring-info); background: var(--color-background-secondary); }
+.w-term-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px 4px 10px; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.w-terminal-says { flex: none; padding: 8px 16px 0; }
+.w-terminal-none { padding: 16px; }
+.w-terminal-screen { flex: 1 1 auto; min-height: 0; margin: 10px 16px 16px; overflow: hidden; }
+.w-terminal-screen[hidden] { display: none; }
+
 /* An agent's files: the tree, and beside it what is chosen in it. */
 .w-files { flex: 1 1 auto; min-height: 0; display: flex; }
 .w-files[hidden] { display: none; }

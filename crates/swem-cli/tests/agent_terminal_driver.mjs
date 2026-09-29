@@ -19,7 +19,7 @@ if (!url || !marker) {
 const b = await launchBrowser({browser, url, label: "agent-terminal"});
 
 const screenText = async () =>
-  b.evaluate(`[...document.querySelectorAll("#terminal-screen .xterm-rows div")].map((row) => row.textContent).join("\\n")`);
+  b.evaluate(`[...document.querySelectorAll(".w-terminal-screen .xterm-rows div")].map((row) => row.textContent).join("\\n")`);
 
 step("the product opens");
 const profile = await b.makeAgent("hands");
@@ -67,36 +67,34 @@ if (!kept.some((text) => text.includes("running "))) {
 }
 await b.openAgent(profile, "terminal");
 await b.waitFor("the terminal panel", async () => b.exists('[data-agent-panel="terminal"]:not([hidden])'));
-await b.waitFor("the agent's terminal is listed", async () =>
-  b.exists('.terminal-list li[data-opened-by="agent"]'), 300);
-const said = await b.evaluate(
-  `document.querySelector('.terminal-list li[data-opened-by="agent"] .terminal-what')?.textContent ?? ""`);
-if (!said.startsWith("Your agent") || !said.includes(`${marker}-watched`)) {
-  cleanup(1, `the panel does not say whose terminal it is or what it runs: ${JSON.stringify(said)}`);
+// What the agent started is among the terminals, by what runs in it and
+// who started it.
+const theirs = () => b.evaluate(`[...document.querySelectorAll('[data-agent-panel="terminal"] [role="tab"]')]
+  .filter((one) => one.innerText.includes("started by")).map((one) => one.innerText.replace(/\\n+/g, " | ")).join("\\n")`);
+await b.waitFor("the agent's terminal is listed", async () => (await theirs()).length > 0, 300);
+const said = await theirs();
+if (!said.includes(`${marker}-watched`) || !said.includes(`started by ${profile}`)) {
+  cleanup(1, `the page does not say whose terminal it is or what it runs: ${JSON.stringify(said)}`);
 }
-step(`the panel lists it: ${said}`);
+step(`the page lists it: ${said}`);
 
-await b.click('.terminal-list li[data-opened-by="agent"] .terminal-watch');
+if (!(await b.pressText('[data-agent-panel="terminal"] [role="tab"]', `${marker}-watched`))) cleanup(1, "the agent's terminal cannot be chosen");
 await b.waitFor("what the agent's command said", async () =>
   (await screenText()).includes(`${marker}-watched`), 200);
 step("the person watched their agent's command");
 
-const terminalId = await b.evaluate(
-  `document.querySelector('.terminal-list li[data-opened-by="agent"]')?.getAttribute("data-terminal-id") ?? ""`);
+const terminalId = ((await b.ask("/api/terminals")).body?.terminals ?? []).find((one) => one.opened_by === "agent")?.terminal_id ?? "";
 
-// Watching is looking, not owning: a person can step away from their agent's
-// command, and open one of their own, without ending what the agent is doing.
-await b.click("#terminal-detach");
-await b.waitFor("the panel lets go", async () => !(await b.exists("#terminal-detach")), 100);
-const canOpen = await b.evaluate(
-  `document.getElementById("terminal-open")?.disabled === false`);
-if (!canOpen) cleanup(1, "a person watching their agent cannot open a terminal of their own");
-const still = await b.evaluate(
-  `document.querySelectorAll('.terminal-list li[data-opened-by="agent"]').length`);
+// Watching is looking, not owning: a person opens a terminal of their own
+// without ending what the agent is doing.
+if (!(await b.pressText('[data-agent-panel="terminal"] button', "New terminal"))) cleanup(1, "a person watching their agent cannot open a terminal of their own");
+await b.waitFor("a terminal of their own", async () =>
+  b.evaluate(`[...document.querySelectorAll('[data-agent-panel="terminal"] [role="tab"]')].some((one) => one.innerText.includes("yours") && one.getAttribute("aria-selected") === "true")`), 200);
+const still = (await theirs()).split("\n").filter(Boolean).length;
 if (still !== 1) {
   cleanup(1, `watching cost the agent its terminal: ${still} left`);
 }
-step("the person stepped away, the agent's command kept running, and their own terminal is theirs to open");
+step("the person opened their own terminal, and the agent's command kept running");
 
 
 // --- The other mode: every command is put to the person --------------------
