@@ -38,6 +38,7 @@ test("a size reads as a person says it", () => {
   assert.equal(sized(12), "12 B");
   assert.equal(sized(2048), "2 KB");
   assert.equal(sized(3 * 1024 * 1024), "3.0 MB");
+  assert.equal(sized(7.5 * 1024 * 1024 * 1024), "7.5 GB");
 });
 
 test("when something was changed reads as a person says it", () => {

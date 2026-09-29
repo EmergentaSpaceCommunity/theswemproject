@@ -12,6 +12,14 @@ starts a session, says something and gets the agent's own answer; opens a termin
 environment; declares a server of their own and attaches it; adds a second profile of the same
 agent. Walk: `product_front_door::a_person_with_nothing_installs_an_agent_and_can_start_it`.
 
+An agent is made in four steps: what it is built on and who it is - a name, a handle, a colour,
+what it is for; where it works, its model and who keeps its time, each chosen from what was set
+up and looked at, a host that cannot take an agent saying why; how it signs in and what it will
+have where it lives, looked at from inside; what it may do. It can be made after the second.
+An engine that is not there is installed from the first step, by the plan the page shows in a
+dialog of its own. Every walk of the gate that makes an agent takes the first two steps; the
+four were done by hand with a real engine.
+
 ## GJ-02 — Set up an agent: model, role, skills, keys, servers
 
 A person chooses in an agent's Settings the provider and the model it answers from, writes what
@@ -28,6 +36,10 @@ again when they like, and see where on it an agent may live; a place that cannot
 today says why and is not offered in an agent's settings. Walk:
 `product_front_door::a_person_gives_an_agent_a_role_and_a_model` (the key); Hosts by hand and by
 `hosts::where_an_agent_may_live_is_offered_from_what_was_found`.
+
+Providers has Engines as well - the coding agents this computer has, installed from there, with
+the agents that stand on each - and Channels, the doors into chats. "Add a host" says which
+kinds there are and that none other than this machine is reached yet.
 
 Where Podman is there and has no machine, Set up beside it says what would be done - the machine
 and its size, what is downloaded, the two commands - and what this computer cannot give; agreed

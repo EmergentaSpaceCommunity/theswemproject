@@ -64,6 +64,10 @@ A library plus test fixtures. It owns:
   for an agent - is kept under `<data root>/time`, not in a profile. A Workbench that found
   the lock taken asks for it again as time passes. The job holds the command, where the data
   is and the search path; never a key.
+- **The look inside** (`workbench_shell/looks.rs`). What an agent has where it lives: its engine
+  started as the agent has it, greeted and asked for a session (`try_the_engine`), the machine
+  as the runner finds it from inside, and whether a container can be started there. Kept under
+  `<data root>/hosts/looks`, one file per agent, with its time.
 - **An agent's files** (`workbench_shell/files.rs`). The folder an agent works in as a tree, a
   file opened, saved while it is what was opened, made, renamed and removed: each is a request
   to the runner. What a person handed over and what the agent handed back (`workbench_files.rs`)

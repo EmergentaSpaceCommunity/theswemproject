@@ -930,6 +930,15 @@ async fn verify_transport(
         .map_err(|_| SupplyError::Poisoned)?
         .take()
         .ok_or(SupplyError::MissingInitializeResponse)?;
+    handshake_of(&response, expected_agent_name)
+}
+
+/// What an engine said of itself when it was greeted, as the product keeps
+/// it.
+fn handshake_of(
+    response: &agent_client_protocol::schema::v1::InitializeResponse,
+    expected_agent_name: Option<String>,
+) -> Result<AcpHandshake, SupplyError> {
     let agent_name = response.agent_info.as_ref().map(|info| info.name.clone());
     let agent_version = response
         .agent_info
@@ -969,6 +978,102 @@ async fn verify_transport(
         expected_agent_name,
         identity_matched,
         readiness,
+    })
+}
+
+/// An engine that was started, greeted and asked for a session, to see
+/// whether it would work: how long each took, and whether it is signed in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EngineTried {
+    pub handshake: AcpHandshake,
+    /// From starting it to its answer to the greeting.
+    pub started_in_ms: u64,
+    /// Whether it opened a session: it did, it asked to be signed in
+    /// first, or it failed otherwise and nothing is told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_in: Option<bool>,
+    /// How long its answer about the session took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_in_ms: Option<u64>,
+    /// What it said when no session opened.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub said: String,
+}
+
+/// Start an engine as an agent would have it - the program, what it is
+/// given, its variables - greet it and ask it for a session in `workspace`.
+/// The session is not used; the engine is stopped afterwards.
+///
+/// # Errors
+///
+/// Returns [`SupplyError`] when the engine cannot be started, does not
+/// answer the greeting, or the timeout expires.
+pub async fn try_the_engine(
+    launch: &LaunchCommand,
+    agent_executable: &Path,
+    environment: std::collections::BTreeMap<String, String>,
+    workspace: &Path,
+    timeout: Duration,
+    expected_agent_name: Option<String>,
+) -> Result<EngineTried, SupplyError> {
+    use agent_client_protocol::schema::v1::{ErrorCode, NewSessionRequest};
+    if launch.integration == IntegrationKind::NativeAdapterRequired {
+        return Err(SupplyError::NotAcpLaunchable(launch.executable.clone()));
+    }
+    let transport = AcpAgent::new(
+        AcpAgentConfig::new(agent_executable)
+            .args(launch.args.clone())
+            .envs(environment),
+    );
+    let found = Arc::new(Mutex::new(None));
+    let writer = Arc::clone(&found);
+    let workspace = workspace.to_owned();
+    let began = std::time::Instant::now();
+    let millis =
+        |since: std::time::Instant| u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let connection =
+        Client
+            .builder()
+            .name("swem-host")
+            .connect_with(transport, async move |connection| {
+                let request = InitializeRequest::new(ProtocolVersion::V1)
+                    .client_info(Implementation::new("swem-host", env!("CARGO_PKG_VERSION")));
+                let greeted = connection.send_request(request).block_task().await?;
+                let started_in_ms = millis(began);
+                let asked = std::time::Instant::now();
+                let session = connection
+                    .send_request(NewSessionRequest::new(workspace))
+                    .block_task()
+                    .await;
+                let answered_in_ms = millis(asked);
+                let (signed_in, said) = match session {
+                    Ok(_) => (Some(true), String::new()),
+                    Err(error) if error.code == ErrorCode::AuthRequired => {
+                        (Some(false), error.message)
+                    }
+                    Err(error) => (None, error.message),
+                };
+                *writer
+                    .lock()
+                    .map_err(|_| agent_client_protocol::Error::internal_error())? =
+                    Some((greeted, started_in_ms, signed_in, answered_in_ms, said));
+                Ok(())
+            });
+    tokio::time::timeout(timeout, connection)
+        .await
+        .map_err(|_| SupplyError::HandshakeTimeout)?
+        .map_err(|error| SupplyError::Protocol(error.to_string()))?;
+    let (greeted, started_in_ms, signed_in, answered_in_ms, said) = found
+        .lock()
+        .map_err(|_| SupplyError::Poisoned)?
+        .take()
+        .ok_or(SupplyError::MissingInitializeResponse)?;
+    Ok(EngineTried {
+        handshake: handshake_of(&greeted, expected_agent_name)?,
+        started_in_ms,
+        signed_in,
+        answered_in_ms: Some(answered_in_ms),
+        said,
     })
 }
 

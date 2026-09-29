@@ -7,17 +7,60 @@ import { useForm } from "react-hook-form";
 import { useStore } from "zustand";
 
 import { ContainersSetUp } from "./ContainersSetUp.tsx";
-import { Box, Brain, Clock, Laptop, Plus } from "./icons.tsx";
+import { Channels } from "./Channels.tsx";
+import { Engines } from "./Engines.tsx";
+import { Box, Brain, ChatSign, Clock, Laptop, Plus, Wrench } from "./icons.tsx";
 import { go, type ProvidersTab } from "./place.ts";
 import { gigabytes, providers, providing, when, type EngineLook, type HostStanding, type ModelProviderStanding } from "./providers.ts";
 import { Standing, UsedBy } from "./standing.tsx";
 import { Timekeepers } from "./Timekeepers.tsx";
 
 const TABS: { tab: ProvidersTab; label: string; sign: typeof Brain }[] = [
+  { tab: "engines", label: "Engines", sign: Wrench },
   { tab: "models", label: "Models", sign: Brain },
   { tab: "hosts", label: "Hosts", sign: Laptop },
   { tab: "time", label: "Time", sign: Clock },
+  { tab: "channels", label: "Channels", sign: ChatSign },
 ];
+
+/// The kinds of host there are, and which of them can be added today.
+function AddHost({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Dialog.Root open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="w-scrim" />
+        <Dialog.Popup className="k-dialog w-dialog">
+          <Dialog.Title className="k-heading">Add a host</Dialog.Title>
+          <Dialog.Description className="k-caption">A host is a machine an agent lives in. Two are built in and are here already: this machine, and containers on it.</Dialog.Description>
+          <div className="k-row w-nowrap w-top">
+            <Laptop size={18} />
+            <span className="w-col w-close k-grow">
+              <span className="k-name">A machine over SSH</span>
+              <span className="k-caption">A machine of yours. SWEM looks at it first, then puts its runner and the agent's engine there.</span>
+            </span>
+            <Standing tone="none">Not yet</Standing>
+          </div>
+          <div className="k-row w-nowrap w-top">
+            <Box size={18} />
+            <span className="w-col w-close k-grow">
+              <span className="k-name">Sprites</span>
+              <span className="k-caption">A cloud machine that sleeps when idle and is woken by a message.</span>
+            </span>
+            <Standing tone="none">Not yet</Standing>
+          </div>
+          <div className="k-notice">
+            SWEM does not reach a machine other than this one yet. An agent here lives on this machine, or in a container on it once containers are set up under Hosts.
+          </div>
+          <div className="k-inline w-end">
+            <Dialog.Close className="k-btn" type="button">
+              Close
+            </Dialog.Close>
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
 
 /// Giving a key: typed once, sent, and gone from the page.
 function GiveKey({ provider, onClose }: { provider: ModelProviderStanding | null; onClose: () => void }) {
@@ -413,12 +456,19 @@ function Hosts() {
 
 export function Providers({ tab }: { tab: ProvidersTab }) {
   const problem = useStore(providers, (state) => state.problem);
+  const [adding, setAdding] = useState(false);
   return (
     <main className="w-main">
+      <AddHost open={adding} onClose={() => setAdding(false)} />
       <header className="w-head">
-        <div className="w-col w-close">
-          <h1 className="w-h1">Providers</h1>
-          <span className="k-caption">What agents are put together from. Set up once, with its key, then used by any number of agents.</span>
+        <div className="k-spread">
+          <div className="w-col w-close">
+            <h1 className="w-h1">Providers</h1>
+            <span className="k-caption">What agents are put together from. Set up once, with its key, then used by any number of agents.</span>
+          </div>
+          <button type="button" className="k-btn" onClick={() => setAdding(true)}>
+            Add a host
+          </button>
         </div>
         <nav className="k-tabs" aria-label="Providers">
           {TABS.map((one) => (
@@ -437,7 +487,7 @@ export function Providers({ tab }: { tab: ProvidersTab }) {
       </header>
       <div className="w-page">
         {problem ? <div className="k-notice k-danger">{problem}</div> : null}
-        {tab === "hosts" ? <Hosts /> : tab === "time" ? <Timekeepers /> : <Models />}
+        {tab === "engines" ? <Engines /> : tab === "hosts" ? <Hosts /> : tab === "time" ? <Timekeepers /> : tab === "channels" ? <Channels /> : <Models />}
       </div>
     </main>
   );

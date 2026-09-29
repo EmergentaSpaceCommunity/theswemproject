@@ -54,6 +54,13 @@ pub struct ProbeAnswer {
     /// written; nothing when none was asked about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_writable: Option<bool>,
+    /// Whether what is in that folder is the agent's own here: what it
+    /// writes there belongs to whoever owns the folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_owned: Option<bool>,
+    /// What is free where that folder is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_free_bytes: Option<u64>,
     pub programs: Vec<ProgramFound>,
 }
 
@@ -100,19 +107,56 @@ fn libc() -> Option<String> {
     Some(if musl { "musl" } else { "glibc" }.to_owned())
 }
 
-fn writable(folder: &Path) -> bool {
+/// Whether a folder can be written, and whether what is written there is
+/// owned by who owns the folder.
+fn written_in(folder: &Path) -> (bool, Option<bool>) {
     if !folder.is_dir() {
-        return false;
+        return (false, None);
     }
     let trial = folder.join(format!(".swem-look-{}", std::process::id()));
     let could = std::fs::write(&trial, b"").is_ok();
+    let owned = could
+        .then(|| owner_of(&trial))
+        .flatten()
+        .and_then(|mine| owner_of(folder).map(|the_folders| mine == the_folders));
     let _ = std::fs::remove_file(&trial);
-    could
+    (could, owned)
+}
+
+#[cfg(unix)]
+fn owner_of(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|found| found.uid())
+}
+
+#[cfg(not(unix))]
+fn owner_of(_path: &Path) -> Option<u32> {
+    None
+}
+
+/// What is free where a folder is, as the system's own `df` says it.
+fn free_at(folder: &Path) -> Option<u64> {
+    let df = found("df")?;
+    let output = Command::new(df)
+        .arg("-Pk")
+        .arg(folder)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .nth(1)?
+        .split_whitespace()
+        .nth(3)?
+        .parse::<u64>()
+        .ok()
+        .map(|kilobytes| kilobytes.saturating_mul(1024))
 }
 
 /// Look at the machine.
 #[must_use]
 pub fn look(request: &ProbeRequest) -> ProbeAnswer {
+    let workspace = request.workspace.as_deref().map(written_in);
     ProbeAnswer {
         schema: RUNNER_PROBE_SCHEMA.into(),
         runner: env!("CARGO_PKG_VERSION").into(),
@@ -124,7 +168,9 @@ pub fn look(request: &ProbeRequest) -> ProbeAnswer {
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from),
         processors: std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
-        workspace_writable: request.workspace.as_deref().map(writable),
+        workspace_writable: workspace.map(|(writable, _)| writable),
+        workspace_owned: workspace.and_then(|(_, owned)| owned),
+        workspace_free_bytes: request.workspace.as_deref().and_then(free_at),
         programs: request
             .programs
             .iter()

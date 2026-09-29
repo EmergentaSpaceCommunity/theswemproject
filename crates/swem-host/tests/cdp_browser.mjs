@@ -581,7 +581,12 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
     if (!called) cleanup(1, `this computer offers no engine ${engine}: ${JSON.stringify(offered)}`);
     await b.fill(".w-form input.k-field", name);
     if (!(await b.pressText(".w-form label", called))) cleanup(1, `the form does not offer ${called}`);
-    if (!(await b.pressText(".w-form button", "Make the agent"))) cleanup(1, "the form has no way to make the agent");
+    // Four steps; a person in a hurry leaves after the second.
+    const enabled = (says) => b.evaluate(`[...document.querySelectorAll(".w-form button")].some((one) => one.innerText.trim() === ${JSON.stringify(says)} && !one.disabled)`);
+    await b.waitFor("the first step is done", async () => enabled("Continue"), 100);
+    if (!(await b.pressText(".w-form button", "Continue"))) cleanup(1, "the first step has no way on");
+    await b.waitFor("the second step", async () => enabled("Skip the rest and create"), 100);
+    if (!(await b.pressText(".w-form button", "Skip the rest and create"))) cleanup(1, "the second step has no way to make the agent");
     await b.waitFor("the agent is made", async () => (await b.agentOf(name)) !== null, 200);
     await b.waitFor("the page goes to it", async () => b.evaluate(`location.hash.startsWith("#/agents/p_")`), 100);
     return name;

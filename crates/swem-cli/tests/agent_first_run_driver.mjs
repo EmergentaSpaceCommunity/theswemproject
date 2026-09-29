@@ -48,30 +48,35 @@ const row = JSON.parse(await b.evaluate(`(() => {
 if (!row || !/Install/.test(row.says)) cleanup(1, `the form offers no way to install ${before.name}: ${JSON.stringify(row)}`);
 await b.clickAt(row.x, row.y);
 
-// The consent question is a native dialog. cdp_browser answers it and keeps
-// what it said, so the walk can check the person was told what is fetched.
-await b.waitFor("the consent question", async () => b.dialogs.length > 0);
-const question = b.dialogs[0].message;
+// The consent question is a dialog of the page, and says what is fetched and
+// what described it before anything is.
+await b.waitFor("the consent question", async () => b.exists('[role="dialog"]'), 100);
+const question = await b.evaluate(`document.querySelector('[role="dialog"]')?.innerText ?? ""`);
 if (!/Install/.test(question) || !/registry|described by/i.test(question)) {
   cleanup(1, `the consent question does not say what is being installed: ${JSON.stringify(question)}`);
 }
+if (!(await b.pressText('[role="dialog"] button', "Install"))) cleanup(1, "the consent question has no way to agree");
 step("consent given to a named distribution");
 
-// The install fetches and unpacks, then the product makes the agent itself.
-// Either it ends with an agent or it says why not; the walk waits for
-// whichever comes, so a refusal is read rather than timed out on.
+// The install fetches and unpacks. Either the engine is this computer's
+// afterwards or the page says why not; the walk waits for whichever comes,
+// so a refusal is read rather than timed out on.
 let refused = "";
 await b.waitFor(
   "the install to finish",
   async () => {
-    if ((await b.agentOf(agentId)) !== null) return true;
+    if ((await offered())?.available) return true;
     refused = await b.evaluate(`document.querySelector(".w-form .k-notice")?.textContent ?? ""`);
     return refused.length > 0 && !/Reading|Installing|Creating/.test(refused);
   },
   300,
   1000,
 );
-if ((await b.agentOf(agentId)) === null) cleanup(1, `the product refused after installing: ${refused}`);
+if (!(await offered())?.available) cleanup(1, `the product refused after installing: ${refused}`);
+step("the engine is this computer's");
+
+// And an agent is made of it, in the steps a person takes.
+await b.makeAgent(agentId);
 step("an agent exists");
 
 // Having got an agent, the person decides how it asks for permission. The

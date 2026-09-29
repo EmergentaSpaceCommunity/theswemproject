@@ -24,7 +24,7 @@ The model is `product/agents.md`. Each item is one ExecPlan.
 |---|---|---|
 | B1 | run a real engine in a container on this machine, with its key, terminal and files inside | **part one done** (2026-09-28, ExecPlan 010): the runner and an agent's files as a tree with an editor. The container waits for Podman to be set up on this computer |
 | B2 | limit where a sealed agent connects and allow a refused address from the chat | |
-| B3 | make a new agent in four steps from providers that were looked at | |
+| B3 | make a new agent in four steps from providers that were looked at | **done for an agent on this machine** (2026-09-28, ExecPlan 011); the look inside a container and its network wait for B1 and B2 |
 | B4 | add a machine over SSH, install an engine there, chat, open a terminal, read files | |
 | B5 | give a remote agent a server that lives with the Workbench | |
 | B6 | put an agent on a Sprite that sleeps and is woken by a message or a schedule | |

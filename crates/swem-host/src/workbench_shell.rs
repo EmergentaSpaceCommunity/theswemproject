@@ -66,6 +66,9 @@ pub use chats::{ChatPage, SaidInChat, Saying, StartChatBody};
 #[path = "workbench_shell/files.rs"]
 mod files;
 pub use files::{ChangeTreeBody, FileOpened, SaveFileBody, SavedOrNot};
+#[path = "workbench_shell/looks.rs"]
+mod looks;
+pub use looks::{EngineLooked, LOOK_INSIDE_SCHEMA, LookInside};
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
@@ -4364,6 +4367,19 @@ async fn route_shell(
                 Err(error) => error_response(&error),
             }
         }
+        // What an agent has where it lives: as it was found last, and
+        // looked at now.
+        (&Method::GET, ["api", "profiles", profile_id, "look"]) => json_result(
+            state
+                .look_inside_kept(profile_id)
+                .map(|look| json!({ "look": look })),
+        ),
+        (&Method::POST, ["api", "profiles", profile_id, "look"]) => json_result(
+            state
+                .look_inside(profile_id)
+                .await
+                .map(|look| json!({ "look": look })),
+        ),
         (&Method::GET, ["api", "profiles", profile_id, "handshake"]) => {
             json_result(state.profile_handshake(profile_id).await)
         }

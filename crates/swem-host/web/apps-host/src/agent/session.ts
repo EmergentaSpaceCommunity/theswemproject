@@ -690,7 +690,7 @@ export class SessionStore {
 
   /// Install from the exact plan the person is shown. `confirm` is the
   /// consent step, injected so a test can answer it.
-  async installAgent(agentId: string, confirm: (question: string) => boolean): Promise<void> {
+  async installAgent(agentId: string, confirm: (question: string) => boolean | Promise<boolean>, thenMake = true): Promise<void> {
     this.set({ onboardingStatus: "Reading the install plan…" });
     let plan: {
       plan_id: string;
@@ -713,11 +713,11 @@ export class SessionStore {
     const distribution = (plan.distribution ?? {}) as {kind?: string; package?: string; archive?: string};
     const what = distribution.package ?? distribution.archive ?? distribution.kind ?? "distribution";
     if (
-      !confirm(
+      !(await confirm(
         `Install ${plan.registry_id} ${plan.version}?\n\n` +
           `It fetches ${what}, described by ${plan.registry_index ?? "the agent registry"}, ` +
           "into this product's agent home. Nothing else on this machine changes.",
-      )
+      ))
     ) {
       this.set({ onboardingStatus: "" });
       return;
@@ -725,9 +725,15 @@ export class SessionStore {
     this.set({ onboardingStatus: `Installing ${plan.registry_id}…` });
     try {
       await this.api("POST", "/api/agents/install", { agent_id: agentId, plan_id: plan.plan_id });
-      this.set({ onboardingStatus: "Installed. Creating local profile…" });
       await this.loadOnboarding();
-      await this.useAgent(agentId);
+      // An agent is made of what was installed at once, or by whoever
+      // asked for it to be installed, in their own steps.
+      if (thenMake) {
+        this.set({ onboardingStatus: "Installed. Creating local profile…" });
+        await this.useAgent(agentId);
+      } else {
+        this.set({ onboardingStatus: "" });
+      }
     } catch (error) {
       this.set({ onboardingStatus: (error as Error).message });
     }

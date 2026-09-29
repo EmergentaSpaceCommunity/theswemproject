@@ -81,6 +81,24 @@ html, body, #workbench-root { height: 100%; }
 }
 
 .w-form { width: min(560px, calc(100% - 48px)); margin: 48px auto; display: flex; flex-direction: column; gap: 18px; }
+/* A new agent: its steps across the top, each step's parts under them. */
+.w-form.w-wizard { width: min(820px, calc(100% - 48px)); margin: 32px auto 48px; }
+.w-steps-across { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 0; list-style: none; }
+.w-step-across { display: inline-flex; align-items: center; gap: 8px; color: var(--color-text-tertiary); }
+.w-step-across.k-active { color: var(--color-text-primary); font-weight: var(--font-weight-semibold); }
+.w-step-across.w-done { color: var(--color-text-secondary); }
+.w-step-number { width: 22px; height: 22px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--border-radius-full); border: var(--border-width-regular) solid var(--color-border-primary);
+  font-size: var(--font-text-xs-size); }
+.w-step-across.k-active .w-step-number { border-color: var(--color-ring-info); color: var(--color-text-info); }
+.w-step-across.w-done .w-step-number { border-color: var(--color-border-success); color: var(--color-text-success); }
+.w-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 900px) {
+  .w-cards { grid-template-columns: minmax(0, 1fr); }
+}
+.w-swatch { cursor: pointer; border: var(--border-width-regular) solid transparent; }
+.w-swatch.k-active { border-color: var(--color-ring-info); }
+.w-end-text { text-align: right; }
 
 .w-composer { position: relative; }
 .w-commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; max-height: 280px; overflow: auto; }

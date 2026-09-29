@@ -188,6 +188,8 @@ fn the_machine_is_looked_at_from_inside() {
     let found: ProbeAnswer = serde_json::from_slice(&output.stdout).expect("an answer");
     assert_eq!(found.system, std::env::consts::OS);
     assert_eq!(found.workspace_writable, Some(true));
+    assert_eq!(found.workspace_owned, Some(true));
+    assert!(found.workspace_free_bytes.is_some_and(|free| free > 0));
     assert!(found.user.is_some());
     assert!(found.processors >= 1);
     assert!(found.programs[0].path.is_some());
