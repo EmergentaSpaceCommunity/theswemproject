@@ -178,6 +178,80 @@ pub fn start_product_against(data_root: &Path, registry_index: Option<&str>) -> 
     panic!("the product never printed its Workbench URL");
 }
 
+/// Two ports beside each other that nothing listens on: the Workbench's and
+/// the one Apps are drawn at.
+fn two_ports_beside_each_other() -> u16 {
+    for _ in 0..50 {
+        let Ok(first) = std::net::TcpListener::bind(("127.0.0.1", 0)) else {
+            continue;
+        };
+        let Ok(port) = first.local_addr().map(|address| address.port()) else {
+            continue;
+        };
+        if port < u16::MAX && std::net::TcpListener::bind(("127.0.0.1", port + 1)).is_ok() {
+            return port;
+        }
+    }
+    panic!("this machine gave no two ports beside each other");
+}
+
+/// The product, started at an address: whoever comes signs in. The address
+/// is `localhost`, which a browser takes for a safe place, so the passkey
+/// ceremony is the one a server's is.
+///
+/// Returns the running product, its address, and the word of a first start
+/// it printed.
+pub fn start_product_at_an_address(data_root: &Path) -> (Product, String, String) {
+    install_the_distributions_packages();
+    let port = two_ports_beside_each_other();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_swem"))
+        .args([
+            "workbench",
+            "serve",
+            "--no-open",
+            "--at",
+            &format!("http://localhost:{port}"),
+        ])
+        .env("XDG_DATA_HOME", data_root)
+        .env("LOCALAPPDATA", data_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start the swem binary");
+    let stdout = child.stdout.take().expect("product stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut address = None;
+    while Instant::now() < deadline {
+        let Some(Ok(line)) = lines.next() else { break };
+        println!("product: {line}");
+        if let Some(url) = line.strip_prefix("SWEM Workbench: ") {
+            address = Some(url.trim().to_owned());
+        }
+        // The word stands on a line of its own: four groups of four.
+        let word = line.trim();
+        if let Some(address) = &address
+            && word.len() == 19
+            && word.split('-').count() == 4
+            && word
+                .chars()
+                .all(|letter| letter == '-' || letter.is_ascii_alphanumeric())
+        {
+            let address = address.clone();
+            let word = word.to_owned();
+            std::thread::spawn(move || {
+                for line in lines.map_while(Result::ok) {
+                    println!("product: {line}");
+                }
+            });
+            return (Product { child }, address, word);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("the product never printed its address and the word of a first start");
+}
+
 /// How long a gate's leavings are kept before the next run sweeps them: long
 /// enough that a run under way, or one whose failure someone is still looking
 /// at, is never touched.

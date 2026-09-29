@@ -13,6 +13,7 @@ import { NewChat } from "./NewChat.tsx";
 import { go, usePlace } from "./place.ts";
 import { Providers } from "./Providers.tsx";
 import { Rail, useSpaces } from "./Rail.tsx";
+import { Settings } from "./Settings.tsx";
 import { follow, world } from "./world.ts";
 
 function Home() {
@@ -63,6 +64,8 @@ export function Workbench() {
       main = <NewAgent />;
     } else if (place.at === "providers") {
       main = <Providers tab={place.tab} />;
+    } else if (place.at === "settings") {
+      main = <Settings tab={place.tab} />;
     } else if (place.at === "store") {
       main = (
         <main className="w-main">

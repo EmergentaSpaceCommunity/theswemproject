@@ -1781,6 +1781,122 @@ fn a_page_on_another_site_cannot_work_the_workbench() {
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
+/// A person puts the Workbench at an address and comes to it with a
+/// passkey, and nobody else comes in.
+///
+/// The first start prints a word. With it a person registers the device
+/// they sit at and is shown codes to come back with; they make a token for
+/// a program, sign out, and sign in with the passkey. From a second browser,
+/// which holds nothing, they are refused, come back with a code and register
+/// that device. Everything behind the door is tried from outside, as a
+/// program would: with nothing, with the secret of a run, as another site's
+/// page, and with a token that may do one thing.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("door");
+    let (product, address, word) = start_product_at_an_address(&data_root);
+
+    // Before anybody came in: the page is there for anybody, nothing behind
+    // it is.
+    let (status, _) = knock(&format!("{address}/"), &[]);
+    assert_eq!(status, 200, "the door itself did not open");
+    for route in [
+        "api/profiles",
+        "api/stream",
+        "api/terminals",
+        "api/access/standing",
+    ] {
+        let (status, body) = knock(&format!("{address}/{route}"), &[]);
+        assert_eq!(
+            status, 401,
+            "{route} answered somebody who never came in: {body}"
+        );
+        assert!(
+            !body.contains("profile"),
+            "the refusal said what the route holds: {body}"
+        );
+    }
+    let (status, body) = knock(
+        &format!("{address}/api/profiles"),
+        &["-H", "X-Swem-Session: whatever-a-run-would-have-minted"],
+    );
+    assert_eq!(status, 401, "the secret of a run opened an address: {body}");
+    let (status, body) = knock(
+        &format!("{address}/api/access"),
+        &["-H", "Origin: https://not-the-workbench.example"],
+    );
+    assert_eq!(status, 403, "another site's page was answered: {body}");
+    let (status, body) = knock(
+        &format!("{address}/api/access/register/begin"),
+        &[
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "--data",
+            r#"{"word":"aaaa-bbbb-cccc-dddd","name":"A guess"}"#,
+        ],
+    );
+    assert_eq!(
+        status, 403,
+        "a word nobody was given began a ceremony: {body}"
+    );
+
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/door_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&address)
+        .arg(&word)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the door driver");
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("door OK"),
+        "a person did not come in with a passkey:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The token the person made may say that something is due and nothing
+    // else. It was shown once, on the page, and is what the driver read.
+    let token = walked
+        .lines()
+        .find_map(|line| line.strip_prefix("token: "))
+        .expect("the driver read the token the page showed")
+        .trim()
+        .to_owned();
+    let bearer = format!("Authorization: Bearer {token}");
+    for route in ["api/profiles", "api/access/standing", "api/terminals"] {
+        let (status, body) = knock(&format!("{address}/{route}"), &["-H", &bearer]);
+        assert_eq!(status, 403, "a token that may knock opened {route}: {body}");
+    }
+
+    // Nothing that opens is kept as it was said.
+    let access = find_directory(&data_root, "access").expect("the product kept who may come in");
+    let mut kept = Vec::new();
+    for entry in std::fs::read_dir(&access).expect("read it").flatten() {
+        kept.extend(std::fs::read(entry.path()).unwrap_or_default());
+    }
+    let kept = String::from_utf8_lossy(&kept);
+    for said in [&word, &token] {
+        assert!(
+            !kept.contains(said.as_str()),
+            "what opens the Workbench is kept as it was said"
+        );
+    }
+
+    product.stop();
+    let _ = std::fs::remove_dir_all(&data_root);
+}
+
 /// A person gives their own agent a role and a model, and the agent gets
 /// them. The role is a file in the agent's working directory - the only
 /// place every agent reads - and the fixture agent reads that file back when

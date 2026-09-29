@@ -78,10 +78,17 @@ sysinfo.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tokio-rustls.workspace = true
 url.workspace = true
+webauthn-rs.workspace = true
+x509-parser.workspace = true
 tar.workspace = true
 zip.workspace = true
 portable-pty.workspace = true
+
+[dev-dependencies]
+# A passkey in software, so the ceremony is proved without a browser.
+webauthn-authenticator-rs.workspace = true
 
 [lints]
 workspace = true

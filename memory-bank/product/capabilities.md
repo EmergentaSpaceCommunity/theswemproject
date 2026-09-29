@@ -23,7 +23,9 @@
 | A form or a link an agent asks for, answered in the chat | proven | `workbench_shell_apps_browser` |
 | A tool of a server that is a person's to call, asked and answered by forms in the panel of Apps | proven in the Cycle's repository | its walk of the composition App; this repository's fixture server asks nothing this way |
 | Embedding through a product builder | done | `swem_host::product`, `examples/embed.rs`, `tests/product.rs`; the product binary is the builder's first caller |
-| Client credentials for an embedder's own page | missing | roadmap C2 |
+| A Workbench served at an address: the first start by a word used once, a device registered with a passkey, codes to come back with, a second device by a word, a device taken away, tokens for programs that say what they may do, what was done and refused | proven on this machine, at `localhost` and at a name over TLS with a certificate made for the trial; not yet done on a server with a name of its own, nor with a phone | GJ-14; `tests/access.rs`, `product_front_door::a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey` |
+| A certificate got by the Workbench itself (ACME) | missing | ExecPlan 015, decision log |
+| A token for an embedder's own page on another origin | missing | roadmap S4; a token is made and checked, the answer names no other origin yet |
 | Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
 | A server's home App as a space, the same App when a person comes back to it | proven | `workbench_shell_spaces.rs`, GJ-08's walk; the host draws no space for a server |
 | What an App says a person is looking at, given to the agent | proven below the page | `chat_runtime`; `ui/update-model-context`, text and resource links; no browser walk of its own since the page was rebuilt |

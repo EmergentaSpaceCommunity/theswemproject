@@ -113,3 +113,21 @@ export const Box = (props: Sized) => (
   </Sign>
 );
 export const Again = (props: Sized) => <Sign {...props}><path d="M20 12a8 8 0 11-2.6-5.9M20 4v5h-5" /></Sign>;
+export const Lock = (props: Sized) => (
+  <Sign {...props}>
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 018 0v3" />
+  </Sign>
+);
+export const Phone = (props: Sized) => (
+  <Sign {...props}>
+    <rect x="7" y="3" width="10" height="18" rx="2" />
+    <path d="M11 18h2" />
+  </Sign>
+);
+export const Globe = (props: Sized) => (
+  <Sign {...props}>
+    <circle cx="12" cy="12" r="8" />
+    <path d="M4 12h16M12 4c2.5 2.5 2.5 13.5 0 16M12 4c-2.5 2.5-2.5 13.5 0 16" />
+  </Sign>
+);

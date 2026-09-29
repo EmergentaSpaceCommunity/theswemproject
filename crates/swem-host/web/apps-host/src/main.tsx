@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 
 import { Guard } from "./Guard.tsx";
+import { Door } from "./page/Door.tsx";
 import { Workbench } from "./page/Workbench.tsx";
 
 declare global {
@@ -18,7 +19,9 @@ flushSync(() =>
   createRoot(container).render(
     <StrictMode>
       <Guard what="The Workbench">
-        <Workbench />
+        <Door>
+          <Workbench />
+        </Door>
       </Guard>
     </StrictMode>,
   ),

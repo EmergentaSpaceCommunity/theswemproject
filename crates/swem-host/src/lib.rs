@@ -19,9 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+mod access;
 pub mod agent_setup;
 mod chat_ledger;
 mod chat_work;
+mod closed;
 mod distribution;
 mod editor_door;
 mod envelope;
@@ -46,6 +48,10 @@ mod workbench_files;
 mod workbench_observation;
 pub mod workbench_shell;
 
+pub use access::{
+    Access, AccessError, Begun, CODES_MADE, CameBy, CameIn, CodesLeft, Device, Happened, May,
+    Principal, Token,
+};
 pub use chat_ledger::*;
 pub use chat_work::*;
 pub use distribution::*;
@@ -90,14 +96,14 @@ pub use workbench_observation::ObservedAppCall;
 pub use workbench_shell::{
     ACP_REGISTRY_CACHE, AddIndexBody, AmendProfileBody, ArchiveDistribution, BinaryDistribution,
     BindModelContextBody, CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry, ChatPage,
-    DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, McpServerOrigin, McpServerView,
-    ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
+    DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, Listening, McpServerOrigin,
+    McpServerView, ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
     OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
     ResolvedDirectAgentConnection, SaidInChat, Saying, ShellConnectionMode, StartChatBody,
     StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreView, TerminalInputBody,
-    TerminalOutput, TerminalSizeBody, TerminalView, WorkbenchAgentOption, WorkbenchOnboarding,
+    TerminalOutput, TerminalSizeBody, TerminalView, Way, WorkbenchAgentOption, WorkbenchOnboarding,
     WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState, credential_environment,
-    mint_session_token, serve_workbench_http, serve_workbench_http_with_apps,
+    mint_session_token, serve_workbench, serve_workbench_http, serve_workbench_http_with_apps,
     serve_workbench_http_with_apps_at,
 };
 

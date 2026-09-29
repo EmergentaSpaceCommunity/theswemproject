@@ -103,6 +103,22 @@ impl McpCatalogue {
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
         let root = std::fs::canonicalize(root)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        // A declaration holds what a person gave it - the key in a header,
+        // the token in its environment - so it is kept as a key is. What an
+        // earlier version left open is closed here.
+        let closing = |error: std::io::Error| {
+            WorkbenchShellError::Failed(format!(
+                "the declared servers at {} could not be closed to others: {error}",
+                root.display()
+            ))
+        };
+        crate::closed::directory(&root).map_err(closing)?;
+        for entry in std::fs::read_dir(&root).map_err(closing)? {
+            let path = entry.map_err(closing)?.path();
+            if path.is_file() {
+                crate::closed::file(&path).map_err(closing)?;
+            }
+        }
         let catalogue = Self { root, declared };
         for (name, server) in catalogue.stored()? {
             catalogue.insert_declared(&name, server)?;
@@ -216,15 +232,8 @@ impl McpCatalogue {
         let server = build_declaration(&name, body)?;
         let bytes = serde_json::to_vec_pretty(&server)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let temporary = self
-            .root
-            .join(format!(".{name}.{}.tmp", std::process::id()));
-        std::fs::write(&temporary, &bytes)
+        crate::closed::write(&path, &bytes)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        std::fs::rename(&temporary, &path).map_err(|error| {
-            let _ = std::fs::remove_file(&temporary);
-            WorkbenchShellError::Failed(error.to_string())
-        })?;
         self.insert_declared(&name, server.clone())?;
         Ok(view_of(&name, &server, McpServerOrigin::Catalogue))
     }

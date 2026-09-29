@@ -27,10 +27,14 @@ person's permission choice says to ask about without asking, is a vulnerability.
 environment values are never listed back. A secret value appearing in a record, a session event, a
 log line, a page or an error message is a vulnerability.
 
-**The Workbench and the App sandbox.** The Workbench's HTTP surface answers only its own page,
-carrying the per-run secret; an MCP App is rendered in a sandboxed origin under a content security
-policy. A page on another site working the Workbench, an App reaching the host's own surfaces or
-another App's, is a vulnerability.
+**The Workbench and the App sandbox.** On the machine a person sits at, the Workbench's HTTP
+surface answers only its own page, carrying the per-run secret. Served at an address it answers
+whoever signed in: a device that holds a passkey, a program that holds a token, and only what
+that token says it may do. An MCP App is rendered in a sandboxed origin under a content security
+policy. A page on another site working the Workbench, somebody who did not sign in being
+answered by anything behind the door, a token doing what it may not, a word, a code or a token
+being used twice or read back from what is kept, the Workbench listening beyond its machine
+without TLS, an App reaching the host's own surfaces or another App's, is a vulnerability.
 
 ## What is not in scope
 

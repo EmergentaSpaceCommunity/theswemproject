@@ -84,7 +84,12 @@ A library plus test fixtures. It owns:
   the shell until a person agrees to it by its id; its steps are run one by one, how each went
   is read from `GET /api/hosts`, and the machine is looked at again at the end.
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
-  to, guarded by the page's own origin and a per-run secret. Chats (`chats.rs`: who a message is
+  to. Who asks is found in one place before anything is answered (`door.rs`): on the machine a
+  person sits at, by the page's own origin and the secret of the run; served at an address, by
+  sign-in - a device that holds a passkey, a program that holds a token that says what it may
+  do, a code to come back with (`access.rs`, the book of who may come in; ADR-0011). Served at
+  an address the way is TLS, by a certificate of its own read from files or by a proxy in front
+  on the same machine (`product/at_an_address.rs`), and anything else is refused in words. Chats (`chats.rs`: who a message is
   for - who it names, every agent where the chat says so, and the agent that asked), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
   ledger and under a file lock because the editor door is another process; a session is opened
   when a message needs it and let go of when idle; a chat whose engine lost its session goes on
@@ -156,7 +161,9 @@ hub serves, and the space it shows, are the hub's. Nothing of the Cycle is compi
 - **Consent is to a plan, by id.** Every install shows what it would fetch, from which index, and
   applies only against the exact plan the person confirmed. A plan that moved is refused.
 - **Secrets never reach a record.** A profile's secrets live in its vault and are injected at
-  launch; a declaration's environment values are never listed back.
+  launch; a declaration's environment values are never listed back. What opens the Workbench -
+  a word, a code, a session, a token - is kept as its digest. The data root and every file
+  that holds a value a person gave are their owner's alone (`closed.rs`).
 - **The page does not hold domain truth.** What a server's space shows is the server's App,
   reading the server through the host's relay; the host's own page draws none of it.
 - **A walk presses what a person presses.** The product gate drives the real binary in a real

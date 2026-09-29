@@ -16,8 +16,11 @@ swem (product binary)
         +-- `swem mcp time-tools`: an agent's own schedules, a child of its engine
         +-- what was found of this machine (<data>/hosts/this-machine.json)
         +-- environments: this machine, or a Podman container per profile
-        +-- HTTP surface for the page (127.0.0.1:<port>, per-run token); one stream per page
-        +-- sandbox origin for MCP Apps (127.0.0.1:<sandbox port>)
+        +-- HTTP surface for the page; one stream per page
+        |     on this machine: 127.0.0.1:<port>, the secret of the run
+        |     at an address (`--at`): TLS by its own certificate or a proxy in front, sign-in;
+        |     who may come in is kept in <data>/access, its owner's alone
+        +-- sandbox origin for MCP Apps (127.0.0.1:<sandbox port>, or an address of its own)
         +-- editor door: `swem acp --profile <id>` over stdio
         `-- declared servers, one child process each, dialled when needed
               +-- for an agent session that attaches them

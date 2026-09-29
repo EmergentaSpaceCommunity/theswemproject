@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use swem_host::product::{DataRoot, Product};
 use swem_host::{
@@ -102,6 +102,36 @@ enum WorkbenchCommand {
         /// Print the URL without opening it in the system browser.
         #[arg(long)]
         no_open: bool,
+        /// Serve at this address, for whoever comes from elsewhere:
+        /// `https://workbench.example.org`. Whoever comes signs in with a
+        /// passkey. Needs `--tls-cert` and `--tls-key`, or `--behind-proxy`.
+        /// `http://localhost:<port>` tries sign-in on this machine.
+        #[arg(long)]
+        at: Option<String>,
+        /// Where to listen when served at an address. With a certificate
+        /// the default is every interface, at the port of the address; with
+        /// a proxy in front it is this machine alone, at `--port`.
+        #[arg(long, requires = "at")]
+        listen: Option<std::net::SocketAddr>,
+        /// The certificate the address is served with, and what stands
+        /// before it, as one PEM file.
+        #[arg(long, requires_all = ["at", "tls_key"])]
+        tls_cert: Option<PathBuf>,
+        /// The key of that certificate, as a PEM file.
+        #[arg(long, requires_all = ["at", "tls_cert"])]
+        tls_key: Option<PathBuf>,
+        /// A proxy of yours stands in front on this machine and speaks TLS;
+        /// the Workbench listens on this machine alone.
+        #[arg(long, requires = "at", conflicts_with = "tls_cert")]
+        behind_proxy: bool,
+        /// Where a browser finds what is drawn for Apps: an address of its
+        /// own. With a certificate the default is the same name at the
+        /// next port.
+        #[arg(long, requires = "at")]
+        apps_at: Option<String>,
+        /// Where what is drawn for Apps is listened for.
+        #[arg(long, requires = "at")]
+        apps_listen: Option<std::net::SocketAddr>,
         /// The ACP registry index this SWEM reads when it resolves an agent
         /// install plan. Defaults to the public CDN; name a mirror, an
         /// internal copy or a `file://` path when this machine cannot reach
@@ -386,6 +416,13 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
         mcp_server: Vec::new(),
         apps_bundle: None,
         no_open: false,
+        at: None,
+        listen: None,
+        tls_cert: None,
+        tls_key: None,
+        behind_proxy: false,
+        apps_at: None,
+        apps_listen: None,
         acp_registry: None,
         container_image: None,
     }) {
@@ -398,9 +435,77 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             mcp_server,
             apps_bundle,
             no_open,
+            at,
+            listen,
+            tls_cert,
+            tls_key,
+            behind_proxy,
+            apps_at,
+            apps_listen,
             acp_registry,
             container_image,
         } => {
+            if let Some(address) = at {
+                let asked = asked_to_serve_at(
+                    &address,
+                    AskedAt {
+                        port,
+                        sandbox_port,
+                        listen,
+                        certificate: tls_cert.zip(tls_key),
+                        behind_proxy,
+                        apps_at,
+                        apps_listen,
+                        apps_bundle,
+                    },
+                )?;
+                let here = asked.closed == swem_host::product::Closed::ThisMachine;
+                let served = product(
+                    inventory,
+                    ledger,
+                    operation_timeout_secs,
+                    &mcp_server,
+                    acp_registry,
+                    container_image,
+                )?
+                .assemble()
+                .map_err(anyhow::Error::msg)?
+                .serve_at(asked.clone())
+                .await
+                .map_err(anyhow::Error::msg)?;
+                println!("SWEM Workbench: {}", served.address);
+                println!(
+                    "Apps are drawn at: {}",
+                    asked.apps_address.origin().ascii_serialization()
+                );
+                println!(
+                    "It listens on {} and, for Apps, on {}.",
+                    served.handle.local_addr, served.handle.sandbox_addr
+                );
+                if let Some(until) = served.certificate_good_until {
+                    println!(
+                        "Its certificate is good for {} more days.",
+                        until
+                            .duration_since(std::time::SystemTime::now())
+                            .map_or(0, |left| left.as_secs() / 86_400)
+                    );
+                }
+                match &served.word {
+                    Some(word) => println!(
+                        "This Workbench belongs to nobody yet. Open the address and give it \
+                         this word, which is used once:\n\n    {word}\n"
+                    ),
+                    None => println!("Whoever comes signs in with a device that was registered."),
+                }
+                if here
+                    && !no_open
+                    && let Err(error) = open_system_browser(&served.address)
+                {
+                    eprintln!("could not open the system browser: {error}");
+                }
+                std::future::pending::<()>().await;
+                return Ok(());
+            }
             let served = product(
                 inventory,
                 ledger,
@@ -434,6 +539,94 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// What the command was told about serving at an address.
+struct AskedAt {
+    port: u16,
+    sandbox_port: u16,
+    listen: Option<std::net::SocketAddr>,
+    certificate: Option<(PathBuf, PathBuf)>,
+    behind_proxy: bool,
+    apps_at: Option<String>,
+    apps_listen: Option<std::net::SocketAddr>,
+    apps_bundle: Option<PathBuf>,
+}
+
+/// What is served, from what the command was told, with what it was not
+/// told filled in. Whether that may be served at all is the product's to
+/// say, and it says it when it is asked to serve.
+fn asked_to_serve_at(address: &str, asked: AskedAt) -> Result<swem_host::product::ServeAt> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use swem_host::product::{Closed, ServeAt};
+
+    let read = |what: &str, address: &str| {
+        url::Url::parse(address).map_err(|error| {
+            anyhow!("{what} is given as https://workbench.example.org; {address} is not an address: {error}")
+        })
+    };
+    let address = read("The address", address)?;
+    let closed = match (asked.certificate, asked.behind_proxy) {
+        (Some((chain, key)), _) => Closed::Certificate { chain, key },
+        (None, true) => Closed::ProxyInFront,
+        (None, false) => Closed::ThisMachine,
+    };
+    let with_certificate = matches!(closed, Closed::Certificate { .. });
+    let listen = asked.listen.unwrap_or_else(|| {
+        if with_certificate {
+            SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                address.port_or_known_default().unwrap_or(443),
+            )
+        } else if closed == Closed::ThisMachine {
+            SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                address.port_or_known_default().unwrap_or(asked.port),
+            )
+        } else {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), asked.port)
+        }
+    });
+    let next = |port: u16| port.checked_add(1).unwrap_or(port - 1);
+    let apps_address = match asked.apps_at {
+        Some(apps) => read("Where Apps are drawn", &apps)?,
+        None if closed == Closed::ProxyInFront => bail!(
+            "With a proxy in front, say where Apps are drawn: --apps-at https://apps.<name>, a \
+             second name your proxy sends to where Apps are listened for (--apps-listen)."
+        ),
+        None => {
+            let mut apps = address.clone();
+            let port = if asked.sandbox_port == 0 {
+                next(address.port_or_known_default().unwrap_or(listen.port()))
+            } else {
+                asked.sandbox_port
+            };
+            apps.set_port(Some(port))
+                .map_err(|()| anyhow!("{address} cannot be given a port"))?;
+            apps
+        }
+    };
+    let apps_listen = asked.apps_listen.unwrap_or_else(|| {
+        let port = if with_certificate || closed == Closed::ThisMachine {
+            apps_address
+                .port_or_known_default()
+                .unwrap_or(next(listen.port()))
+        } else if asked.sandbox_port == 0 {
+            next(listen.port())
+        } else {
+            asked.sandbox_port
+        };
+        SocketAddr::new(listen.ip(), port)
+    });
+    Ok(ServeAt {
+        address,
+        listen,
+        closed,
+        apps_address,
+        apps_listen,
+        apps_bundle: asked.apps_bundle,
+    })
 }
 
 async fn run_time(time: Time) -> Result<()> {

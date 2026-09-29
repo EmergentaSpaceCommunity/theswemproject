@@ -14,7 +14,10 @@
 //! Nothing here is process-global: two products assembled in one process
 //! read different roots, registries and catalogs.
 
+mod at_an_address;
 mod resolver;
+
+pub use at_an_address::{Closed, ServeAt, ServedAt};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -158,6 +161,12 @@ impl DataRoot {
     #[must_use]
     pub fn removed(&self) -> PathBuf {
         self.root.join("removed")
+    }
+
+    /// Who may come in to a Workbench served at an address.
+    #[must_use]
+    pub fn access(&self) -> PathBuf {
+        self.root.join("access")
     }
 
     /// Who keeps time for whom, and when a keeper looked last.
@@ -325,6 +334,14 @@ impl Product {
         let root = self.root;
         std::fs::create_dir_all(root.path())
             .map_err(|error| format!("create the data root {}: {error}", root.path().display()))?;
+        // Under it are chats, keys and what agents wrote: nobody else who
+        // has an account on this machine enters it.
+        crate::closed::directory(root.path()).map_err(|error| {
+            format!(
+                "close the data root {} to others: {error}",
+                root.path().display()
+            )
+        })?;
         let profiles = self.profiles.unwrap_or_else(|| root.profiles());
         let routes = self.routes.unwrap_or_else(|| root.routes());
         // The MCP declarations of this product, keyed by their ACP names and

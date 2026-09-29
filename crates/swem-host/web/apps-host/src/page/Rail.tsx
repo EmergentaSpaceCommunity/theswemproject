@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { fetchJson } from "../http.ts";
-import { ChatSign, Moon, People, Plug, Plus, Shop, Sun, Tiles } from "./icons.tsx";
+import { ChatSign, Gear, Moon, People, Plug, Plus, Shop, Sun, Tiles } from "./icons.tsx";
 import { go, usePlace, type Place } from "./place.ts";
 import type { Participant } from "./types.ts";
 import { Avatar, names, StateDot, useDoing, useStanding } from "./who.tsx";
@@ -57,7 +57,7 @@ function kept(): Theme {
   }
 }
 
-function ThemeSwitch() {
+export function ThemeSwitch() {
   const [theme, setTheme] = useState<Theme>(kept);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -185,6 +185,10 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
         <button type="button" className={`k-rail-item k-quiet${place.at === "store" ? " k-active" : ""}`} onClick={() => go({ at: "store" })}>
           <Shop size={17} />
           <span>Store</span>
+        </button>
+        <button type="button" className={`k-rail-item k-quiet${place.at === "settings" ? " k-active" : ""}`} onClick={() => go({ at: "settings", tab: "access" })}>
+          <Gear size={17} />
+          <span>Settings</span>
         </button>
       </div>
       <div className="k-spread w-you">

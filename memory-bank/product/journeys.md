@@ -152,7 +152,10 @@ They open the address on their laptop, give the word and register the laptop; th
 words to come back with. From the laptop they add their phone. Anybody else who opens the
 address is asked to sign in and gets nothing. Under Settings, Access they read which devices
 may come in and when each last did, take one away, make a token for a program and withdraw it,
-and read what was done and what was refused. Status: being built (roadmap S1, ExecPlan 015).
+and read what was done and what was refused. Walk:
+`product_front_door::a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey`, at
+`localhost`, with a device that holds passkeys in the browser. By hand at a name over TLS with a
+certificate made for the trial. Not yet done on a server with a name of its own, with a phone.
 
 ## GJ-08 — A project server's own space
 

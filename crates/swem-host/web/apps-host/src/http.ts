@@ -15,8 +15,13 @@ async function failure(response: Response): Promise<Error> {
   }
 }
 
+/// Said to the page when the host asks whoever is here to sign in: a
+/// session that ended while the page was open.
+export const SIGN_IN_ASKED = "swem:sign-in-asked";
+
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
+  if (response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event(SIGN_IN_ASKED));
   if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }

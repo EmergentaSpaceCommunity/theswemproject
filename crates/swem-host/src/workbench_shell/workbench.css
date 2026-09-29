@@ -212,3 +212,25 @@ a.k-btn { color: inherit; text-decoration: none; }
 .w-end-items { align-items: flex-end; }
 .w-start-items { align-items: flex-start; }
 .w-commands .k-menu-item { display: flex; align-items: center; gap: 8px; }
+
+/* ---- the door: a page with no rail, for whoever has not come in yet ---- */
+.w-alone { flex-direction: column; align-items: center; justify-content: center; gap: 18px; position: relative; overflow: auto; padding: 72px 18px 36px; height: 100vh; box-sizing: border-box; }
+.w-alone-theme { position: absolute; top: 20px; right: 24px; }
+.w-door-row { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 18px 40px; max-width: 100%; }
+.w-door { width: min(520px, calc(100vw - 36px)); display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; }
+.w-door.w-narrow { width: min(420px, calc(100vw - 36px)); }
+.w-steps-down { display: flex; flex-direction: column; gap: 14px; margin: 0; padding: 4px 0 0; list-style: none; }
+.w-steps-down .w-step-across.k-active .w-step-number { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.w-tall { min-height: 44px; }
+.w-codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.w-code { display: flex; justify-content: center; padding: var(--border-radius-sm) var(--border-radius-lg); border-radius: var(--border-radius-md);
+  border: var(--border-width-regular) solid var(--color-border-secondary); background: var(--color-background-primary);
+  font-family: var(--font-mono); font-size: var(--font-text-md-size); line-height: var(--font-text-md-line-height); user-select: all; }
+.w-said-once { padding: var(--border-radius-lg); border-radius: var(--border-radius-md); border: var(--border-width-regular) solid var(--color-border-secondary);
+  background: var(--color-background-primary); font-family: var(--font-mono); font-size: var(--font-text-md-size); line-height: var(--font-text-md-line-height);
+  overflow-wrap: anywhere; user-select: all; }
+.w-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 18px; align-items: start; }
+.w-columns > .w-col { gap: 18px; }
+.w-happened { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
+.w-happened:first-child { border-top: 0; }
+.w-happened > .k-dot { align-self: center; }

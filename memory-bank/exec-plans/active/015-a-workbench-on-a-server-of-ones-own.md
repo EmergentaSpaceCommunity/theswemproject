@@ -73,23 +73,90 @@ itself, because a Workbench of one's own has nobody else to ask.
 
 ## Progress
 
-- [ ] 1 the book of who may come in
-- [ ] 2 served at an address
-- [ ] 3 the page
-- [ ] 4 kept closed
-- [ ] 5 the walk, by hand, from outside
+- [x] 1 the book of who may come in
+- [x] 2 served at an address
+- [x] 3 the page
+- [x] 4 kept closed: the data root and the declared servers' values; the keeper of secrets as
+      a seam is left to S4 (decision log)
+- [x] 5 the walk, by hand on this machine, tried from outside with `curl`
+- [ ] 6 on a server with a name of its own, from a laptop and a phone
+- [ ] 7 the page at a phone's width
 
 ## Discoveries
+
+- Chrome takes a passkey ceremony at a name whose certificate it was told to trust by its key
+  (`--ignore-certificate-errors-spki-list`), so the whole of sign-in over TLS is walked on
+  this machine with a certificate made for the trial and a name mapped to loopback.
+- A device that holds passkeys is given to the browser over its debugging protocol
+  (`WebAuthn.addVirtualAuthenticator`); the ceremony, the page and the host are the product's.
+  Taken away and given again inside one page, the browser turned the next ceremony down; a
+  second device is a second browser, which is what it is for a person too.
+- Limiting tries with a passkey or a token would only let a stranger keep the owner out:
+  neither can be guessed. What can be guessed - a word, a code - is limited, from one place
+  and from everywhere.
+- The secret of a run is still minted when served at an address and opens nothing there.
 
 ## Decision log
 
 - 2026-09-29: a certificate is given as files, or a proxy stands in front. Getting one by
   itself (ACME) waits for a server with a name to try it on: a door is not given code that
   was never run.
+- 2026-09-29: the keeper of secrets as a seam (`SecretKeeper`) is not made here. With one
+  keeper it would be an abstraction nobody uses; it is made in S4, where a product that
+  builds the harness in supplies a second. Here every file that holds a value is closed to
+  others, the declared servers' values included, and so is the data root.
+- 2026-09-29: what is written down of what was done is kept five thousand entries back, so
+  that whoever knocks all day fills nothing up.
 - 2026-09-29: `--at http://localhost:<port>` is allowed and listens on this machine alone: it
   is sign-in tried where a browser takes `localhost` for a safe place. Any other address is
   `https`.
 
 ## Validation
 
+- `tests/access.rs` (7): a Workbench is made somebody's own once and they come back with
+  their device; a device that was never registered does not come in; a second device by a
+  word, and one taken away comes in no more; a code brings a person back once; a token opens
+  what it says and nothing once withdrawn; tries that fail are limited and written down;
+  nothing that opens is kept as it was said, and the book is its owner's alone. The
+  ceremonies are done by a passkey kept in software and checked by the code that checks a
+  real one.
+- `product::at_an_address` (2): what is served, and the seven ways the way would be left
+  open, each refused by its reason. `workbench_shell::door` (2): what anybody may ask, and
+  what a code and a knock open.
+- `tests/product.rs::what_a_person_gave_is_kept_closed_to_others`: the data root, the
+  declared servers' folder, a declaration written earlier with a header in it, one made now.
+- `test/page-door.test.mjs` (3).
+- The gate, sixteen walks, all passed from a clean build (2026-09-29). The new one,
+  `a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey`: the first start, the
+  codes, a token, signed out, the passkey, a browser that holds nothing refused, back with a
+  code, that device registered, the first taken away; and from outside with `curl`, before
+  anybody came in and with the token. An earlier run of the gate that day had fifteen of
+  sixteen: the walk of a first agent lost its browser for a minute; alone it passed.
+- By hand in Chrome at `http://localhost` and at `https://workbench.test:8443` with a
+  certificate made for the trial: the same, with Settings, Access read in both themes. From
+  outside with `curl` over TLS: the page answers anybody and tells the browser to come over
+  TLS from now on; everything under `/api` answers 401 to who did not come in; another
+  site's page 403; the secret of a run opens nothing; the fifth wrong word from one place is
+  refused for a quarter of an hour; nothing but TLS 1.2 and 1.3 is spoken; where Apps are
+  drawn has no `/api`.
+- The certificate put anew into its files was served within a minute, with no restart.
+- The command refused, each in its words: an address without `https`, a name with no
+  certificate and no proxy, a proxy in front with no address for Apps, a proxy in front and
+  a listener beyond this machine, an address with more than a name in it.
+- With a proxy said to be in front, called as a proxy calls: where a request came from is
+  what the proxy said last.
+
 ## Outcome and remaining gaps
+
+What a person does on a server is built and was done on this machine. Not done where it
+must run, and said so:
+
+- on a server with a name of its own, from a laptop and a phone, with a passkey held by a
+  real device;
+- with a real proxy in front;
+- an App opened at an address: that its origin answers over TLS was tried, an App was not
+  opened there;
+- on Linux: the harness was built and run on macOS only;
+- a certificate got by the Workbench itself;
+- the Workbench's own page at a phone's width: the door fits it, the rail and what is
+  beside it were never drawn for it.

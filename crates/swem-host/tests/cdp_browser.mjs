@@ -81,7 +81,9 @@ const sandboxArgs = process.env.SWEM_BROWSER_NO_SANDBOX === "1" ? ["--no-sandbox
 // The failure screenshot goes where this machine keeps temporary files unless
 // SWEM_FAILURE_DIR says otherwise: a literal "/tmp" does not exist on Windows,
 // and a screenshot that cannot be written is a failure with no evidence.
-export async function launchBrowser({browser, url, label, failureDir = tmpdir(), extraArgs = []}) {
+// `door`: the page is served at an address and opens on its door, where
+// there is no rail until somebody came in.
+export async function launchBrowser({browser, url, label, failureDir = tmpdir(), extraArgs = [], door = false}) {
   const profile = mkdtempSync(join(tmpdir(), `swem-cdp-${label}-`));
   registry.profiles.push(profile);
   // The browser's own stderr is kept, not discarded. A browser that dies
@@ -659,10 +661,21 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
     await sleep(500);
     try { rmSync(profile, {recursive: true, force: true}); } catch {}
   };
+  // A device that holds passkeys, in the browser itself: what a person's
+  // fingerprint answers is answered by it.
+  b.holdPasskeys = async () => {
+    await b.send("WebAuthn.enable", {});
+    const made = await b.send("WebAuthn.addVirtualAuthenticator", {options: {
+      protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true,
+      isUserVerified: true, automaticPresenceSimulation: true,
+    }});
+    return made.authenticatorId;
+  };
+  b.forgetPasskeys = async (authenticatorId) => b.send("WebAuthn.removeVirtualAuthenticator", {authenticatorId});
   await b.waitFor("production Workbench renderer", async () => b.evaluate(`
     window.__SWEM_WORKBENCH_WEB__ === "react-19" &&
     document.getElementById("workbench-root")?.dataset.renderer === "react" &&
-    document.querySelector('nav[aria-label="Workbench"]') !== null
+    document.querySelector(${JSON.stringify(door ? "nav[aria-label=\"Workbench\"], .w-alone" : "nav[aria-label=\"Workbench\"]")}) !== null
   `));
   return b;
 }

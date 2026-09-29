@@ -39,7 +39,9 @@ use crate::routing::{NativeOutputProjectionRequest, project_native_session_event
 use crate::workbench_apps::{self, ConnectionApps, OpenApp, OpenedApp, RelayRefusal};
 #[path = "workbench_shell/agent_environment.rs"]
 mod agent_environment;
+mod door;
 mod hosts;
+pub use door::{Way, certificate_good_until};
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
 pub use hosts::{EnvironmentOffered, HostStanding, MachineWanted, SetUp, SetUpStep};
@@ -770,6 +772,10 @@ pub struct WorkbenchShellState {
     /// minted one. Absent = this shell asks for none, which is what an
     /// in-process test or an embedder gets; the product always mints one.
     session_token: std::sync::OnceLock<String>,
+    /// The address this Workbench is served at and who may come in there,
+    /// when it is served at one. Then the door is sign-in, not the secret
+    /// of a run.
+    served_at: std::sync::OnceLock<door::ServedAt>,
     /// Directory holding the esbuild output `apps-bridge.js`; absent = the
     /// Apps panel stays disabled (the honest App-disabled mode).
     apps_bundle: std::sync::OnceLock<PathBuf>,
@@ -1017,6 +1023,7 @@ impl WorkbenchShellState {
             content,
             sandbox: std::sync::OnceLock::new(),
             session_token: std::sync::OnceLock::new(),
+            served_at: std::sync::OnceLock::new(),
             apps_bundle: std::sync::OnceLock::new(),
             mcp_observer: std::sync::OnceLock::new(),
             onboarding: std::sync::OnceLock::new(),
@@ -3953,16 +3960,21 @@ async fn route_shell(
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    if segments.first() == Some(&"api")
-        && (!from_the_workbenchs_own_page(request.headers())
-            || state
-                .session_token()
-                .is_some_and(|token| !carries_the_secret(request.headers(), token)))
-    {
-        // Nothing about the route: a caller that is not this Workbench's own
-        // learns neither which routes exist nor what they wanted.
-        return respond_json(StatusCode::FORBIDDEN, &json!({"error": "forbidden"}));
-    }
+    // Who asks is found here, before anything is answered, and nowhere else.
+    let from = state.came_from(&request);
+    let who = if segments.first() == Some(&"api") {
+        match state.let_in(&method, &segments, request.headers(), &from) {
+            Ok(who) => who,
+            Err(refused) => return *refused,
+        }
+    } else {
+        None
+    };
+    let request =
+        match door::route_door(state, &method, &segments, request, who.as_ref(), &from).await {
+            Ok(response) => return response,
+            Err(request) => request,
+        };
     let request =
         match stream::route_chats(state, &method, &segments, query.as_deref(), request).await {
             Ok(response) => return response,
@@ -3979,6 +3991,9 @@ async fn route_shell(
             });
             let handover = match state.session_token() {
                 None => None,
+                // Served at an address, the page is what anybody gets and
+                // says nothing; what is behind it opens by sign-in.
+                Some(_) if state.is_served_at_an_address() => None,
                 Some(token) if offered.as_deref() == Some(token) => Some(format!(
                     "{}={token}; Path=/; SameSite=Strict; HttpOnly",
                     session_cookie_name(request.headers())
@@ -5049,81 +5064,147 @@ pub async fn serve_workbench_http_with_apps_at(
     sandbox_bind: SocketAddr,
     apps_bundle: Option<PathBuf>,
 ) -> Result<WorkbenchShellHandle, String> {
-    let listener = tokio::net::TcpListener::bind(bind)
+    serve_workbench(
+        state,
+        Listening {
+            bind,
+            sandbox_bind,
+            sandbox_at: None,
+            tls: None,
+            apps_bundle,
+        },
+    )
+    .await
+}
+
+/// How a Workbench listens.
+pub struct Listening {
+    pub bind: SocketAddr,
+    /// Where what is drawn for Apps is listened for.
+    pub sandbox_bind: SocketAddr,
+    /// The origin a browser finds that at. On the machine a person sits at
+    /// it is the listener itself; served at an address it is an address.
+    pub sandbox_at: Option<String>,
+    /// TLS, when the Workbench keeps the way to it closed by itself.
+    pub tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
+    pub apps_bundle: Option<PathBuf>,
+}
+
+/// A handshake that does not finish in this long is let go of.
+const A_HANDSHAKE: Duration = Duration::from_secs(10);
+
+/// Accept connections until told to stop, and answer each request with
+/// `route`. Where the request came from travels with it.
+async fn accept_until_told<Route, Answer>(
+    listener: tokio::net::TcpListener,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    mut told: tokio::sync::oneshot::Receiver<()>,
+    route: Route,
+) where
+    Route: Fn(Request<hyper::body::Incoming>) -> Answer + Clone + Send + 'static,
+    Answer: Future<Output = Response<ShellBody>> + Send,
+{
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = &mut told => break,
+            accepted = listener.accept() => {
+                let Ok((stream, from)) = accepted else { continue };
+                let route = route.clone();
+                let tls = tls.clone();
+                connections.spawn(async move {
+                    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
+                        request.extensions_mut().insert(door::CameFrom(from));
+                        let route = route.clone();
+                        async move { Ok::<_, Infallible>(route(request).await) }
+                    });
+                    let served = hyper::server::conn::http1::Builder::new();
+                    match tls {
+                        None => {
+                            let _ = served
+                                .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                                .await;
+                        }
+                        Some(tls) => {
+                            let Ok(Ok(stream)) =
+                                tokio::time::timeout(A_HANDSHAKE, tls.accept(stream)).await
+                            else {
+                                return;
+                            };
+                            let _ = served
+                                .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                                .await;
+                        }
+                    }
+                });
+            }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                let _ = completed;
+            }
+        }
+    }
+    connections.shutdown().await;
+}
+
+/// Serve the Workbench as `listening` says.
+///
+/// # Errors
+///
+/// Returns an error when an address cannot be bound.
+pub async fn serve_workbench(
+    state: Arc<WorkbenchShellState>,
+    listening: Listening,
+) -> Result<WorkbenchShellHandle, String> {
+    let listener = tokio::net::TcpListener::bind(listening.bind)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{}: {error}", listening.bind))?;
     let local_addr = listener.local_addr().map_err(|error| error.to_string())?;
-    let sandbox_listener = tokio::net::TcpListener::bind(sandbox_bind)
+    let sandbox_listener = tokio::net::TcpListener::bind(listening.sandbox_bind)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{}: {error}", listening.sandbox_bind))?;
     let sandbox_addr = sandbox_listener
         .local_addr()
         .map_err(|error| error.to_string())?;
-    state.set_sandbox(
-        format!("http://127.0.0.1:{}/sandbox", sandbox_addr.port()),
-        format!("http://127.0.0.1:{}", sandbox_addr.port()),
-    );
-    if let Some(bundle) = apps_bundle {
+    let sandbox_at = listening
+        .sandbox_at
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", sandbox_addr.port()));
+    state.set_sandbox(format!("{sandbox_at}/sandbox"), sandbox_at);
+    if let Some(bundle) = listening.apps_bundle {
         state.set_apps_bundle(bundle);
     }
-    let (sandbox_shutdown, mut sandbox_shutdown_rx) = tokio::sync::oneshot::channel();
+    let tls = listening.tls.map(tokio_rustls::TlsAcceptor::from);
+    let (sandbox_shutdown, sandbox_told) = tokio::sync::oneshot::channel();
     let sandbox_state = Arc::clone(&state);
-    let sandbox_task = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            tokio::select! {
-                _ = &mut sandbox_shutdown_rx => break,
-                accepted = sandbox_listener.accept() => {
-                    let Ok((stream, _)) = accepted else { continue };
-                    let state = Arc::clone(&sandbox_state);
-                    connections.spawn(async move {
-                        let service = hyper::service::service_fn(move |request| {
-                            let state = Arc::clone(&state);
-                            async move { Ok::<_, Infallible>(route_sandbox(&state, request).await) }
-                        });
-                        let _ = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-                            .await;
-                    });
-                }
-                completed = connections.join_next(), if !connections.is_empty() => {
-                    let _ = completed;
-                }
+    let sandbox_task = tokio::spawn(accept_until_told(
+        sandbox_listener,
+        tls.clone(),
+        sandbox_told,
+        move |request| {
+            let state = Arc::clone(&sandbox_state);
+            async move { route_sandbox(&state, request).await }
+        },
+    ));
+    let (shutdown, told) = tokio::sync::oneshot::channel();
+    let shell_state = Arc::clone(&state);
+    let task = tokio::spawn(accept_until_told(listener, tls, told, move |request| {
+        let state = Arc::clone(&shell_state);
+        async move {
+            let mut response = Box::pin(route_shell(&state, request)).await;
+            if state.is_served_over_tls() {
+                // A browser that came once over TLS comes over TLS from
+                // now on, whatever address it is given.
+                response.headers_mut().insert(
+                    "strict-transport-security",
+                    hyper::header::HeaderValue::from_static("max-age=31536000"),
+                );
             }
+            response
         }
-        connections.shutdown().await;
-    });
-    let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle_state = Arc::clone(&state);
-    let task = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            tokio::select! {
-                _ = &mut shutdown_rx => break,
-                accepted = listener.accept() => {
-                    let Ok((stream, _)) = accepted else { continue };
-                    let state = Arc::clone(&state);
-                    connections.spawn(async move {
-                        let service = hyper::service::service_fn(move |request| {
-                            let state = Arc::clone(&state);
-                            async move { Ok::<_, Infallible>(Box::pin(route_shell(&state, request)).await) }
-                        });
-                        let _ = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-                            .await;
-                    });
-                }
-                completed = connections.join_next(), if !connections.is_empty() => {
-                    let _ = completed;
-                }
-            }
-        }
-        connections.shutdown().await;
-    });
+    }));
     Ok(WorkbenchShellHandle {
         local_addr,
         sandbox_addr,
-        state: handle_state,
+        state,
         task: Some(task),
         sandbox_task: Some(sandbox_task),
         shutdown: Some(shutdown),

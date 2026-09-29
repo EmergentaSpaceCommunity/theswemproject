@@ -65,6 +65,60 @@ async fn two_products_in_one_process_read_different_registries() {
     assert!(first.root.path().join("indexes").is_dir());
 }
 
+#[cfg(unix)]
+#[test]
+fn what_a_person_gave_is_kept_closed_to_others() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use swem_host::{DeclareMcpServerBody, NamedValue};
+
+    let mode = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    let root = fresh_root("closed");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A declaration an earlier version wrote, open to whoever could look.
+    let servers = DataRoot::at(&root).mcp_servers();
+    std::fs::create_dir_all(&servers).unwrap();
+    let earlier = servers.join("earlier.json");
+    std::fs::write(
+        &earlier,
+        br#"{"type":"http","name":"earlier","url":"https://example.org/mcp","headers":[{"name":"authorization","value":"Bearer kept"}]}"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&earlier, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let product = Product::at(DataRoot::at(&root))
+        .assemble()
+        .expect("the product assembles");
+    assert_eq!(mode(&root), 0o700, "the data root");
+    assert_eq!(mode(&servers), 0o700, "where declared servers are kept");
+    assert_eq!(mode(&earlier), 0o600, "a declaration written earlier");
+
+    product
+        .state
+        .declare_mcp_server(&DeclareMcpServerBody {
+            name: "mine".into(),
+            transport: "http".into(),
+            url: "https://example.org/mcp".into(),
+            headers: vec![NamedValue {
+                name: "authorization".into(),
+                value: "Bearer given".into(),
+            }],
+            ..DeclareMcpServerBody::default()
+        })
+        .expect("a server is declared");
+    assert_eq!(
+        mode(&servers.join("mine.json")),
+        0o600,
+        "a declaration made now"
+    );
+}
+
 /// The example built beside this crate's own binaries by `cargo test`.
 fn embed_example() -> PathBuf {
     let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem-echo-agent"));
