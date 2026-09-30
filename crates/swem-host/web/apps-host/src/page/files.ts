@@ -1,6 +1,7 @@
 // An agent's files as the host serves them: the folder it works in as a
 // tree, a file as it is opened and saved.
 
+import { at } from "../base.ts";
 import { fetchJson } from "../http.ts";
 
 export interface Entry {
@@ -80,7 +81,7 @@ export function languageOf(place: string): string | null {
 /// Whether a file is a picture the page can show.
 export const isPicture = (place: string): boolean => /\.(png|jpe?g|svg)$/i.test(nameOf(place));
 
-export const asItIs = (profile: string, place: string): string => `/api/profiles/${part(profile)}/file?path=${part(place)}&as=it-is`;
+export const asItIs = (profile: string, place: string): string => at(`/api/profiles/${part(profile)}/file?path=${part(place)}&as=it-is`);
 
 export const files = {
   async list(profile: string, folder: string): Promise<Entry[]> {

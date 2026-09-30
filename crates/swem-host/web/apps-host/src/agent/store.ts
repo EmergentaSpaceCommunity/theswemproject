@@ -4,6 +4,7 @@
 // outlive any component: a rail that unmounts while a turn is running must
 // not take the turn's events with it.
 
+import { at } from "../base.ts";
 import { useSyncExternalStore } from "react";
 
 import { SessionStore, type SessionState } from "./session.ts";
@@ -16,7 +17,7 @@ function browserStorage(): Storage | null {
   }
 }
 
-export const sessionStore = new SessionStore((input, init) => fetch(input, init), browserStorage());
+export const sessionStore = new SessionStore((input, init) => fetch(typeof input === "string" ? at(input) : input, init), browserStorage());
 
 export function useSession(): SessionState {
   return useSyncExternalStore(sessionStore.subscribe, sessionStore.getSnapshot);

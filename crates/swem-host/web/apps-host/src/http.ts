@@ -1,6 +1,8 @@
 // The page's own calls to its host: JSON in, JSON out, and a refusal as the
 // sentence the host said.
 
+import { at } from "./base.ts";
+
 /// What the host said, without the kind of refusal it began with: the kind
 /// is for whoever reads the status, the sentence is for the person.
 const said = (words: string): string => words.replace(/^(invalid request|conflict|not found): /, "").replace(/^./, (first) => first.toUpperCase());
@@ -20,7 +22,7 @@ async function failure(response: Response): Promise<Error> {
 export const SIGN_IN_ASKED = "swem:sign-in-asked";
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  const response = await fetch(at(path), init);
   if (response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event(SIGN_IN_ASKED));
   if (!response.ok) throw await failure(response);
   return (await response.json()) as T;

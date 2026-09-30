@@ -40,7 +40,7 @@ ADR-0010 and ADR-0011. Each item is one ExecPlan.
 | Item | A person can | State |
 |---|---|---|
 | S1 | put the Workbench on a server of their own, come to it from a laptop and a phone with a passkey, and nobody else can | **done on this machine** (2026-09-29, ExecPlan 015), at `localhost` and at a name over TLS with a certificate made for the trial. Left: a server with a name of its own and a phone; a certificate got by the Workbench itself; the Workbench's page at a phone's width |
-| S4 | build the harness into a product of their own in a page of code, with their own people, name and servers | |
+| S4 | build the harness into a product of their own in a page of code, with their own people, name and servers | **done** (2026-09-29, ExecPlan 017). Left: Apps in a harness built in for several people; the built-in machine and keepers hidden by the product (with S2); the page's own sentences still say SWEM |
 | S3 | read of each keeper of time when it works; give a scheduler outside an address to knock on; find that an agent with no keeper has no Schedules and no tools for them | **the knock is done** (2026-09-29, ExecPlan 016), and each keeper says when it works. An agent has no keeper, and so no Schedules, only on a machine its tools for them cannot be carried to: that comes with S2 |
 | S2 | have an agent on a machine that is not this one | B1, B4, B5, B6 |
 | S5 | install a kind of machine or of keeper of time from the Store | after S2 and S3 |

@@ -89,7 +89,11 @@ A library plus test fixtures. It owns:
   sign-in - a device that holds a passkey, a program that holds a token that says what it may
   do, a code to come back with (`access.rs`, the book of who may come in; ADR-0011). Served at
   an address the way is TLS, by a certificate of its own read from files or by a proxy in front
-  on the same machine (`product/at_an_address.rs`), and anything else is refused in words. Chats (`chats.rs`: who a message is
+  on the same machine (`product/at_an_address.rs`), and anything else is refused in words.
+  Built into a product (`product/built_in.rs`) nothing listens: the product hands over what it
+  heard, for whom it let in, and the Workbench is drawn under a path of the product's server.
+  What a person gives - keys, a profile's secrets, declared servers' values - is kept by one
+  keeper (`secrets.rs`): files closed to others, or what the product supplies. Chats (`chats.rs`: who a message is
   for - who it names, every agent where the chat says so, and the agent that asked), the work of answering them (`runtime.rs`: one turn at a time per agent, claimed in the
   ledger and under a file lock because the editor door is another process; a session is opened
   when a message needs it and let go of when idle; a chat whose engine lost its session goes on

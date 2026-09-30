@@ -14,7 +14,6 @@ use agent_client_protocol::schema::v1::{
 };
 use base64::Engine as _;
 use http_body_util::BodyExt as _;
-use hyper::body::Incoming;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -94,7 +93,7 @@ impl WorkbenchContentStore {
         &self,
         name: String,
         media_type: String,
-        mut body: Incoming,
+        mut body: crate::workbench_shell::AskedBody,
     ) -> Result<WorkbenchContentDescriptor, WorkbenchShellError> {
         validate_metadata(&name, &media_type)?;
         let temporary = self.root.join("tmp").join(format!(

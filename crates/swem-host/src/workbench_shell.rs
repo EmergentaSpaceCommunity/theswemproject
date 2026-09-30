@@ -41,6 +41,7 @@ use crate::workbench_apps::{self, ConnectionApps, OpenApp, OpenedApp, RelayRefus
 mod agent_environment;
 mod door;
 mod hosts;
+pub(crate) use door::SaidBy;
 pub use door::{Way, certificate_good_until};
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
@@ -776,6 +777,12 @@ pub struct WorkbenchShellState {
     /// when it is served at one. Then the door is sign-in, not the secret
     /// of a run.
     served_at: std::sync::OnceLock<door::ServedAt>,
+    /// The path this Workbench is drawn under on the server of a product
+    /// the harness is built into, when it is built into one. Then who asks
+    /// is what that product says.
+    built_under: std::sync::OnceLock<String>,
+    /// What the product is called on the page, when it is not SWEM.
+    called: std::sync::OnceLock<String>,
     /// Directory holding the esbuild output `apps-bridge.js`; absent = the
     /// Apps panel stays disabled (the honest App-disabled mode).
     apps_bundle: std::sync::OnceLock<PathBuf>,
@@ -1024,6 +1031,8 @@ impl WorkbenchShellState {
             sandbox: std::sync::OnceLock::new(),
             session_token: std::sync::OnceLock::new(),
             served_at: std::sync::OnceLock::new(),
+            built_under: std::sync::OnceLock::new(),
+            called: std::sync::OnceLock::new(),
             apps_bundle: std::sync::OnceLock::new(),
             mcp_observer: std::sync::OnceLock::new(),
             onboarding: std::sync::OnceLock::new(),
@@ -1393,6 +1402,32 @@ impl WorkbenchShellState {
     /// # Errors
     ///
     /// Returns [`WorkbenchShellError`] when the inventory fails closed.
+    /// The servers an agent's session is handed, by name: what its profile
+    /// names and is declared, and what the product this harness is built
+    /// into resolves for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] for an unknown profile or an agent
+    /// that cannot be resolved.
+    pub fn servers_of(&self, profile_id: &str) -> Result<Vec<String>, WorkbenchShellError> {
+        let profile = self
+            .inventory
+            .select(profile_id)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+        let connection = (self.resolver)(&profile).map_err(WorkbenchShellError::Failed)?;
+        Ok(connection
+            .mcp_servers
+            .iter()
+            .filter_map(|server| match server {
+                McpServer::Stdio(stdio) => Some(stdio.name.clone()),
+                McpServer::Http(http) => Some(http.name.clone()),
+                McpServer::Sse(sse) => Some(sse.name.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// What the profile's agent advertises at `initialize`, authentication
     /// methods included, without opening a session. The surface asks this
     /// before offering to start, so a person is asked for a key up front
@@ -3475,7 +3510,22 @@ impl Drop for WorkbenchShellHandle {
     }
 }
 
-type ShellBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+/// What is answered.
+pub type ShellBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+
+/// What is asked, whoever heard it: the harness's own listener, or the
+/// server of a product the harness is built into.
+pub type AskedBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
+
+/// A request as the harness takes it, from a request as somebody's server
+/// heard it.
+pub fn asked<Body>(request: Request<Body>) -> Request<AskedBody>
+where
+    Body: hyper::body::Body<Data = Bytes> + Send + 'static,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    request.map(|body| body.map_err(std::io::Error::other).boxed_unsync())
+}
 
 fn respond(status: StatusCode, content_type: &str, body: String) -> Response<ShellBody> {
     Response::builder()
@@ -3576,7 +3626,7 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     })
 }
 
-async fn read_json(request: Request<hyper::body::Incoming>) -> Result<Value, WorkbenchShellError> {
+async fn read_json(request: Request<AskedBody>) -> Result<Value, WorkbenchShellError> {
     let body = request
         .into_body()
         .collect()
@@ -3588,7 +3638,7 @@ async fn read_json(request: Request<hyper::body::Incoming>) -> Result<Value, Wor
 
 async fn upload_content(
     state: &WorkbenchShellState,
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
     query: Option<&str>,
 ) -> Result<crate::WorkbenchContentDescriptor, WorkbenchShellError> {
     let name = query_param(query, "name")
@@ -3691,7 +3741,7 @@ fn representation_digest_header(content_digest: &str) -> Result<String, Workbenc
 
 async fn serve_content(
     state: &WorkbenchShellState,
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
     descriptor_id: &str,
     download: bool,
 ) -> Result<Response<ShellBody>, WorkbenchShellError> {
@@ -3952,18 +4002,27 @@ fn from_the_workbenchs_own_page(headers: &hyper::HeaderMap) -> bool {
     clippy::too_many_lines,
     reason = "one match over the shell's whole route table; splitting it would hide which routes exist"
 )]
-async fn route_shell(
+pub(crate) async fn route_shell(
     state: &Arc<WorkbenchShellState>,
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
 ) -> Response<ShellBody> {
     let method = request.method().clone();
-    let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
+    // Built into a product, the Workbench is drawn under a path of that
+    // product's server, and nothing of it is anywhere else.
+    let path = match state.under(request.uri().path()) {
+        Ok(path) => path,
+        Err(refused) => return *refused,
+    };
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     // Who asks is found here, before anything is answered, and nowhere else.
     let from = state.came_from(&request);
+    let said = match state.said_by(&request) {
+        Ok(said) => said,
+        Err(refused) => return *refused,
+    };
     let who = if segments.first() == Some(&"api") {
-        match state.let_in(&method, &segments, request.headers(), &from) {
+        match state.let_in(&method, &segments, request.headers(), &from, said) {
             Ok(who) => who,
             Err(refused) => return *refused,
         }
@@ -4055,6 +4114,26 @@ async fn route_shell(
                 Err(error) => return error_response(&error),
             };
             json_result(state.amend_profile(profile_id, &body))
+        }
+        // The servers an agent's session is handed: what it attaches and
+        // what the product this harness is built into gives it.
+        (&Method::GET, ["api", "profiles", profile_id, "servers"]) => {
+            json_result(state.servers_of(profile_id).and_then(|servers| {
+                let profile = state
+                    .inventory
+                    .select(profile_id)
+                    .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?;
+                let attached: BTreeSet<&str> = profile
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.server_name.as_str())
+                    .collect();
+                let given: Vec<&String> = servers
+                    .iter()
+                    .filter(|name| !attached.contains(name.as_str()))
+                    .collect();
+                Ok(json!({"servers": servers, "given": given}))
+            }))
         }
         (&Method::GET, ["api", "permission-profiles"]) => json_result(Ok(json!({
             "profiles": crate::permission_profiles(),
@@ -4733,7 +4812,7 @@ async fn route_upload(
     state: &WorkbenchShellState,
     connection_id: &str,
     app_id: &str,
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
 ) -> Response<ShellBody> {
     match *request.method() {
         Method::OPTIONS => Response::builder()
@@ -4838,7 +4917,7 @@ async fn route_app_view(
 /// `/api` does not exist on this origin.
 async fn route_sandbox(
     state: &WorkbenchShellState,
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
 ) -> Response<ShellBody> {
     let path = request.uri().path().to_owned();
     let segments = path.trim_start_matches('/').split('/').collect::<Vec<_>>();
@@ -4946,10 +5025,7 @@ static UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Stream a request body into a fresh file under the workspace's upload
 /// directory, refusing past the limit. Answers the workspace-relative path
 /// (portable, forward slashes) and the byte count.
-async fn receive_upload(
-    root: &Path,
-    mut body: hyper::body::Incoming,
-) -> Result<(String, u64), UploadRefusal> {
+async fn receive_upload(root: &Path, mut body: AskedBody) -> Result<(String, u64), UploadRefusal> {
     let directory = root.join(UPLOAD_DIRECTORY);
     tokio::fs::create_dir_all(&directory)
         .await
@@ -5104,7 +5180,7 @@ async fn accept_until_told<Route, Answer>(
     mut told: tokio::sync::oneshot::Receiver<()>,
     route: Route,
 ) where
-    Route: Fn(Request<hyper::body::Incoming>) -> Answer + Clone + Send + 'static,
+    Route: Fn(Request<AskedBody>) -> Answer + Clone + Send + 'static,
     Answer: Future<Output = Response<ShellBody>> + Send,
 {
     let mut connections = tokio::task::JoinSet::new();
@@ -5116,7 +5192,8 @@ async fn accept_until_told<Route, Answer>(
                 let route = route.clone();
                 let tls = tls.clone();
                 connections.spawn(async move {
-                    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
+                    let service = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
+                        let mut request = asked(request);
                         request.extensions_mut().insert(door::CameFrom(from));
                         let route = route.clone();
                         async move { Ok::<_, Infallible>(route(request).await) }

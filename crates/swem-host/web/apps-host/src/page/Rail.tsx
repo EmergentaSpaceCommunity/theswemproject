@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { fetchJson } from "../http.ts";
+import { named } from "./door.ts";
 import { ChatSign, Gear, Moon, People, Plug, Plus, Shop, Sun, Tiles } from "./icons.tsx";
 import { go, usePlace, type Place } from "./place.ts";
 import type { Participant } from "./types.ts";
@@ -103,6 +104,7 @@ const here = (place: Place, agent: string): boolean => place.at === "agent" && p
 
 export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: () => void }) {
   const place = usePlace();
+  const called = useStore(named, (state) => state.called);
   const owner = useStore(world, (state) => state.owner);
   const participants = useStore(world, (state) => state.participants);
   const several = useStore(world, (state) => chatsOf(state, null).map((chat) => chat.chat_id).join(" "));
@@ -114,7 +116,7 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
     <nav className="k-rail w-rail" aria-label="Workbench">
       <div className="w-brand">
         <span className="w-brand-mark" />
-        <span>SWEM</span>
+        <span>{called}</span>
       </div>
       <div className="k-rail-group">
         <span className="k-eyebrow">Agents</span>

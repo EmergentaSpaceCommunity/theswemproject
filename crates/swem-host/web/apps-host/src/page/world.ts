@@ -6,6 +6,7 @@
 // kept here; what was said in a chat is kept per chat, and only for chats
 // somebody opened.
 
+import { at } from "../base.ts";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 import { fetchJson } from "../http.ts";
@@ -145,7 +146,7 @@ let stream: EventSource | null = null;
 /// down comes back by itself, from the place it had reached.
 export function follow(): void {
   if (stream) return;
-  stream = new EventSource("/api/stream");
+  stream = new EventSource(at("/api/stream"));
   const whole = (message: MessageEvent<string>) => stands(JSON.parse(message.data) as Now);
   stream.addEventListener("state", whole);
   stream.addEventListener("reset", (message) => {

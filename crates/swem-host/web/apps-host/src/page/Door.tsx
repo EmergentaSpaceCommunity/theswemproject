@@ -5,7 +5,9 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { SIGN_IN_ASKED } from "../http.ts";
-import { comeBack, doorStanding, likelyName, register, signIn, wordForADevice, type DoorStanding } from "./door.ts";
+import { useStore } from "zustand";
+
+import { comeBack, doorStanding, likelyName, named, register, signIn, wordForADevice, type DoorStanding } from "./door.ts";
 import { Check, Key, Lock } from "./icons.tsx";
 import { ThemeSwitch } from "./Rail.tsx";
 
@@ -25,6 +27,7 @@ function Steps({ at }: { at: number }) {
 }
 
 function Alone({ children }: { children: ReactNode }) {
+  const called = useStore(named, (state) => state.called);
   return (
     <div className="w-shell w-alone">
       <div className="w-alone-theme">
@@ -32,7 +35,7 @@ function Alone({ children }: { children: ReactNode }) {
       </div>
       <div className="w-brand">
         <span className="w-brand-mark" />
-        <span>SWEM</span>
+        <span>{called}</span>
       </div>
       {children}
     </div>

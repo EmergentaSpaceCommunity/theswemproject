@@ -149,10 +149,15 @@ closing and reopening the editor returns to the same conversation. Walks:
 
 ## GJ-07 — Embed the harness in another application
 
-An application starts a Workbench through the crate's product builder in a page of code and, with
-a token, drives a session from a page of its own on another origin. Status: the
-builder and the example are done (roadmap C1; `tests/product::an_embedder_serves_a_workbench_
-from_a_page_of_code`); the token comes with roadmap S1.
+An application starts a Workbench through the crate's product builder in a page of code. One
+with a server, people and a way in of its own builds the harness in without a listener: it
+hands over what it heard, for whom it let in; each person has a Workbench under a path of the
+product's server, called by the product's name, with them as its owner by the name the product
+gave; an agent is handed the server the product resolved for it; what a person gives is kept
+where the product says. Status: done (roadmap C1 and S4; `examples/built_in.rs`,
+`product_front_door::a_product_of_ones_own_has_the_harness_built_in`,
+`tests/product.rs`). Not there: Apps drawn in a harness built in for several people, and the
+built-in machine and keepers hidden by the product.
 
 ## GJ-14 — A Workbench on a server of one's own
 

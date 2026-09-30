@@ -11,20 +11,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use http_body_util::BodyExt as _;
 use hyper::header::HeaderValue;
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    ShellBody, WorkbenchShellState, carries_the_secret, from_the_workbenchs_own_page, read_json,
-    respond_json,
+    AskedBody, ShellBody, WorkbenchShellState, carries_the_secret, from_the_workbenchs_own_page,
+    read_json, respond_json,
 };
 use crate::{Access, AccessError, CameBy, May, Principal};
 
 /// Where a request came from, as the listener saw it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CameFrom(pub SocketAddr);
+
+/// Who asks, as the product the harness is built into said when it handed
+/// the request over. Only that product's own code can say it: it travels
+/// with the request inside the process and is nothing a caller can send.
+#[derive(Clone, Debug)]
+pub(crate) struct SaidBy(pub Principal);
 
 /// How the way to a Workbench served at an address is kept closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,7 +131,7 @@ fn answered<T: serde::Serialize>(result: Result<T, AccessError>) -> Response<She
 }
 
 async fn body_of<T: serde::de::DeserializeOwned>(
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
 ) -> Result<T, Refused> {
     let value = read_json(request)
         .await
@@ -287,6 +294,7 @@ impl WorkbenchShellState {
         segments: &[&str],
         headers: &HeaderMap,
         from: &str,
+        said: Option<Principal>,
     ) -> Result<Option<Principal>, Refused> {
         // Nothing about the route: a caller that is not let in learns
         // neither which routes exist nor what they wanted.
@@ -296,6 +304,15 @@ impl WorkbenchShellState {
                 &json!({"error": "forbidden"}),
             ))
         };
+        if self.built_under.get().is_some() {
+            // Who a person is, the product said. Which page asks is still
+            // asked here: another site's page is no more this Workbench's
+            // under a product's roof than under its own.
+            return match said {
+                Some(who) if from_the_workbenchs_own_page(headers) => Ok(Some(who)),
+                _ => Err(forbidden()),
+            };
+        }
         let Some(served) = self.served_at.get() else {
             if !from_the_workbenchs_own_page(headers)
                 || self
@@ -349,6 +366,92 @@ impl WorkbenchShellState {
             .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))
     }
 
+    /// Name the person this Workbench is as a product knows them.
+    ///
+    /// # Errors
+    ///
+    /// The ledger cannot be written, or the name is one no chat can carry.
+    pub async fn name_the_owner(&self, name: &str) -> Result<(), super::WorkbenchShellError> {
+        let name = name.trim().to_owned();
+        self.with_ledger(move |ledger| {
+            let owner = ledger.owner()?;
+            if owner.name == name {
+                return Ok(());
+            }
+            let handle = crate::handle_from(&name);
+            ledger
+                .name_participant(&owner.participant_id, Some(&name), Some(&handle), None)
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))
+    }
+
+    /// Build this Workbench into a product: it is drawn under `under` on
+    /// that product's server, and who asks is what the product says.
+    pub fn build_into(&self, under: &str) {
+        let under = under.trim_end_matches('/');
+        let under = if under.is_empty() || under.starts_with('/') {
+            under.to_owned()
+        } else {
+            format!("/{under}")
+        };
+        let _ = self.built_under.set(under);
+    }
+
+    /// Call the product by its own name on the page.
+    pub fn call_it(&self, name: &str) {
+        let _ = self.called.set(name.trim().to_owned());
+    }
+
+    /// What is asked for, with the path the Workbench is drawn under taken
+    /// off. What is asked for elsewhere is not the Workbench's to answer,
+    /// and the path without its last stroke is sent on to the one with it,
+    /// so that what the page names beside itself is found.
+    pub(super) fn under(&self, path: &str) -> Result<String, Refused> {
+        let Some(under) = self.built_under.get().filter(|under| !under.is_empty()) else {
+            return Ok(path.to_owned());
+        };
+        match path.strip_prefix(under.as_str()) {
+            Some("") => Err(Box::new(
+                Response::builder()
+                    .status(StatusCode::PERMANENT_REDIRECT)
+                    .header(hyper::header::LOCATION, format!("{under}/"))
+                    .body(
+                        http_body_util::Full::new(hyper::body::Bytes::new())
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
+                    .expect("a redirect"),
+            )),
+            Some(rest) if rest.starts_with('/') => Ok(rest.to_owned()),
+            _ => Err(Box::new(respond_json(
+                StatusCode::NOT_FOUND,
+                &json!({"error": "not found"}),
+            ))),
+        }
+    }
+
+    /// Who the product said asks, when the harness is built into one.
+    /// Built in, a request nobody vouched for is answered by nothing: not
+    /// by a route, not by the page.
+    pub(super) fn said_by<Body>(
+        &self,
+        request: &Request<Body>,
+    ) -> Result<Option<Principal>, Refused> {
+        let said = request
+            .extensions()
+            .get::<SaidBy>()
+            .map(|said| said.0.clone());
+        if self.built_under.get().is_some() && said.is_none() {
+            return Err(Box::new(respond_json(
+                StatusCode::FORBIDDEN,
+                &json!({"error": "forbidden"}),
+            )));
+        }
+        Ok(said)
+    }
+
     /// Where a scheduler outside knocks, when this Workbench is served at
     /// an address, and how many tokens that may knock were made.
     pub(super) fn knocked_on(&self) -> (Option<String>, usize) {
@@ -383,13 +486,15 @@ impl WorkbenchShellState {
     }
 
     fn door_standing(&self, who: Option<&Principal>) -> Value {
+        let called = self.called.get().map_or("SWEM", String::as_str);
         match self.served_at.get() {
-            None => json!({"at": null, "claimed": true, "who": who}),
+            None => json!({"at": null, "claimed": true, "who": who, "called": called}),
             Some(served) => json!({
                 "at": served.access.address().origin().ascii_serialization(),
                 "name": served.access.address().host_str(),
                 "claimed": served.access.claimed().unwrap_or(true),
                 "who": who,
+                "called": called,
             }),
         }
     }
@@ -452,10 +557,10 @@ pub(super) async fn route_door(
     state: &Arc<WorkbenchShellState>,
     method: &Method,
     segments: &[&str],
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
     who: Option<&Principal>,
     from: &str,
-) -> Result<Response<ShellBody>, Request<hyper::body::Incoming>> {
+) -> Result<Response<ShellBody>, Request<AskedBody>> {
     if !matches!(segments, ["api", "access", ..]) {
         return Err(request);
     }

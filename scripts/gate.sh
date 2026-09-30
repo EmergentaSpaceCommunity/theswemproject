@@ -35,8 +35,9 @@ cargo build -p swem-host --bin swem-hands-agent --bin swem-echo-agent \
 # cleanly when this machine has no Podman: see
 # scripts/build-agent-container-image.sh.
 
-echo "==> the product binary"
+echo "==> the product binary, and the example product with the harness built in"
 cargo build -p swem-cli --bin swem
+cargo build -p swem-host --example built_in
 
 # A browser refuses to start as root without `--no-sandbox`, and says so in
 # Chromium's own words about a sandbox. Containers run as root, so the walks

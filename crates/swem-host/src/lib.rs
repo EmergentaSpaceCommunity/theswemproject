@@ -38,6 +38,7 @@ mod permission_profile;
 pub mod product;
 mod profile;
 mod routing;
+mod secrets;
 mod session;
 mod surface;
 mod time;
@@ -72,6 +73,7 @@ pub use keys::{KeyError, KeyHeld, KeyStore, PROVIDER_KEY_SCHEMA, ProviderKey};
 pub use permission_profile::*;
 pub use profile::*;
 pub use routing::*;
+pub use secrets::{InFiles, Keeper, SecretKeeper};
 pub use session::agent_takes;
 pub use session::*;
 pub(crate) use surface::NativeOutputProjection;
@@ -106,6 +108,7 @@ pub use workbench_shell::{
     mint_session_token, serve_workbench, serve_workbench_http, serve_workbench_http_with_apps,
     serve_workbench_http_with_apps_at,
 };
+pub use workbench_shell::{AskedBody, ShellBody, asked};
 
 pub const ACP_REGISTRY_INDEX: &str =
     "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";

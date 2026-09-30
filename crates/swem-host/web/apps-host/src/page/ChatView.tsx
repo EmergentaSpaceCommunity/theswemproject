@@ -4,6 +4,7 @@
 // like, who it is from and what an agent did between its words are drawn
 // here from the chat's own timeline.
 
+import { at } from "../base.ts";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -303,7 +304,7 @@ function One({ item, people }: { item: Item; people: Record<string, Participant>
       return <Plan entries={item.entries} />;
     case "file":
       return (
-        <a className="k-chip" href={`/api/content/${encodeURIComponent(item.file.descriptor_id)}`} target="_blank" rel="noopener noreferrer">
+        <a className="k-chip" href={at(`/api/content/${encodeURIComponent(item.file.descriptor_id)}`)} target="_blank" rel="noopener noreferrer">
           <Clip size={12} />
           <span>{item.file.name}</span>
         </a>
@@ -362,7 +363,7 @@ function Said() {
 }
 
 async function handOver(file: File): Promise<string> {
-  const response = await fetch(`/api/content?name=${encodeURIComponent(file.name)}`, {
+  const response = await fetch(at(`/api/content?name=${encodeURIComponent(file.name)}`), {
     method: "POST",
     headers: { "content-type": file.type || "application/octet-stream" },
     body: file,

@@ -63,6 +63,22 @@ impl WorkbenchShellState {
         self.settle_keys()
     }
 
+    /// Keep the keys of providers with a keeper a product supplied, named
+    /// under `keys/`.
+    ///
+    /// # Errors
+    ///
+    /// Keys are enabled already.
+    pub fn enable_provider_keys_kept_by(
+        &self,
+        keeper: crate::Keeper,
+    ) -> Result<(), WorkbenchShellError> {
+        self.provider_keys
+            .set(KeyStore::kept_by(keeper, "keys/"))
+            .map_err(|_| WorkbenchShellError::Conflict("keys are already enabled".into()))?;
+        self.settle_keys()
+    }
+
     fn keys(&self) -> Result<&KeyStore, WorkbenchShellError> {
         self.provider_keys.get().ok_or_else(|| {
             WorkbenchShellError::NotFound(
@@ -107,7 +123,7 @@ impl WorkbenchShellState {
     /// is there and cannot be read.
     pub fn providers_standing(
         &self,
-    ) -> Result<(Vec<ModelProviderStanding>, Option<&'static str>), WorkbenchShellError> {
+    ) -> Result<(Vec<ModelProviderStanding>, Option<String>), WorkbenchShellError> {
         let profiles = self.profiles()?;
         let keys = self.provider_keys.get();
         let standing = self
@@ -132,7 +148,7 @@ impl WorkbenchShellState {
                 })
             })
             .collect::<Result<Vec<_>, WorkbenchShellError>>()?;
-        Ok((standing, keys.map(KeyStore::kept_by)))
+        Ok((standing, keys.map(KeyStore::kept_by_words)))
     }
 
     /// Give a provider its key.

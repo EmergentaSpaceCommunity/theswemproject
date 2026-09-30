@@ -14,6 +14,7 @@ import { useStore } from "zustand";
 import type { AgentSkill, DeclareMcpServer, McpServerView, Profile } from "../../agent/session.ts";
 import { sessionStore, useSession } from "../../agent/store.ts";
 import { fetchJson } from "../../http.ts";
+import { named } from "../door.ts";
 import { Box, Brain, Laptop, Wrench } from "../icons.tsx";
 import { go } from "../place.ts";
 import { providers as providersStore, providing } from "../providers.ts";
@@ -409,6 +410,15 @@ function DeclareServer({ onDone }: { onDone: () => void }) {
 function Tools({ profile }: { profile: Profile }) {
   const state = useSession();
   const [declaring, setDeclaring] = useState(false);
+  const called = useStore(named, (known) => known.called);
+  // What the product this Workbench is built into gives this agent, beside
+  // what it attaches itself.
+  const [given, setGiven] = useState<string[]>([]);
+  useEffect(() => {
+    fetchJson<{ given: string[] }>(`/api/profiles/${encodeURIComponent(profile.profile_id)}/servers`)
+      .then((handed) => setGiven(handed.given))
+      .catch(() => setGiven([]));
+  }, [profile.profile_id, profile.revision]);
   const attached = new Set((profile.attachments ?? []).map((attachment) => attachment.server_name));
   const toggle = async (name: string) => {
     inPart("tools");
@@ -469,7 +479,19 @@ function Tools({ profile }: { profile: Profile }) {
               ))
           : null}
       </div>
-      {state.mcpServers.length === 0 ? (
+      {given.length > 0 ? (
+        <div className="w-col w-close">
+          {given.map((name) => (
+            <div className="server-row k-row w-nowrap" data-server={name} data-given="true" key={name}>
+              <span className="k-two k-grow">
+                <span className="k-name">{name}</span>
+                <span className="k-caption">Given by {called} to this agent. It is there whatever is attached above.</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {state.mcpServers.length === 0 && given.length === 0 ? (
         <span id="mcp-servers-empty" className="k-caption">
           Nothing to attach yet. Install a server from the Store, or add one of your own.
         </span>

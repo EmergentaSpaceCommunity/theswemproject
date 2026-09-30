@@ -1918,6 +1918,137 @@ fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
+/// The example built beside this crate's binaries by `scripts/gate.sh`: a
+/// product that is not SWEM with the harness built in.
+fn the_example_product() -> PathBuf {
+    let example = Path::new(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join("examples")
+        .join(if cfg!(windows) {
+            "built_in.exe"
+        } else {
+            "built_in"
+        });
+    assert!(
+        example.is_file(),
+        "this walk needs the example product, which cargo test does not build. Run:\n  \
+         cargo build -p swem-host --example built_in\nscripts/gate.sh does this and the rest."
+    );
+    example
+}
+
+/// Somebody builds the harness into a product of their own: their server,
+/// their people, their name. Each person finds a Workbench of their own
+/// under a path of that server, and nobody finds another's.
+#[test]
+#[ignore = "product gate: starts the example product and drives a real browser"]
+fn a_product_of_ones_own_has_the_harness_built_in() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let example = the_example_product();
+    let root = fresh_data_root("built-in");
+    // Each person's data root has the agent they may make theirs.
+    for person in ["ada", "bo"] {
+        let agents = root.join(person).join("agents");
+        std::fs::create_dir_all(&agents).expect("the agents directory");
+        let hands = Path::new(env!("CARGO_BIN_EXE_swem"))
+            .parent()
+            .expect("a directory")
+            .join(if cfg!(windows) {
+                "swem-hands-agent.exe"
+            } else {
+                "swem-hands-agent"
+            });
+        std::fs::write(
+            agents.join("hands.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "id": "hands",
+                "name": "My own agent",
+                "command": hands.display().to_string(),
+            }))
+            .expect("a declaration"),
+        )
+        .expect("write the declaration");
+    }
+    let server = Path::new(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("a directory")
+        .join(if cfg!(windows) {
+            "swem-mcp-echo.exe"
+        } else {
+            "swem-mcp-echo"
+        });
+    let mut child = Command::new(&example)
+        .env("SWEM_EXAMPLE_ROOT", &root)
+        .env("SWEM_EXAMPLE_SERVER", &server)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start the example product");
+    let stdout = child.stdout.take().expect("the example's stdout");
+    let product = Product { child };
+    let mut lines = BufReader::new(stdout).lines();
+    let (mut address, mut ada, mut bo) = (None, None, None);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline && bo.is_none() {
+        let Some(Ok(line)) = lines.next() else { break };
+        println!("example: {line}");
+        if let Some(found) = line.strip_prefix("Example: ") {
+            address = Some(found.trim().to_owned());
+        } else if let Some(found) = line.strip_prefix("Ada comes in at: ") {
+            ada = Some(found.trim().to_owned());
+        } else if let Some(found) = line.strip_prefix("Bo comes in at: ") {
+            bo = Some(found.trim().to_owned());
+        }
+    }
+    // Keep reading: a pipe dropped here would kill the example mid-walk.
+    std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            println!("example: {line}");
+        }
+    });
+    let (address, ada, bo) = (
+        address.expect("the example printed its address"),
+        ada.expect("the example printed Ada's way in"),
+        bo.expect("the example printed Bo's way in"),
+    );
+    let adas_agents = format!("{address}people/ada/agents/");
+
+    // From outside, as a program: nobody the product did not let in gets
+    // anything of the harness, at the page or behind it.
+    for route in ["", "api/profiles", "api/access", "workbench.js"] {
+        let (status, _) = knock(&format!("{adas_agents}{route}"), &[]);
+        assert_eq!(
+            status, 403,
+            "{route} answered somebody the product never let in"
+        );
+    }
+
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/built_in_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&ada)
+        .arg(&bo)
+        .arg(&adas_agents)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the driver");
+    product.stop();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("built in OK"),
+        "the product's people did not find their own Workbenches:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A person gives their own agent a role and a model, and the agent gets
 /// them. The role is a file in the agent's working directory - the only
 /// place every agent reads - and the fixture agent reads that file back when

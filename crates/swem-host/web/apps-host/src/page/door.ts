@@ -5,7 +5,13 @@
 
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
+import { createStore } from "zustand/vanilla";
+
 import { fetchJson } from "../http.ts";
+
+/// What the product is called: SWEM, or the name of a product the harness
+/// is built into.
+export const named = createStore<{ called: string }>(() => ({ called: "SWEM" }));
 
 export type May = "everything" | "say-what-is-due";
 
@@ -13,7 +19,8 @@ export type Who =
   | { by: "this-run" }
   | { by: "device"; device_id: string; name: string }
   | { by: "code" }
-  | { by: "token"; token_id: string; name: string; may: May[] };
+  | { by: "token"; token_id: string; name: string; may: May[] }
+  | { by: "embedder" };
 
 export interface DoorStanding {
   /// Where this Workbench is served; nothing when it is on this computer alone.
@@ -21,6 +28,7 @@ export interface DoorStanding {
   name?: string;
   claimed: boolean;
   who: Who | null;
+  called?: string;
 }
 
 export interface Device {
@@ -72,7 +80,13 @@ interface CameIn {
 
 const send = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-export const doorStanding = (): Promise<DoorStanding> => fetchJson<DoorStanding>("/api/access");
+export async function doorStanding(): Promise<DoorStanding> {
+  const standing = await fetchJson<DoorStanding>("/api/access");
+  const called = standing.called?.trim() || "SWEM";
+  if (named.getState().called !== called) named.setState({ called });
+  if (typeof document !== "undefined") document.title = called === "SWEM" ? "SWEM Workbench" : called;
+  return standing;
+}
 
 /// What the browser said when a person turned the ceremony down or the
 /// device would not do it, in words of our own: the browser's are long

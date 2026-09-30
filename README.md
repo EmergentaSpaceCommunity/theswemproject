@@ -80,6 +80,27 @@ observer command - and answers the assembled product,
 which opens the Workbench door or the editor door. Nothing is process-global: two products in one
 process read different roots and registries.
 
+A product with a server, people and a way in of its own builds the harness in without a
+listener of the harness's: it hands over the requests it heard, for whom it let in, and draws a
+Workbench per person under a path of its own, called by its own name.
+
+```rust
+let ada = Product::at(DataRoot::at(root.join("ada")))
+    .called("Example")
+    .owned_by("Ada")
+    .servers_for(|profile| vec![/* the product's server, for this agent */])
+    .secrets_kept_by(vault)          // where the product keeps what a person gives
+    .assemble()?
+    .built_in(BuiltIn { under: "/people/ada/agents".into() })
+    .await?;
+// In the product's own server, once it knows the request is Ada's:
+let response = ada.answer(request).await;
+```
+
+`cargo run -p swem-host --example built_in` is a product of that shape with two people, and the
+product gate walks it. Who a person is, the product settles before it hands a request over;
+the harness takes its word and asks nothing else.
+
 ## Develop
 
 ```text

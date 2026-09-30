@@ -83,12 +83,18 @@ pub struct DeclareMcpServerBody {
 /// resolves the same way whatever the server is.
 #[derive(Clone, Debug)]
 pub struct McpCatalogue {
-    root: PathBuf,
+    /// Who keeps the declarations: they hold what a person gave - the key
+    /// in a header, the token in an environment - so they are kept as a
+    /// key is.
+    keeper: crate::Keeper,
+    /// What the declarations are named under at the keeper.
+    under: String,
     declared: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
 }
 
 impl McpCatalogue {
-    /// Open the catalogue directory and load every declaration in it.
+    /// Open the catalogue as files under `root`, closed to others, and load
+    /// every declaration in it.
     ///
     /// # Errors
     ///
@@ -99,27 +105,43 @@ impl McpCatalogue {
         root: &Path,
         declared: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
     ) -> Result<Self, WorkbenchShellError> {
-        std::fs::create_dir_all(root)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let root = std::fs::canonicalize(root)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        // A declaration holds what a person gave it - the key in a header,
-        // the token in its environment - so it is kept as a key is. What an
-        // earlier version left open is closed here.
-        let closing = |error: std::io::Error| {
+        let keeper = crate::InFiles::at(root).map_err(|error| {
             WorkbenchShellError::Failed(format!(
-                "the declared servers at {} could not be closed to others: {error}",
+                "the declared servers at {} could not be kept: {error}",
                 root.display()
             ))
-        };
-        crate::closed::directory(&root).map_err(closing)?;
-        for entry in std::fs::read_dir(&root).map_err(closing)? {
-            let path = entry.map_err(closing)?.path();
+        })?;
+        // What an earlier version left open is closed here.
+        for entry in std::fs::read_dir(root)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+        {
+            let path = entry
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+                .path();
             if path.is_file() {
-                crate::closed::file(&path).map_err(closing)?;
+                crate::closed::file(&path)
+                    .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
             }
         }
-        let catalogue = Self { root, declared };
+        Self::kept_by(std::sync::Arc::new(keeper), "", declared)
+    }
+
+    /// The catalogue kept by `keeper`, named under `under` (`mcp-servers/`,
+    /// or nothing), with every declaration loaded.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn kept_by(
+        keeper: crate::Keeper,
+        under: &str,
+        declared: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
+    ) -> Result<Self, WorkbenchShellError> {
+        let catalogue = Self {
+            keeper,
+            under: under.to_owned(),
+            declared,
+        };
         for (name, server) in catalogue.stored()? {
             catalogue.insert_declared(&name, server)?;
         }
@@ -132,38 +154,36 @@ impl McpCatalogue {
         std::sync::Arc::clone(&self.declared)
     }
 
-    fn path_of(&self, name: &str) -> Result<PathBuf, WorkbenchShellError> {
+    fn name_of(&self, name: &str) -> Result<String, WorkbenchShellError> {
         validate_server_name(name)?;
-        Ok(self.root.join(format!("{name}.json")))
+        Ok(format!("{}{name}.json", self.under))
     }
 
     fn stored(&self) -> Result<BTreeMap<String, McpServer>, WorkbenchShellError> {
         let mut found = BTreeMap::new();
-        for entry in std::fs::read_dir(&self.root)
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
-        {
-            let entry = entry.map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-            let path = entry.path();
-            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+        let kept = self
+            .keeper
+            .list(&self.under)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        for document in kept {
+            let Some(stem) = document
+                .strip_prefix(&self.under)
+                .and_then(|file| file.strip_suffix(".json"))
+            else {
                 continue;
-            }
-            let bytes = std::fs::read(&path)
-                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+            };
+            let bytes = self
+                .keeper
+                .read(&document)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+                .unwrap_or_default();
             let server: McpServer = serde_json::from_slice(&bytes).map_err(|error| {
-                WorkbenchShellError::Failed(format!(
-                    "{} is not a declaration: {error}",
-                    path.display()
-                ))
+                WorkbenchShellError::Failed(format!("{document} is not a declaration: {error}"))
             })?;
             let name = declaration_name(&server)?;
-            let stem = path
-                .file_stem()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default();
             if stem != name {
                 return Err(WorkbenchShellError::Failed(format!(
-                    "{} declares the server {name}, which does not match its file name",
-                    path.display()
+                    "{document} declares the server {name}, which does not match its name"
                 )));
             }
             found.insert(name, server);
@@ -216,8 +236,13 @@ impl McpCatalogue {
         body: &DeclareMcpServerBody,
     ) -> Result<McpServerView, WorkbenchShellError> {
         let name = body.name.trim().to_owned();
-        let path = self.path_of(&name)?;
-        if !path.is_file() {
+        let document = self.name_of(&name)?;
+        let kept = self
+            .keeper
+            .read(&document)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+            .is_some();
+        if !kept {
             let taken = self
                 .declared
                 .lock()
@@ -232,7 +257,8 @@ impl McpCatalogue {
         let server = build_declaration(&name, body)?;
         let bytes = serde_json::to_vec_pretty(&server)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        crate::closed::write(&path, &bytes)
+        self.keeper
+            .write(&document, &bytes)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
         self.insert_declared(&name, server.clone())?;
         Ok(view_of(&name, &server, McpServerOrigin::Catalogue))
@@ -245,13 +271,19 @@ impl McpCatalogue {
     /// Refuses an unknown name and a server the product declared (which is
     /// the product's to take away).
     pub fn forget(&self, name: &str) -> Result<(), WorkbenchShellError> {
-        let path = self.path_of(name)?;
-        if !path.is_file() {
+        let document = self.name_of(name)?;
+        let kept = self
+            .keeper
+            .read(&document)
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+            .is_some();
+        if !kept {
             return Err(WorkbenchShellError::NotFound(format!(
                 "no declared MCP server named {name} in this catalogue"
             )));
         }
-        std::fs::remove_file(&path)
+        self.keeper
+            .remove(&document)
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
         self.declared
             .lock()

@@ -5,6 +5,7 @@
 // line, not an error. Both the native-session surface and the independent
 // Project surface share this loader; opening either must not require the other.
 
+import { at } from "../base.ts";
 import type { OpenedApp } from "./session.ts";
 
 export interface MountedApp {
@@ -35,7 +36,7 @@ export function loadBridge(): Promise<boolean> {
   if (bridgeReady) return bridgeReady;
   bridgeReady = new Promise((resolve) => {
     const script = document.createElement("script");
-    script.src = "/apps-bridge.js";
+    script.src = at("/apps-bridge.js");
     script.onload = () => resolve(Boolean(window.SwemAppsBridge));
     script.onerror = () => resolve(false);
     document.head.appendChild(script);

@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 
 use super::chats::ledger_refusal;
 use super::{
-    Saying, ShellBody, StartChatBody, WorkbenchShellError, WorkbenchShellState, error_response,
-    json_result, query_param, read_json,
+    AskedBody, Saying, ShellBody, StartChatBody, WorkbenchShellError, WorkbenchShellState,
+    error_response, json_result, query_param, read_json,
 };
 use crate::RoutingLedger;
 
@@ -80,7 +80,7 @@ fn frame(event: &str, place: Option<u64>, data: &Value) -> Bytes {
 }
 
 async fn body_of<T: serde::de::DeserializeOwned>(
-    request: Request<hyper::body::Incoming>,
+    request: Request<AskedBody>,
 ) -> Result<T, WorkbenchShellError> {
     serde_json::from_value(read_json(request).await?)
         .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
@@ -289,8 +289,8 @@ pub(super) async fn route_chats(
     method: &Method,
     segments: &[&str],
     query: Option<&str>,
-    request: Request<hyper::body::Incoming>,
-) -> Result<Response<ShellBody>, Request<hyper::body::Incoming>> {
+    request: Request<AskedBody>,
+) -> Result<Response<ShellBody>, Request<AskedBody>> {
     Ok(match (method, segments) {
         (&Method::GET, ["api", "stream"]) => {
             let place = request

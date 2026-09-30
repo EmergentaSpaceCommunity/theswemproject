@@ -536,9 +536,11 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
   // something in a chat and reads what was said. What happened is read
   // from the product's own record, through the page's own door.
 
-  /// Ask the product something from the page, as the page does.
+  /// Ask the product something from the page, as the page does: beside
+  /// where the page was opened, which is the root of its address or, built
+  /// into a product, a path of that product's server.
   b.ask = async (path, init) => JSON.parse(await b.evaluate(`(async () => {
-    const response = await fetch(${JSON.stringify(path)}, ${JSON.stringify(init ?? {})});
+    const response = await fetch(new URL(${JSON.stringify(path)}.replace(/^\\//, ""), document.baseURI), ${JSON.stringify(init ?? {})});
     return JSON.stringify({status: response.status, body: await response.json().catch(() => null)});
   })()`));
   b.goTo = async (hash) => {

@@ -274,6 +274,7 @@ impl Assembled {
         let certificate_good_until = certificate
             .as_deref()
             .and_then(crate::workbench_shell::certificate_good_until);
+        self.name_the_owner().await?;
         let failed = |error: WorkbenchShellError| error.to_string();
         let owner = self.state.owner_name().await.map_err(failed)?;
         let access = Arc::new(

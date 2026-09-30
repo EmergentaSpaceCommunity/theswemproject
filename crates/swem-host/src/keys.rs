@@ -10,9 +10,8 @@
 //! What keeps a key is said to the person in words ([`KeyStore::kept_by`]),
 //! so that the day it is the system's keychain the page says so too.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -66,59 +65,58 @@ pub struct KeyHeld {
     pub given_ms: u64,
 }
 
-/// The keys of this data root.
+/// The keys of this product, wherever its keeper keeps them.
 #[derive(Clone, Debug)]
 pub struct KeyStore {
-    root: PathBuf,
+    keeper: crate::Keeper,
+    /// What the keys' documents are named under.
+    under: String,
 }
 
 impl KeyStore {
-    /// Open the directory keys are kept in, making it for its owner alone.
+    /// Keys as files under `root`, made for their owner alone.
     ///
     /// # Errors
     ///
     /// Returns [`KeyError`] when the directory cannot be made or closed to
     /// everybody else.
     pub fn open(root: &Path) -> Result<Self, KeyError> {
-        let io = |error: std::io::Error| KeyError::Io {
+        let keeper = crate::InFiles::at(root).map_err(|error| KeyError::Io {
             path: root.to_owned(),
             message: error.to_string(),
-        };
-        fs::create_dir_all(root).map_err(io)?;
-        // Closed every time it is opened, not only when it is made: a
-        // directory somebody opened up is closed again before a key is read.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(io)?;
+        })?;
+        Ok(Self::kept_by(Arc::new(keeper), ""))
+    }
+
+    /// Keys kept by `keeper`, named under `under` (`keys/`, or nothing).
+    #[must_use]
+    pub fn kept_by(keeper: crate::Keeper, under: &str) -> Self {
+        Self {
+            keeper,
+            under: under.to_owned(),
         }
-        Ok(Self {
-            root: fs::canonicalize(root).map_err(io)?,
-        })
     }
 
     /// What keeps the keys, in words a page can say.
     #[must_use]
-    pub fn kept_by(&self) -> &'static str {
-        "a file on this computer that only you can read"
+    pub fn kept_by_words(&self) -> String {
+        self.keeper.kept_by()
     }
 
-    fn path_of(&self, provider: &str) -> Result<PathBuf, KeyError> {
+    fn name_of(&self, provider: &str) -> Result<String, KeyError> {
         crate::profile::validate_id("provider", provider).map_err(KeyError::Invalid)?;
-        Ok(self.root.join(format!("{provider}.json")))
+        Ok(format!("{}{provider}.json", self.under))
     }
 
     fn stored(&self, provider: &str) -> Result<Option<StoredKey>, KeyError> {
-        let path = self.path_of(provider)?;
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(KeyError::Io {
-                    path,
-                    message: error.to_string(),
-                });
-            }
+        let name = self.name_of(provider)?;
+        let path = PathBuf::from(&name);
+        let Some(bytes) = self.keeper.read(&name).map_err(|error| KeyError::Io {
+            path: path.clone(),
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
         };
         let stored: StoredKey =
             serde_json::from_slice(&bytes).map_err(|error| KeyError::Unreadable {
@@ -165,7 +163,7 @@ impl KeyStore {
     ///
     /// Refuses blanks for a key and a variable that is not the name of one.
     pub fn give(&self, provider: &str, variable: &str, value: &str) -> Result<KeyHeld, KeyError> {
-        let path = self.path_of(provider)?;
+        let name = self.name_of(provider)?;
         // Blanks are not a key: handed to an engine they fail further away
         // and less legibly than having none.
         if value.trim().is_empty() {
@@ -193,31 +191,15 @@ impl KeyStore {
                 }),
         };
         let bytes = serde_json::to_vec_pretty(&stored).map_err(|error| KeyError::Unreadable {
-            path: path.clone(),
+            path: PathBuf::from(&name),
             message: error.to_string(),
         })?;
-        let io = |error: std::io::Error| KeyError::Io {
-            path: path.clone(),
-            message: error.to_string(),
-        };
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        {
-            let mut options = OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            // Its owner's alone from the first byte.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temporary).map_err(io)?;
-            file.write_all(&bytes).map_err(io)?;
-            file.sync_all().map_err(io)?;
-        }
-        fs::rename(&temporary, &path).map_err(|error| {
-            let _ = fs::remove_file(&temporary);
-            io(error)
-        })?;
+        self.keeper
+            .write(&name, &bytes)
+            .map_err(|error| KeyError::Io {
+                path: PathBuf::from(&name),
+                message: error.to_string(),
+            })?;
         Ok(KeyHeld {
             variable: stored.variable,
             given_ms: stored.given_ms,
@@ -230,14 +212,10 @@ impl KeyStore {
     ///
     /// Returns [`KeyError`] when the file is there and cannot be removed.
     pub fn take(&self, provider: &str) -> Result<(), KeyError> {
-        let path = self.path_of(provider)?;
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(KeyError::Io {
-                path,
-                message: error.to_string(),
-            }),
-        }
+        let name = self.name_of(provider)?;
+        self.keeper.remove(&name).map_err(|error| KeyError::Io {
+            path: PathBuf::from(name),
+            message: error.to_string(),
+        })
     }
 }

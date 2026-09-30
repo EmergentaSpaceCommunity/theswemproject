@@ -15,9 +15,11 @@
 //! read different roots, registries and catalogs.
 
 mod at_an_address;
+mod built_in;
 mod resolver;
 
 pub use at_an_address::{Closed, ServeAt, ServedAt};
+pub use built_in::{Answering, BuiltIn};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -210,7 +212,15 @@ pub struct Product {
     mcp_observer: Option<(PathBuf, Vec<String>)>,
     time_tools: Option<(PathBuf, Vec<String>)>,
     keep_time: Option<(PathBuf, Vec<String>)>,
+    called: Option<String>,
+    owned_by: Option<String>,
+    servers_for: Option<Arc<ServersFor>>,
+    secrets: Option<crate::Keeper>,
 }
+
+/// What a product says an agent is handed beside what its profile names:
+/// resolved when the agent's session opens, for that agent.
+type ServersFor = dyn Fn(&crate::PersonalAgentProfile) -> Vec<McpServer> + Send + Sync;
 
 impl Product {
     /// A product over `root`, with the defaults a person's machine gets: a
@@ -231,7 +241,52 @@ impl Product {
             mcp_observer: None,
             time_tools: None,
             keep_time: None,
+            called: None,
+            owned_by: None,
+            servers_for: None,
+            secrets: None,
         }
+    }
+
+    /// Who keeps what a person gives: the keys of providers, what a
+    /// profile is launched with, the values of declared servers. Without
+    /// it they are files under the data root, closed to others; a product
+    /// that has a place of its own for such things supplies it here and
+    /// the harness keeps nothing of them anywhere else.
+    #[must_use]
+    pub fn secrets_kept_by(mut self, keeper: crate::Keeper) -> Self {
+        self.secrets = Some(keeper);
+        self
+    }
+
+    /// Servers an agent is handed because the product says so, resolved
+    /// for that agent when its session opens: the product's own server
+    /// with what that agent may reach, say. A profile's own attachments
+    /// come first; a server named the same as one of them is not added
+    /// twice.
+    #[must_use]
+    pub fn servers_for<Resolve>(mut self, resolve: Resolve) -> Self
+    where
+        Resolve: Fn(&crate::PersonalAgentProfile) -> Vec<McpServer> + Send + Sync + 'static,
+    {
+        self.servers_for = Some(Arc::new(resolve));
+        self
+    }
+
+    /// What the product is called on the page, when it is not SWEM.
+    #[must_use]
+    pub fn called(mut self, name: impl Into<String>) -> Self {
+        self.called = Some(name.into());
+        self
+    }
+
+    /// Whose this Workbench is, by the name the product knows them by.
+    /// Without it the owner is named after the system's user, which is
+    /// right on a computer of one's own and wrong on a server of many.
+    #[must_use]
+    pub fn owned_by(mut self, name: impl Into<String>) -> Self {
+        self.owned_by = Some(name.into());
+        self
     }
 
     /// Keep the profiles somewhere other than `<root>/profiles`.
@@ -367,9 +422,10 @@ impl Product {
         });
         let agent_in_image = self.agent_in_image;
         let resolver_declarations = Arc::clone(&declarations);
+        let resolver_servers_for = self.servers_for.clone();
         let resolver_providers = root.model_providers();
         let resolver_installed = installed_root.clone();
-        let state = WorkbenchShellState::open_with_environment(
+        let mut state = WorkbenchShellState::open_with_environment(
             &profiles,
             &routes,
             self.operation_timeout,
@@ -408,6 +464,17 @@ impl Product {
                     }
                 }
                 drop(declared);
+                if let Some(servers_for) = &resolver_servers_for {
+                    for server in servers_for(profile) {
+                        let name = declaration_name(&server)?;
+                        let named_already = mcp_servers
+                            .iter()
+                            .any(|had| declaration_name(had).is_ok_and(|had| had == name));
+                        if !named_already {
+                            mcp_servers.push(server);
+                        }
+                    }
+                }
                 match backend {
                     crate::EnvironmentBackend::ThisMachine => {
                         Ok(crate::ResolvedDirectAgentConnection {
@@ -468,9 +535,17 @@ impl Product {
         // The MCP servers a person declares from the product land in the same
         // declaration map as the ones the product itself declared, so an
         // agent attaches either kind by name.
-        state
-            .enable_mcp_catalogue(&root.mcp_servers(), Arc::clone(&declarations))
-            .map_err(|error| error.to_string())?;
+        match &self.secrets {
+            Some(keeper) => {
+                state.keep_secrets_with(Arc::clone(keeper));
+                state
+                    .enable_mcp_catalogue_kept_by(Arc::clone(keeper), Arc::clone(&declarations))
+                    .map_err(|error| error.to_string())?;
+            }
+            None => state
+                .enable_mcp_catalogue(&root.mcp_servers(), Arc::clone(&declarations))
+                .map_err(|error| error.to_string())?,
+        }
         state
             .enable_model_providers(&root.model_providers())
             .map_err(|error| error.to_string())?;
@@ -479,9 +554,14 @@ impl Product {
             .map_err(|error| error.to_string())?;
         // After the providers: a key an agent held for its provider moves
         // to the provider, and that needs both.
-        state
-            .enable_provider_keys(&root.keys())
-            .map_err(|error| error.to_string())?;
+        match &self.secrets {
+            Some(keeper) => state
+                .enable_provider_keys_kept_by(Arc::clone(keeper))
+                .map_err(|error| error.to_string())?,
+            None => state
+                .enable_provider_keys(&root.keys())
+                .map_err(|error| error.to_string())?,
+        }
         if let Some((executable, args)) = self.mcp_observer {
             state.set_mcp_observer_command(executable, args);
         }
@@ -497,9 +577,13 @@ impl Product {
         if let Some((executable, args)) = self.keep_time {
             state.set_keep_time_command(executable, args);
         }
+        if let Some(called) = &self.called {
+            state.call_it(called);
+        }
         Ok(Assembled {
             state: Arc::new(state),
             root,
+            owned_by: self.owned_by,
         })
     }
 }
@@ -508,6 +592,7 @@ impl Product {
 pub struct Assembled {
     pub state: Arc<WorkbenchShellState>,
     pub root: DataRoot,
+    owned_by: Option<String>,
 }
 
 /// A Workbench served over HTTP: its handle, its address with this run's
@@ -521,6 +606,18 @@ pub struct Served {
 }
 
 impl Assembled {
+    /// Name the owner as the product knows them, when it said.
+    pub(crate) async fn name_the_owner(&self) -> Result<(), String> {
+        match &self.owned_by {
+            Some(name) => self
+                .state
+                .name_the_owner(name)
+                .await
+                .map_err(|error| error.to_string()),
+            None => Ok(()),
+        }
+    }
+
     /// Open the Workbench door: mint this run's secret, start the clock of
     /// standing instructions, and serve the page and its App sandbox.
     ///
@@ -534,6 +631,7 @@ impl Assembled {
         sandbox_bind: SocketAddr,
         apps_bundle: Option<PathBuf>,
     ) -> Result<Served, String> {
+        self.name_the_owner().await?;
         let token = crate::mint_session_token()?;
         self.state.set_session_token(token.clone());
         // The clock. A standing instruction runs where the product runs, so

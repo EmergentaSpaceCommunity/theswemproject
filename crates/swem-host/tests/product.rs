@@ -119,6 +119,235 @@ fn what_a_person_gave_is_kept_closed_to_others() {
     );
 }
 
+/// A product says what an agent is handed beside its own attachments,
+/// for that agent, when its session opens.
+#[tokio::test]
+async fn a_product_resolves_a_server_for_each_agent() {
+    use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
+
+    let root = fresh_root("servers-for");
+    // An agent this computer has: the fixture that says things back.
+    let agents = DataRoot::at(&root).agents();
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("echo.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id": "echo",
+            "name": "Says it back",
+            "command": env!("CARGO_BIN_EXE_swem-echo-agent"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let product = Product::at(DataRoot::at(&root))
+        .declare(McpServer::Stdio(
+            McpServerStdio::new("shared", env!("CARGO_BIN_EXE_swem-mcp-echo")).args(Vec::new()),
+        ))
+        .servers_for(|profile| {
+            vec![McpServer::Stdio(
+                McpServerStdio::new(
+                    format!("for-{}", profile.profile_id),
+                    env!("CARGO_BIN_EXE_swem-mcp-echo"),
+                )
+                .args(Vec::new()),
+            )]
+        })
+        .assemble()
+        .expect("the product assembles");
+    let ada = product
+        .state
+        .create_local_profile("echo", Some("ada"), None)
+        .expect("an agent for ada");
+    let bo = product
+        .state
+        .create_local_profile("echo", Some("bo"), None)
+        .expect("an agent for bo");
+    assert_eq!(
+        product
+            .state
+            .servers_of(&ada.profile_id)
+            .expect("ada's servers"),
+        vec!["for-ada".to_owned()]
+    );
+    assert_eq!(
+        product
+            .state
+            .servers_of(&bo.profile_id)
+            .expect("bo's servers"),
+        vec!["for-bo".to_owned()]
+    );
+    // What the profile names comes first, and a server named the same is
+    // not handed twice.
+    let named = product
+        .state
+        .amend_profile(
+            &ada.profile_id,
+            &swem_host::AmendProfileBody {
+                revision: ada.revision,
+                attachments: Some(vec!["shared".to_owned()]),
+                ..swem_host::AmendProfileBody::default()
+            },
+        )
+        .expect("ada attaches the shared server");
+    assert_eq!(named.attachments.len(), 1);
+    assert_eq!(
+        product
+            .state
+            .servers_of(&ada.profile_id)
+            .expect("ada's servers"),
+        vec!["shared".to_owned(), "for-ada".to_owned()]
+    );
+}
+
+/// A keeper a product might have: everything in memory, nothing on disk.
+#[derive(Debug, Default)]
+struct InMemory {
+    kept: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+}
+
+impl swem_host::SecretKeeper for InMemory {
+    fn kept_by(&self) -> String {
+        "the product's own vault".into()
+    }
+    fn read(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self.kept.lock().unwrap().get(name).cloned())
+    }
+    fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.kept
+            .lock()
+            .unwrap()
+            .insert(name.to_owned(), bytes.to_vec());
+        Ok(())
+    }
+    fn remove(&self, name: &str) -> std::io::Result<()> {
+        self.kept.lock().unwrap().remove(name);
+        Ok(())
+    }
+    fn list(&self, under: &str) -> std::io::Result<Vec<String>> {
+        Ok(self
+            .kept
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|name| name.starts_with(under) && !name[under.len()..].contains('/'))
+            .cloned()
+            .collect())
+    }
+}
+
+/// Every byte of every file under a directory.
+fn everything_under(path: &std::path::Path, into: &mut Vec<u8>) {
+    for entry in std::fs::read_dir(path).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            everything_under(&path, into);
+        } else {
+            into.extend(std::fs::read(&path).unwrap_or_default());
+        }
+    }
+}
+
+/// What a person gives is kept where the product says, and nowhere under
+/// the data root.
+#[test]
+fn a_product_keeps_what_a_person_gave_where_it_says() {
+    use swem_host::workbench_shell::GiveKeyBody;
+    use swem_host::{DeclareMcpServerBody, NamedValue};
+
+    let root = fresh_root("kept-by-product");
+    let agents = DataRoot::at(&root).agents();
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("echo.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id": "echo",
+            "name": "Says it back",
+            "command": env!("CARGO_BIN_EXE_swem-echo-agent"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let keeper = std::sync::Arc::new(InMemory::default());
+    let product = Product::at(DataRoot::at(&root))
+        .secrets_kept_by(keeper.clone())
+        .assemble()
+        .expect("the product assembles");
+    let state = &product.state;
+
+    let key = "sk-given-to-the-provider-7f3a";
+    state
+        .give_provider_key(
+            "anthropic",
+            &GiveKeyBody {
+                value: key.into(),
+                variable: None,
+            },
+        )
+        .expect("the key is given");
+    let header = "Bearer given-to-a-declared-server-9c1e";
+    state
+        .declare_mcp_server(&DeclareMcpServerBody {
+            name: "mine".into(),
+            transport: "http".into(),
+            url: "https://example.org/mcp".into(),
+            headers: vec![NamedValue {
+                name: "authorization".into(),
+                value: header.into(),
+            }],
+            ..DeclareMcpServerBody::default()
+        })
+        .expect("a server is declared");
+    let profile = state
+        .create_local_profile("echo", Some("ada"), None)
+        .expect("an agent");
+    let secret = "given-to-the-profile-2b8d";
+    let kind = swem_host::secret_types()[0].type_id;
+    state
+        .set_profile_secret(
+            &profile.profile_id,
+            kind,
+            "a secret",
+            Some("MY_SECRET"),
+            secret,
+        )
+        .expect("the secret is set");
+
+    // The keeper has each under the harness's own name for it.
+    let names: Vec<String> = keeper.kept.lock().unwrap().keys().cloned().collect();
+    assert_eq!(
+        names,
+        vec![
+            "keys/anthropic.json".to_owned(),
+            "mcp-servers/mine.json".to_owned(),
+            "profiles/ada/secrets.json".to_owned(),
+        ]
+    );
+    // And the harness reads them back from there.
+    assert!(
+        state
+            .providers_standing()
+            .expect("providers")
+            .1
+            .is_some_and(|words| words == "the product's own vault")
+    );
+    assert_eq!(
+        state
+            .profile_secrets(&profile.profile_id)
+            .expect("secrets")
+            .secrets
+            .len(),
+        1
+    );
+
+    // Nothing under the data root holds any of it.
+    let mut on_disk = Vec::new();
+    everything_under(&root, &mut on_disk);
+    let on_disk = String::from_utf8_lossy(&on_disk);
+    for given in [key, header, secret] {
+        assert!(!on_disk.contains(given), "{given} is under the data root");
+    }
+}
+
 /// The example built beside this crate's own binaries by `cargo test`.
 fn embed_example() -> PathBuf {
     let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem-echo-agent"));

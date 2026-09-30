@@ -79,6 +79,34 @@ impl WorkbenchShellState {
             .map_err(|_| WorkbenchShellError::Conflict("MCP catalogue is already enabled".into()))
     }
 
+    /// Keep the declared servers with a keeper a product supplied, named
+    /// under `mcp-servers/`.
+    ///
+    /// # Errors
+    ///
+    /// A declaration kept there is not one, or the catalogue is enabled
+    /// already.
+    pub fn enable_mcp_catalogue_kept_by(
+        &self,
+        keeper: crate::Keeper,
+        declared: std::sync::Arc<std::sync::Mutex<BTreeMap<String, McpServer>>>,
+    ) -> Result<(), WorkbenchShellError> {
+        let catalogue = McpCatalogue::kept_by(keeper, "mcp-servers/", declared)?;
+        self.mcp_catalogue
+            .set(catalogue)
+            .map_err(|_| WorkbenchShellError::Conflict("MCP catalogue is already enabled".into()))
+    }
+
+    /// Keep what a person gives a profile with a keeper a product
+    /// supplied, named under `profiles/`. Done before a door is opened.
+    pub fn keep_secrets_with(&mut self, keeper: crate::Keeper) {
+        let inventory = std::mem::replace(
+            &mut self.inventory,
+            PersonalAgentProfileStore::placeholder(),
+        );
+        self.inventory = inventory.secrets_kept_by(keeper, "profiles/");
+    }
+
     fn catalogue(&self) -> Result<&McpCatalogue, WorkbenchShellError> {
         self.mcp_catalogue.get().ok_or_else(|| {
             WorkbenchShellError::NotFound(

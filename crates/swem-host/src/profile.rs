@@ -397,6 +397,11 @@ impl PersonalAgentProfile {
 #[derive(Clone, Debug)]
 pub struct PersonalAgentProfileStore {
     root: PathBuf,
+    /// Who keeps what a person gave a profile: files beside the profile,
+    /// or the keeper of the product this harness is built into.
+    secrets: crate::Keeper,
+    /// What a profile's secrets are named under at the keeper.
+    secrets_under: String,
 }
 
 impl PersonalAgentProfileStore {
@@ -414,7 +419,42 @@ impl PersonalAgentProfileStore {
             path: root.to_path_buf(),
             message: error.to_string(),
         })?;
-        Ok(Self { root })
+        let secrets = crate::InFiles::at(&root).map_err(|error| ProfileError::Io {
+            path: root.clone(),
+            message: error.to_string(),
+        })?;
+        Ok(Self {
+            root,
+            secrets: std::sync::Arc::new(secrets),
+            secrets_under: String::new(),
+        })
+    }
+
+    /// A store over nowhere, to be replaced at once. It reads and keeps
+    /// nothing.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn placeholder() -> Self {
+        Self {
+            root: PathBuf::new(),
+            secrets: std::sync::Arc::new(crate::secrets::Nowhere),
+            secrets_under: String::new(),
+        }
+    }
+
+    /// Keep what a person gives a profile with `keeper`, named under
+    /// `under` (`profiles/`, or nothing), instead of beside the profile.
+    #[must_use]
+    pub fn secrets_kept_by(mut self, keeper: crate::Keeper, under: &str) -> Self {
+        self.secrets = keeper;
+        under.clone_into(&mut self.secrets_under);
+        self
+    }
+
+    /// What keeps a profile's secrets, in words a page can say.
+    #[must_use]
+    pub fn secrets_kept_by_words(&self) -> String {
+        self.secrets.kept_by()
     }
 
     /// Persist one profile without overwriting an existing identity.
@@ -541,17 +581,16 @@ impl PersonalAgentProfileStore {
     /// Returns [`ProfileError`] for an unknown profile, and for a folder
     /// that cannot be moved.
     pub fn set_aside(&self, profile_id: &str, aside: &Path) -> Result<PathBuf, ProfileError> {
-        let secrets = self.secrets_path(profile_id)?;
+        let secrets = self.secrets_name(profile_id)?;
         let directory = self.root.join(profile_id);
         let io = |path: &Path, error: std::io::Error| ProfileError::Io {
             path: path.to_owned(),
             message: error.to_string(),
         };
-        match fs::remove_file(&secrets) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io(&secrets, error)),
-        }
+        // What was given is forgotten; what is set aside holds none of it.
+        self.secrets
+            .remove(&secrets)
+            .map_err(|error| io(Path::new(&secrets), error))?;
         fs::create_dir_all(aside).map_err(|error| io(aside, error))?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -637,13 +676,14 @@ impl PersonalAgentProfileStore {
         self.load(profile_id)
     }
 
-    fn secrets_path(&self, profile_id: &str) -> Result<PathBuf, ProfileError> {
+    /// What a profile's secrets are called at the keeper.
+    fn secrets_name(&self, profile_id: &str) -> Result<String, ProfileError> {
         validate_id("profile_id", profile_id).map_err(ProfileError::InvalidProfile)?;
         let directory = self.root.join(profile_id);
         if !directory.join("profile.json").is_file() {
             return Err(ProfileError::ProfileNotFound(profile_id.into()));
         }
-        Ok(directory.join("secrets.json"))
+        Ok(format!("{}{profile_id}/secrets.json", self.secrets_under))
     }
 
     /// What a person told this profile, never the values: one entry per
@@ -689,12 +729,12 @@ impl PersonalAgentProfileStore {
         &self,
         profile_id: &str,
     ) -> Result<BTreeMap<String, StoredSecret>, ProfileError> {
-        let path = self.secrets_path(profile_id)?;
-        match fs::read(&path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        let name = self.secrets_name(profile_id)?;
+        match self.secrets.read(&name) {
+            Ok(Some(bytes)) => Ok(serde_json::from_slice(&bytes)?),
+            Ok(None) => Ok(BTreeMap::new()),
             Err(error) => Err(ProfileError::Io {
-                path,
+                path: PathBuf::from(name),
                 message: error.to_string(),
             }),
         }
@@ -757,31 +797,14 @@ impl PersonalAgentProfileStore {
         profile_id: &str,
         secrets: &BTreeMap<String, StoredSecret>,
     ) -> Result<(), ProfileError> {
-        let path = self.secrets_path(profile_id)?;
+        let name = self.secrets_name(profile_id)?;
         let bytes = serde_json::to_vec_pretty(secrets)?;
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        let io = |error: std::io::Error| ProfileError::Io {
-            path: path.clone(),
-            message: error.to_string(),
-        };
-        {
-            let mut options = OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            // Owner-only from the first byte: a secret must never spend even
-            // a moment world-readable between create and chmod.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temporary).map_err(io)?;
-            file.write_all(&bytes).map_err(io)?;
-            file.sync_all().map_err(io)?;
-        }
-        fs::rename(&temporary, &path).map_err(|error| {
-            let _ = fs::remove_file(&temporary);
-            io(error)
-        })
+        self.secrets
+            .write(&name, &bytes)
+            .map_err(|error| ProfileError::Io {
+                path: PathBuf::from(name),
+                message: error.to_string(),
+            })
     }
 }
 

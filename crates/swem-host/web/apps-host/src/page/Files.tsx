@@ -4,6 +4,7 @@
 // What is chosen in the tree is what the other side shows: a file is
 // read and edited there, a folder says what can be done in it.
 
+import { at } from "../base.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { asyncDataLoaderFeature, hotkeysCoreFeature, selectionFeature } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
@@ -47,7 +48,7 @@ function Handed({ area, title, about }: { area: string; title: string; about: st
         <ul className="w-handed">
           {here.map((file) => (
             <li key={file.name} data-file-name={file.name}>
-              <a href={`/api/profiles/${encodeURIComponent(profileId)}/files/${area}/${encodeURIComponent(file.name)}`} rel="noopener noreferrer" target="_blank">
+              <a href={at(`/api/profiles/${encodeURIComponent(profileId)}/files/${area}/${encodeURIComponent(file.name)}`)} rel="noopener noreferrer" target="_blank">
                 {file.name}
               </a>
               <span className="k-caption"> {sized(file.byte_length)}</span>
