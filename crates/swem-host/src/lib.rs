@@ -65,8 +65,8 @@ pub use environment_profile::*;
 pub use host::{ContainerEngineLook, EngineStanding, MachineLook};
 pub use install::*;
 pub use keepers::{
-    KEEPER_LOOK_SCHEMA, KEEPERS_SCHEMA, KEPT_BY_SWEM, KEPT_BY_THE_SYSTEM, KeeperLook, Keepers,
-    KeepersError,
+    KEEPER_LOOK_SCHEMA, KEEPERS_SCHEMA, KEPT_BY_SWEM, KEPT_BY_THE_SYSTEM, KEPT_FROM_OUTSIDE,
+    KeeperLook, Keepers, KeepersError,
 };
 pub use keys::{KeyError, KeyHeld, KeyStore, PROVIDER_KEY_SCHEMA, ProviderKey};
 pub use permission_profile::*;

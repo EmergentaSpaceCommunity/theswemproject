@@ -349,6 +349,27 @@ impl WorkbenchShellState {
             .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))
     }
 
+    /// Where a scheduler outside knocks, when this Workbench is served at
+    /// an address, and how many tokens that may knock were made.
+    pub(super) fn knocked_on(&self) -> (Option<String>, usize) {
+        let Some(served) = self.served_at.get() else {
+            return (None, 0);
+        };
+        let knocking = served.access.tokens().map_or(0, |tokens| {
+            tokens
+                .iter()
+                .filter(|token| token.may.contains(&May::SayWhatIsDue))
+                .count()
+        });
+        (
+            Some(format!(
+                "{}/api/time/due",
+                served.access.address().origin().ascii_serialization()
+            )),
+            knocking,
+        )
+    }
+
     /// Whether this Workbench is served at an address, and so opens by
     /// sign-in and not by the secret of a run.
     pub(super) fn is_served_at_an_address(&self) -> bool {

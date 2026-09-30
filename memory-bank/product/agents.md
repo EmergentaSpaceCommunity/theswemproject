@@ -172,8 +172,10 @@ made by whom. It is not a process inside the agent's machine.
   machine and no token written into it.
 - A run that was missed because the keeper was off runs once when it is back, and says it was late.
 
-What the code has today (2026-09-28, roadmap A5 and ExecPlan 009): what is described above, kept
-by the running SWEM or by the system's own scheduler; no outside scheduler. What it had before: a ten-second loop, schedules as files, an interval in minutes, no
+What the code has today (2026-09-29, roadmap A5, ExecPlans 009 and 016): what is described
+above, kept by the running SWEM or by the system's own scheduler; and a scheduler outside that
+knocks on a SWEM served at an address, with a token that may do nothing else. A SWEM that
+sleeps where it runs and is woken by the knock was not tried. What it had before: a ten-second loop, schedules as files, an interval in minutes, no
 pause; an agent could not make one. What the reference had: the clock on the platform for the same reason of cost, a
 command inside the machine that called the platform with a token, cron and one-off times, limits
 (five minutes at least, twenty per agent).

@@ -455,6 +455,63 @@ impl WorkbenchShellState {
         followed
     }
 
+    /// Look because somebody outside knocked: what is due now is taken up
+    /// and said, as the keeper does when it looks by itself. What was taken
+    /// up before is not taken up again, so knocking twice says nothing
+    /// twice. It answers once what is due was taken up, not once it was
+    /// answered: whoever knocks is a scheduler, and waits for nothing.
+    ///
+    /// # Errors
+    ///
+    /// The keeper's lock cannot be reached.
+    pub async fn look_at_a_knock(self: &Arc<Self>) -> Result<KeeperLook, WorkbenchShellError> {
+        self.look_at_a_knock_at(now_ms()).await
+    }
+
+    /// [`Self::look_at_a_knock`] at a moment: a scheduler knocks now, a
+    /// test at a moment of its choosing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::look_at_a_knock`].
+    pub async fn look_at_a_knock_at(
+        self: &Arc<Self>,
+        now: u64,
+    ) -> Result<KeeperLook, WorkbenchShellError> {
+        let look = if self.take_the_keepers_lock()? {
+            self.refuse_what_nobody_answered(now).await;
+            let due = self.claim_what_is_due(now).await;
+            let said = due.len();
+            for due in due {
+                let state = Arc::clone(self);
+                tokio::spawn(async move {
+                    state.say_what_is_due(due).await;
+                });
+            }
+            KeeperLook {
+                schema: crate::KEEPER_LOOK_SCHEMA.into(),
+                looked_ms: now_ms(),
+                said,
+                kept_elsewhere: false,
+                said_last_ms: None,
+            }
+        } else {
+            KeeperLook {
+                schema: crate::KEEPER_LOOK_SCHEMA.into(),
+                looked_ms: now_ms(),
+                said: 0,
+                kept_elsewhere: true,
+                said_last_ms: None,
+            }
+        };
+        if let Some(keepers) = self.keepers.get() {
+            keepers
+                .looked(crate::KEPT_FROM_OUTSIDE, &look)
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        }
+        Ok(look)
+    }
+
     /// Take up what is due at a moment. The keeper does it as time passes;
     /// a test does it at a moment of its choosing.
     pub async fn claim_what_is_due(&self, at_ms: u64) -> Vec<Due> {

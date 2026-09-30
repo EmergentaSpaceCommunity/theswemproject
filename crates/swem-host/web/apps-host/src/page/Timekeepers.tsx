@@ -1,22 +1,26 @@
 // Who keeps time. Time is never kept inside an agent's machine, so somebody
 // outside it keeps it, and who that is differs by what it can do: this SWEM
-// while it runs, the system's scheduler while the Workbench is closed, an
-// outside scheduler for a SWEM that is reached from elsewhere.
+// while it runs, the system's scheduler while the Workbench is closed, a
+// scheduler outside for a SWEM that is served at an address. Whoever keeps
+// time only says that it is time to look; the turn is run by SWEM.
 
 import { Dialog } from "@base-ui/react/dialog";
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "zustand";
 
+import { makeToken } from "./door.ts";
 import { Clock, Laptop, Plug } from "./icons.tsx";
+import { go } from "./place.ts";
 import { when } from "./providers.ts";
 import { Standing, UsedBy } from "./standing.tsx";
 import { KEEPER_NAMES, time, timing, type KeeperLook, type KeeperShown } from "./time.ts";
 
-/// What a keeper that looks and leaves found the last time.
-function looked(look: KeeperLook): string {
+/// What a keeper that looks and leaves, or one that knocks, found the
+/// last time.
+function looked(look: KeeperLook, knocks: boolean): string {
   const found = look.kept_elsewhere ? "the Workbench was keeping time" : look.said === 0 ? "nothing was due" : look.said === 1 ? "one message was said" : `${look.said} messages were said`;
-  const said = look.said === 0 && look.said_last_ms ? ` It last said something at ${when(look.said_last_ms)}.` : "";
-  return `Looked last at ${when(look.looked_ms)}: ${found}.${said}`;
+  const said = look.said === 0 && look.said_last_ms ? ` It last had something said at ${when(look.said_last_ms)}.` : "";
+  return `${knocks ? "Knocked" : "Looked"} last at ${when(look.looked_ms)}: ${found}.${said}`;
 }
 
 function Row({ sign, keeper, about, limits, standing, children }: { sign: ReactNode; keeper: KeeperShown; about: string; limits: string; standing: ReactNode; children?: ReactNode }) {
@@ -30,7 +34,7 @@ function Row({ sign, keeper, about, limits, standing, children }: { sign: ReactN
         </span>
         <span className="k-caption">{about}</span>
         <span className="k-caption">{limits}</span>
-        {keeper.last_look ? <span className="k-caption">{looked(keeper.last_look)}</span> : null}
+        {keeper.last_look ? <span className="k-caption">{looked(keeper.last_look, keeper.id === "outside")}</span> : null}
         {keeper.said ? <span className="k-caption k-is-danger">{keeper.said}</span> : null}
       </span>
       {keeper.id === "outside" ? null : <UsedBy profiles={keeper.used_by} />}
@@ -94,10 +98,108 @@ function TurnOn({ keeper, onClose }: { keeper: KeeperShown | null; onClose: () =
   );
 }
 
+/// Adding a scheduler outside: it is given an address to knock on and a
+/// token that may do nothing else. Both are shown once.
+function AddOutside({ keeper, onClose }: { keeper: KeeperShown | null; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [opens, setOpens] = useState("");
+  const [problem, setProblem] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const close = () => {
+    setName("");
+    setOpens("");
+    setProblem("");
+    onClose();
+  };
+  const make = async () => {
+    setBusy(true);
+    setProblem("");
+    try {
+      setOpens((await makeToken(name, ["say-what-is-due"])).opens);
+    } catch (error) {
+      setProblem((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const line = `* * * * * curl -fsS -X POST -H "Authorization: Bearer ${opens}" ${keeper?.knocks_at ?? ""}`;
+  return (
+    <Dialog.Root open={keeper !== null} onOpenChange={(next) => (next ? undefined : close())}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="w-scrim" />
+        <Dialog.Popup className="k-dialog w-dialog w-wide">
+          <Dialog.Title className="k-heading">Add a scheduler outside</Dialog.Title>
+          <Dialog.Description className="k-caption">
+            Anything that can call an address on time will do: a crontab on another machine, a service that calls on a schedule. It says only that it is time to look. What is due, to whom, and every key stay here.
+          </Dialog.Description>
+          {opens ? (
+            <>
+              <div className="w-col w-close">
+                <span className="k-caption">It knocks at</span>
+                <div className="w-said-once">POST {keeper?.knocks_at}</div>
+              </div>
+              <div className="w-col w-close">
+                <span className="k-caption">With this token, which may do nothing else. It is shown once.</span>
+                <div className="w-said-once">{opens}</div>
+              </div>
+              <div className="w-col w-close">
+                <span className="k-caption">As a line of a crontab, knocking every minute</span>
+                <div className="w-said-once">{line}</div>
+              </div>
+              <div className="k-notice">Knocking when nothing is due does no harm, and knocking twice says nothing twice. A Workbench that sleeps where it runs is woken by every knock; give it a scheduler that knocks when something is due.</div>
+              <div className="k-inline w-end w-tight">
+                <button
+                  type="button"
+                  className="k-btn"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(line).then(() => {
+                      setCopied(true);
+                      window.setTimeout(() => setCopied(false), 1600);
+                    });
+                  }}
+                >
+                  {copied ? "Copied" : "Copy the line"}
+                </button>
+                <button type="button" className="k-btn k-primary" onClick={close}>
+                  Done
+                </button>
+              </div>
+            </>
+          ) : (
+            <form
+              className="w-col"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void make();
+              }}
+            >
+              <label className="w-col w-close">
+                <span className="k-caption">What knocks</span>
+                <input className="k-field" value={name} onChange={(event) => setName(event.target.value)} maxLength={60} placeholder="The crontab of my server" required autoFocus />
+              </label>
+              {problem ? <div className="k-notice k-danger">{problem}</div> : null}
+              <div className="k-inline w-end w-tight">
+                <button type="button" className="k-btn k-quiet" onClick={close}>
+                  Not now
+                </button>
+                <button type="submit" className="k-btn k-primary" disabled={busy || !name.trim()}>
+                  Add
+                </button>
+              </div>
+            </form>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export function Timekeepers() {
   const keeper = useStore(time, (known) => known.keeper);
   const [problem, setProblem] = useState("");
   const [turningOn, setTurningOn] = useState<KeeperShown | null>(null);
+  const [adding, setAdding] = useState<KeeperShown | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const read = () => timing.keeper().catch((error: Error) => setProblem(error.message));
@@ -124,6 +226,13 @@ export function Timekeepers() {
   return (
     <>
       <TurnOn keeper={turningOn} onClose={() => setTurningOn(null)} />
+      <AddOutside
+        keeper={adding}
+        onClose={() => {
+          setAdding(null);
+          void timing.keeper().catch(() => {});
+        }}
+      />
       <div className="k-notice">
         Time is never kept inside an agent's machine. A machine that sleeps between messages costs nothing between runs, and is woken only to do the work.
       </div>
@@ -182,10 +291,31 @@ export function Timekeepers() {
           <Row
             sign={<Plug size={18} />}
             keeper={outside}
-            about="A service that calls SWEM on time, for a SWEM that runs where it can be reached. It is what wakes an agent whose machine sleeps elsewhere."
-            limits="Needs an address and a key."
-            standing={<Standing tone="none">Cannot be added yet</Standing>}
-          />
+            about="A scheduler of yours that calls this SWEM on time. It says that it is time to look, for every agent; SWEM says what is due and wakes the machines it is due on."
+            limits={
+              outside.available
+                ? "Needs this SWEM to answer at its address when it is called: running, or woken by the call."
+                : "Nothing outside reaches a SWEM that is on one computer alone. Served at an address it can be knocked on: Settings, Access says how."
+            }
+            standing={<Standing tone={outside.on ? "ready" : "none"}>{!outside.available ? "Not at an address" : outside.on ? "Added" : "Not added"}</Standing>}
+          >
+            {outside.available ? (
+              <span className="k-inline w-tight">
+                {outside.on ? (
+                  <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "settings", tab: "access" })}>
+                    Its tokens
+                  </button>
+                ) : null}
+                <button type="button" className={`k-btn${outside.on ? " k-quiet" : " k-primary"}`} onClick={() => setAdding(outside)}>
+                  {outside.on ? "Add another" : "Add"}
+                </button>
+              </span>
+            ) : (
+              <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "settings", tab: "access" })}>
+                How to serve it
+              </button>
+            )}
+          </Row>
         ) : null}
       </section>
     </>

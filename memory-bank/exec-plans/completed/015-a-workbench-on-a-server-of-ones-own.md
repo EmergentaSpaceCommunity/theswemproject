@@ -1,6 +1,7 @@
 # ExecPlan 015 — A Workbench on a server of one's own
 
-**Status:** active (begun 2026-09-29). Roadmap S1. ADR-0011.
+**Status:** completed (2026-09-29) for what is done on this machine; what waits for a server
+with a name and for a phone is the roadmap's, under S1. ADR-0011.
 
 ## Outcome
 

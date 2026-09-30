@@ -927,6 +927,98 @@ async fn what_the_old_clock_kept_is_said_on_time_by_the_schedule() {
     fs::remove_dir_all(root).expect("remove fixture root");
 }
 
+/// A scheduler outside knocks: what is due is said, for every agent, once
+/// however many times it knocks, and the knock waits for no answer.
+#[tokio::test]
+async fn a_knock_has_what_is_due_said_once() {
+    let root = fixture_root("knock");
+    let (state, _ledger) = shell_of_two(&root);
+    let time = root.join("time");
+    state.enable_keepers(&time).expect("keep who keeps time");
+    let people = state.chat_people().await.expect("people");
+    let agent_of = |profile: &str| {
+        people["participants"]
+            .as_array()
+            .expect("participants")
+            .iter()
+            .find(|one| one["profile_id"] == profile)
+            .expect("the agent")["participant_id"]
+            .as_str()
+            .expect("an id")
+            .to_owned()
+    };
+    let mut due_at = 0;
+    for profile in ["coder", "reviewer"] {
+        let made = state
+            .make_schedule(swem_host::workbench_shell::NewScheduleBody {
+                agent_id: agent_of(profile),
+                chat_id: None,
+                say: format!("how are we doing, {profile}"),
+                when: swem_host::When::Every { minutes: 30 },
+            })
+            .await
+            .expect("make a schedule");
+        due_at = due_at.max(next_due(&state, &made.schedule.schedule_id).await);
+    }
+
+    // Before anything is due a knock finds nothing, and is written down.
+    let look = state
+        .look_at_a_knock_at(due_at - 60_000)
+        .await
+        .expect("a knock");
+    assert_eq!(look.said, 0);
+
+    let look = state.look_at_a_knock_at(due_at).await.expect("a knock");
+    assert_eq!(
+        look.said, 2,
+        "whoever knocks has the Workbench look for every agent"
+    );
+    assert!(!look.kept_elsewhere);
+    let again = state.look_at_a_knock_at(due_at).await.expect("a knock");
+    assert_eq!(again.said, 0, "what was taken up is not taken up again");
+
+    let written = swem_host::Keepers::at(&time)
+        .last_look(swem_host::KEPT_FROM_OUTSIDE)
+        .expect("the knock is written down");
+    assert_eq!(written.said, 0);
+    assert!(
+        written.said_last_ms.is_some(),
+        "when it last said something is kept"
+    );
+
+    // The knock did not wait; the messages are said and answered all the same.
+    let mut runs = Vec::new();
+    for _ in 0..200 {
+        runs = state.schedules_shown(None).await.expect("schedules").1;
+        if runs.len() == 2
+            && runs
+                .iter()
+                .all(|run| run.state == swem_host::RunState::Answered)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(runs.len(), 2, "each was said once: {runs:?}");
+    assert!(
+        runs.iter()
+            .all(|run| run.state == swem_host::RunState::Answered),
+        "{runs:?}"
+    );
+
+    // On one computer alone nothing outside reaches this Workbench, and
+    // the page is told so.
+    let standing = state.keeper().await.expect("who keeps time");
+    let outside = standing
+        .keepers
+        .iter()
+        .find(|keeper| keeper.id == swem_host::KEPT_FROM_OUTSIDE)
+        .expect("a scheduler outside is shown");
+    assert!(!outside.available);
+    assert!(outside.knocks_at.is_none());
+    assert!(outside.last_look.is_some());
+}
+
 /// A keeper that starts the product, looks and leaves says what is due
 /// to the agents it keeps time for and to nobody else, stays until it is
 /// answered, and finds nothing to do where somebody keeps time already.

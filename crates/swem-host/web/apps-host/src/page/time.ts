@@ -49,6 +49,8 @@ export interface KeeperShown {
   used_by: string[];
   called?: string;
   last_look?: KeeperLook | null;
+  /// Where a scheduler outside knocks, when this Workbench can be knocked on.
+  knocks_at?: string | null;
   said?: string;
 }
 

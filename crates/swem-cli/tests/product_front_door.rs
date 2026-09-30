@@ -1781,29 +1781,9 @@ fn a_page_on_another_site_cannot_work_the_workbench() {
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
-/// A person puts the Workbench at an address and comes to it with a
-/// passkey, and nobody else comes in.
-///
-/// The first start prints a word. With it a person registers the device
-/// they sit at and is shown codes to come back with; they make a token for
-/// a program, sign out, and sign in with the passkey. From a second browser,
-/// which holds nothing, they are refused, come back with a code and register
-/// that device. Everything behind the door is tried from outside, as a
-/// program would: with nothing, with the secret of a run, as another site's
-/// page, and with a token that may do one thing.
-#[test]
-#[ignore = "product gate: starts the real binary and drives a real browser"]
-fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
-    let _serial = one_at_a_time();
-    let (Some(browser), Some(node)) = (browser(), node()) else {
-        eprintln!("skipped: no browser or node on this machine");
-        return;
-    };
-    let data_root = fresh_data_root("door");
-    let (product, address, word) = start_product_at_an_address(&data_root);
-
-    // Before anybody came in: the page is there for anybody, nothing behind
-    // it is.
+/// Before anybody came in: the page is there for anybody, nothing behind it
+/// is, whatever a caller states of itself.
+fn nothing_behind_the_door_answers(address: &str) {
     let (status, _) = knock(&format!("{address}/"), &[]);
     assert_eq!(status, 200, "the door itself did not open");
     for route in [
@@ -1847,6 +1827,30 @@ fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
         status, 403,
         "a word nobody was given began a ceremony: {body}"
     );
+}
+
+/// A person puts the Workbench at an address and comes to it with a
+/// passkey, and nobody else comes in.
+///
+/// The first start prints a word. With it a person registers the device
+/// they sit at and is shown codes to come back with; they make a token for
+/// a program, sign out, and sign in with the passkey. From a second browser,
+/// which holds nothing, they are refused, come back with a code and register
+/// that device. Everything behind the door is tried from outside, as a
+/// program would: with nothing, with the secret of a run, as another site's
+/// page, and with a token that may do one thing.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("door");
+    let (product, address, word) = start_product_at_an_address(&data_root);
+
+    nothing_behind_the_door_answers(&address);
 
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/door_driver.mjs");
     let output = Command::new(&node)
@@ -1878,6 +1882,23 @@ fn a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey() {
         let (status, body) = knock(&format!("{address}/{route}"), &["-H", &bearer]);
         assert_eq!(status, 403, "a token that may knock opened {route}: {body}");
     }
+
+    // What it may do, it does: it knocks, the Workbench looks, and with
+    // nothing due nothing is said. Without the token a knock is nobody's.
+    let (status, body) = knock(
+        &format!("{address}/api/time/due"),
+        &["-X", "POST", "-H", &bearer],
+    );
+    assert_eq!(
+        status, 200,
+        "the token that may knock was not let knock: {body}"
+    );
+    assert!(
+        body.contains(r#""said":0"#),
+        "a knock with nothing due was not answered as one: {body}"
+    );
+    let (status, body) = knock(&format!("{address}/api/time/due"), &["-X", "POST"]);
+    assert_eq!(status, 401, "a knock by nobody was answered: {body}");
 
     // Nothing that opens is kept as it was said.
     let access = find_directory(&data_root, "access").expect("the product kept who may come in");

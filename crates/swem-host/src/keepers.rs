@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 pub const KEPT_BY_SWEM: &str = "swem";
 /// The system's own scheduler, which starts the product.
 pub const KEPT_BY_THE_SYSTEM: &str = "system";
+/// A scheduler outside, which knocks: it tells a Workbench served at an
+/// address to look. It is chosen for no agent; whoever knocks has the
+/// Workbench look for every one.
+pub const KEPT_FROM_OUTSIDE: &str = "outside";
 
 pub const KEEPERS_SCHEMA: &str = "swem:timekeepers@0.1";
 pub const KEEPER_LOOK_SCHEMA: &str = "swem:timekeeper-look@0.1";

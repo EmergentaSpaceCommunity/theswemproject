@@ -4288,6 +4288,9 @@ async fn route_shell(
                 .map(|()| json!({ "forgotten": schedule_id })),
         ),
         (&Method::GET, ["api", "time"]) => json_result(state.keeper().await),
+        // A scheduler outside knocks: it is time to look. It carries
+        // nothing and is told how many messages were taken up.
+        (&Method::POST, ["api", "time", "due"]) => json_result(state.look_at_a_knock().await),
         // Who keeps time: the system's scheduler is turned on and off, a
         // keeper is made the one agents have, and one is chosen for an
         // agent.

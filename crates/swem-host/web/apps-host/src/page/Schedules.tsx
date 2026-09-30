@@ -241,6 +241,7 @@ export function Schedules({ agent, hidden }: { agent: Participant; hidden: boole
               {mine?.id === "system"
                 ? "While the Workbench is closed this computer starts SWEM to say it."
                 : "Nothing is said while SWEM is closed; what was missed is said once when it is back."}
+              {keeper?.keepers.some((one) => one.id === "outside" && one.on) ? " A scheduler outside knocks on this SWEM as well." : ""}
             </span>
           </div>
         </div>

@@ -81,6 +81,15 @@ of it is left on the computer. Proven by
 `chat_runtime::time_is_kept_once_for_the_agents_of_a_keeper`, `keepers`, and by hand with
 launchd and a real engine; a systemd timer is written and not yet done on a machine.
 
+Where the Workbench is served at an address, a person adds a scheduler outside under
+Providers, Time: they are shown the address it knocks at and a token that may do nothing
+else, once, with a line for a crontab. When it knocks the Workbench looks at what is due and
+says it; the page says when it knocked last and what was found. On one computer alone the
+page says that nothing outside reaches it. Proven by
+`chat_runtime::a_knock_has_what_is_due_said_once`, by the knock in
+`product_front_door::a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey`, and by
+hand with `curl`.
+
 ## GJ-12 — A chat of several
 
 A person starts a chat with two agents from the rail. What they write is for who it names: they

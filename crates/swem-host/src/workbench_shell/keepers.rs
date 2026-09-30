@@ -2,8 +2,9 @@
 //!
 //! The running product keeps time while it runs. The system's own
 //! scheduler is turned on and off from here: it starts the product to look
-//! at what is due when the Workbench is closed. An outside scheduler is
-//! said and cannot be added yet.
+//! at what is due when the Workbench is closed. A scheduler outside knocks
+//! on a Workbench served at an address, with a token that may do nothing
+//! else; it is added by making that token.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,6 +38,10 @@ pub struct KeeperShown {
     /// What is wrong with it, in words; empty when nothing is.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub said: String,
+    /// Where a scheduler outside knocks, when this Workbench can be
+    /// knocked on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knocks_at: Option<String>,
 }
 
 /// What a person chooses when the system's scheduler is turned on.
@@ -139,6 +144,7 @@ impl WorkbenchShellState {
             })
             .collect();
         let can_be_started = self.keep_time_command.get().is_some();
+        let (knocks_at, knocking) = self.knocked_on();
         let shown = vec![
             KeeperShown {
                 id: KEPT_BY_SWEM.into(),
@@ -149,6 +155,7 @@ impl WorkbenchShellState {
                 called: String::new(),
                 last_look: None,
                 said: String::new(),
+                knocks_at: None,
             },
             KeeperShown {
                 id: KEPT_BY_THE_SYSTEM.into(),
@@ -160,16 +167,18 @@ impl WorkbenchShellState {
                 called: standing.scheduler.called().to_owned(),
                 last_look: keepers.last_look(KEPT_BY_THE_SYSTEM),
                 said: standing.said,
+                knocks_at: None,
             },
             KeeperShown {
-                id: "outside".into(),
-                available: false,
-                on: false,
+                id: crate::KEPT_FROM_OUTSIDE.into(),
+                available: knocks_at.is_some(),
+                on: knocking > 0,
                 default: false,
                 used_by: Vec::new(),
                 called: String::new(),
-                last_look: None,
+                last_look: keepers.last_look(crate::KEPT_FROM_OUTSIDE),
                 said: String::new(),
+                knocks_at,
             },
         ];
         Ok((shown, chosen))
