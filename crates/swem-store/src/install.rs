@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{InstallPlan, SupplyError};
+use crate::{InstallPlan, Kind, StoreError as SupplyError};
 
 /// The receipt an installation leaves beside what it installed.
 pub const INSTALLATION_MANIFEST: &str = "installation.json";
@@ -31,53 +31,6 @@ pub const INSTALLATION_MANIFEST: &str = "installation.json";
 /// The schema every receipt written now names. A receipt without it was
 /// written before the kinds were one installer; it is read as an agent's.
 pub const INSTALL_RECEIPT_SCHEMA: &str = "swem:install-receipt@0.1";
-
-/// What kind of thing an installation is. The kind names the directory
-/// under the install root and says what the launch path is for.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallKind {
-    /// An ACP agent from the registry: launched for a session.
-    #[default]
-    Agent,
-    /// A tool a package declared its adapters need: named in the tools file
-    /// the Cycle reads.
-    Tool,
-    /// An MCP server from a catalog: declared in the MCP catalogue once
-    /// installed, for a profile to attach.
-    Server,
-    /// A skill from a catalog: a `SKILL.md` a profile takes a copy of.
-    Skill,
-}
-
-impl InstallKind {
-    /// Every kind, in the order receipts are listed.
-    pub const ALL: [Self; 4] = [Self::Agent, Self::Tool, Self::Server, Self::Skill];
-
-    /// The directory under the install root this kind lands in.
-    #[must_use]
-    pub fn directory(self) -> &'static str {
-        match self {
-            Self::Agent => "agents",
-            Self::Tool => "tools",
-            Self::Server => "servers",
-            Self::Skill => "skills",
-        }
-    }
-
-    /// The kind's name on the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Tool => "tool",
-            Self::Server => "server",
-            Self::Skill => "skill",
-        }
-    }
-}
 
 /// The file installing a skill must find in its archive.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -99,8 +52,14 @@ pub enum RegistryDistribution {
         args: Vec<String>,
     },
     /// A whole tree, digest-checked, with nothing to launch: how a skill
-    /// arrives.
+    /// arrives, and a package of another host's.
     Archive { url: String, sha256: String },
+    /// A Python package installed by `uv` into its own environment.
+    Uvx {
+        package: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
 }
 
 fn default_schema() -> String {
@@ -118,7 +77,7 @@ pub struct InstallReceipt {
     #[serde(default = "default_schema")]
     pub schema: String,
     #[serde(default)]
-    pub kind: InstallKind,
+    pub kind: Kind,
     /// The exact plan this installation consented to.
     #[serde(default)]
     pub plan_id: String,
@@ -164,6 +123,8 @@ impl InstallReceipt {
             .flatten();
         match (present.next(), present.next()) {
             (Some(path), None) if path.is_file() => Some(path),
+            // A whole tree, for a kind that is one.
+            (Some(path), None) if path.is_dir() && !self.kind.is_built_in() => Some(path),
             _ => None,
         }
     }
@@ -211,6 +172,12 @@ impl InstallReceipt {
                     && self.executable.is_none()
                     && self.file.is_some()
             }
+            RegistryDistribution::Uvx { package, .. } => {
+                self.package.as_deref() == Some(package)
+                    && self.archive.is_none()
+                    && self.entry_script.is_none()
+                    && self.executable.is_some()
+            }
         }
     }
 }
@@ -218,16 +185,31 @@ impl InstallReceipt {
 impl RegistryDistribution {
     fn args(&self) -> &[String] {
         match self {
-            Self::Npx { args, .. } | Self::Binary { args, .. } => args,
+            Self::Npx { args, .. } | Self::Binary { args, .. } | Self::Uvx { args, .. } => args,
             Self::Archive { .. } => &[],
         }
     }
 
     fn platform(&self) -> Option<&str> {
         match self {
-            Self::Npx { .. } | Self::Archive { .. } => None,
+            Self::Npx { .. } | Self::Archive { .. } | Self::Uvx { .. } => None,
             Self::Binary { platform, .. } => Some(platform),
         }
+    }
+}
+
+/// Which of two receipts of one thing is newer: by version where both
+/// versions are versions, else by when each was installed, else by the
+/// version as text.
+#[must_use]
+pub fn newer(left: &InstallReceipt, right: &InstallReceipt) -> std::cmp::Ordering {
+    match (
+        semver::Version::parse(&left.version),
+        semver::Version::parse(&right.version),
+    ) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ if left.installed_at != right.installed_at => left.installed_at.cmp(&right.installed_at),
+        _ => left.version.cmp(&right.version),
     }
 }
 
@@ -242,7 +224,7 @@ fn now_seconds() -> u64 {
 #[must_use]
 pub fn load_receipts(
     installed_root: &Path,
-    kind: InstallKind,
+    kind: &Kind,
 ) -> std::collections::BTreeMap<String, InstallReceipt> {
     let mut found = std::collections::BTreeMap::new();
     let Ok(entries) = fs::read_dir(installed_root.join(kind.directory())) else {
@@ -252,29 +234,32 @@ pub fn load_receipts(
         let Ok(versions) = fs::read_dir(entry_dir.path()) else {
             continue;
         };
-        let mut manifests = versions
+        let mut receipts = versions
             .flatten()
             .map(|version| version.path().join(INSTALLATION_MANIFEST))
             .filter(|path| path.is_file())
+            .filter_map(|path| {
+                let bytes = fs::read(&path).ok()?;
+                serde_json::from_slice::<InstallReceipt>(&bytes).ok()
+            })
+            .filter(|receipt| receipt.launch_path().is_some())
             .collect::<Vec<_>>();
-        manifests.sort();
-        if let Some(path) = manifests.pop()
-            && let Ok(bytes) = fs::read(&path)
-            && let Ok(receipt) = serde_json::from_slice::<InstallReceipt>(&bytes)
-            && receipt.launch_path().is_some()
-        {
+        // The newest: by version where versions are versions, else by
+        // when it was installed. `0.10.0` is newer than `0.9.0`.
+        receipts.sort_by(newer);
+        if let Some(receipt) = receipts.pop() {
             found.insert(receipt.registry_id.clone(), receipt);
         }
     }
     found
 }
 
-/// Every receipt of every kind under the install root, in [`InstallKind::ALL`]
-/// order.
+/// Every receipt of every kind under the install root: the built-in kinds
+/// in their order, then whatever other kinds have a directory there.
 #[must_use]
 pub fn all_receipts(installed_root: &Path) -> Vec<InstallReceipt> {
-    InstallKind::ALL
-        .into_iter()
+    Kind::at(installed_root)
+        .iter()
         .flat_map(|kind| load_receipts(installed_root, kind).into_values())
         .collect()
 }
@@ -315,7 +300,7 @@ pub fn adopt_legacy_agents(
     let Ok(entries) = fs::read_dir(legacy_home) else {
         return Ok(0);
     };
-    let agents = installed_root.join(InstallKind::Agent.directory());
+    let agents = installed_root.join(Kind::AGENT.directory());
     let mut moved = 0;
     for agent_dir in entries.flatten() {
         let from = agent_dir.path();
@@ -354,7 +339,7 @@ pub fn adopt_legacy_agents(
             receipt.entry_script = receipt.entry_script.as_ref().map(rewrite);
             receipt.executable = receipt.executable.as_ref().map(rewrite);
             INSTALL_RECEIPT_SCHEMA.clone_into(&mut receipt.schema);
-            receipt.kind = InstallKind::Agent;
+            receipt.kind = Kind::AGENT;
             fs::write(
                 &manifest,
                 serde_json::to_vec_pretty(&receipt)
@@ -473,7 +458,7 @@ pub fn resolve_registry_install_plan_from_bytes(
     .map_err(|error| SupplyError::Serialization(error.to_string()))?;
     Ok(InstallPlan {
         plan_id: format!("sha256:{:x}", Sha256::digest(plan_bytes)),
-        kind: InstallKind::Agent,
+        kind: Kind::AGENT,
         agent_id: agent_id.into(),
         registry_id: registry_id.into(),
         registry_index: registry_index.into(),
@@ -482,6 +467,7 @@ pub fn resolve_registry_install_plan_from_bytes(
         distribution,
         requires_explicit_consent: true,
         executes_remote_shell: false,
+        requires: Vec::new(),
     })
 }
 
@@ -526,6 +512,23 @@ pub fn install(
     installed_root: &Path,
     node: Option<&Path>,
 ) -> Result<InstallReceipt, SupplyError> {
+    install_checked(plan, consent, installed_root, node, &|_| Ok(()))
+}
+
+/// As [`install`], with `check` asked about what was staged before it is
+/// moved into place: whoever takes this kind looks at it, and a refusal
+/// leaves nothing behind.
+///
+/// # Errors
+///
+/// As [`install`], and the check's own refusal.
+pub fn install_checked(
+    plan: &InstallPlan,
+    consent: bool,
+    installed_root: &Path,
+    node: Option<&Path>,
+    check: &dyn Fn(&Path) -> Result<(), SupplyError>,
+) -> Result<InstallReceipt, SupplyError> {
     if !consent {
         return Err(SupplyError::ConsentRequired(plan.agent_id.clone()));
     }
@@ -569,6 +572,7 @@ pub fn install(
     fs::create_dir(&staging)
         .map_err(|error| SupplyError::Protocol(format!("create {}: {error}", staging.display())))?;
     let result = install_into_staging(plan, &staging, node).and_then(|mut installation| {
+        check(&staging)?;
         if let Some(path) = &installation.entry_script {
             installation.entry_script =
                 Some(target.join(path.strip_prefix(&staging).map_err(|error| {
@@ -627,6 +631,7 @@ fn install_into_staging(
         RegistryDistribution::Archive { url, sha256 } => {
             install_archive(plan, staging, url, sha256)
         }
+        RegistryDistribution::Uvx { package, args } => install_uvx(plan, staging, package, args),
     }
 }
 
@@ -689,12 +694,6 @@ fn install_archive(
     archive_url: &str,
     expected_sha256: &str,
 ) -> Result<InstallReceipt, SupplyError> {
-    if plan.kind != InstallKind::Skill {
-        return Err(SupplyError::UnsupportedDistribution(format!(
-            "an archive with nothing to launch installs a skill, not a {}",
-            plan.kind.as_str()
-        )));
-    }
     let archive_path = staging.join("distribution.archive");
     fetch_archive(archive_url, expected_sha256, &archive_path)?;
     let tree = staging.join("tree");
@@ -707,10 +706,16 @@ fn install_archive(
     }
     fs::remove_file(&archive_path)
         .map_err(|error| SupplyError::Protocol(format!("remove staged archive: {error}")))?;
-    let file = skill_file_in(&tree)?;
+    // A skill is its file; a tree of another kind is the tree, and whoever
+    // takes it reads it as they read it.
+    let file = if plan.kind == Kind::SKILL {
+        skill_file_in(&tree)?
+    } else {
+        tree.clone()
+    };
     Ok(InstallReceipt {
         schema: INSTALL_RECEIPT_SCHEMA.to_owned(),
-        kind: plan.kind,
+        kind: plan.kind.clone(),
         plan_id: plan.plan_id.clone(),
         source: plan.registry_index.clone(),
         registry_id: plan.registry_id.clone(),
@@ -892,7 +897,7 @@ fn install_npx(
     }
     Ok(InstallReceipt {
         schema: INSTALL_RECEIPT_SCHEMA.to_owned(),
-        kind: plan.kind,
+        kind: plan.kind.clone(),
         plan_id: plan.plan_id.clone(),
         source: plan.registry_index.clone(),
         registry_id: plan.registry_id.clone(),
@@ -908,6 +913,85 @@ fn install_npx(
         file: None,
         args: args.to_vec(),
         discovery_method: "registry-npx-npm-install-ignore-scripts".into(),
+        installed_at: now_seconds(),
+    })
+}
+
+/// Install a Python package into an environment of its own under the
+/// staging directory, with `uv`, and name the program it put on its bin
+/// path. The package is pinned as `name==version` by the catalog.
+fn install_uvx(
+    plan: &InstallPlan,
+    staging: &Path,
+    package: &str,
+    args: &[String],
+) -> Result<InstallReceipt, SupplyError> {
+    if package.trim().is_empty() || package.starts_with('-') {
+        return Err(SupplyError::UnsupportedDistribution(format!(
+            "not a Python package: {package:?}"
+        )));
+    }
+    let tools = staging.join("tools");
+    let bin = staging.join("bin");
+    let output = Command::new("uv")
+        .args(["tool", "install", "--quiet", package])
+        .env("UV_TOOL_DIR", &tools)
+        .env("UV_TOOL_BIN_DIR", &bin)
+        .output()
+        .map_err(|_| SupplyError::MissingExecutable("uv".into()))?;
+    if !output.status.success() {
+        return Err(SupplyError::Protocol(format!(
+            "uv tool install {package}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let name = package
+        .split(['=', '@', '[', '>', '<', '~'])
+        .next()
+        .unwrap_or(package)
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let mut programs = fs::read_dir(&bin)
+        .map_err(|error| SupplyError::Protocol(format!("read {}: {error}", bin.display())))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    programs.sort();
+    let executable = programs
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.to_ascii_lowercase().replace('_', "-") == name)
+        })
+        .or_else(|| (programs.len() == 1).then(|| &programs[0]))
+        .cloned()
+        .ok_or_else(|| {
+            SupplyError::Protocol(format!(
+                "uv put {} programs on the path of {package} and none is called {name}",
+                programs.len()
+            ))
+        })?;
+    Ok(InstallReceipt {
+        schema: INSTALL_RECEIPT_SCHEMA.to_owned(),
+        kind: plan.kind.clone(),
+        plan_id: plan.plan_id.clone(),
+        source: plan.registry_index.clone(),
+        registry_id: plan.registry_id.clone(),
+        name: plan.name.clone(),
+        version: plan.version.clone(),
+        platform: None,
+        package: Some(package.into()),
+        archive: None,
+        sha256: None,
+        command: None,
+        entry_script: None,
+        executable: Some(executable),
+        file: None,
+        args: args.to_vec(),
+        discovery_method: "uv-tool-install-pinned".into(),
         installed_at: now_seconds(),
     })
 }
@@ -943,7 +1027,7 @@ fn install_binary(
     }
     Ok(InstallReceipt {
         schema: INSTALL_RECEIPT_SCHEMA.to_owned(),
-        kind: plan.kind,
+        kind: plan.kind.clone(),
         plan_id: plan.plan_id.clone(),
         source: plan.registry_index.clone(),
         registry_id: plan.registry_id.clone(),

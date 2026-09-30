@@ -29,7 +29,8 @@ echo "==> the editor's own ACP client, which the editor-door walk is proved by"
 
 echo "==> the fixture agents and servers the walks use"
 cargo build -p swem-host --bin swem-hands-agent --bin swem-echo-agent \
-  --bin swem-mcp-echo --bin swem-mcp-observer-fixture
+  --bin swem-mcp-echo --bin swem-mcp-observer-fixture --bin swem-mcp-apps-fixture \
+  --bin swem-mcp-taker-fixture
 
 # The container walk builds its own image from the fixture agent, and skips
 # cleanly when this machine has no Podman: see

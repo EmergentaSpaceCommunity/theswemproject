@@ -154,6 +154,27 @@ impl McpCatalogue {
         std::sync::Arc::clone(&self.declared)
     }
 
+    /// The environment values a declared stdio server has, by name, for
+    /// declaring it again with them kept. Nothing for a server that is not
+    /// declared or is not a stdio one.
+    #[must_use]
+    pub fn env_of(&self, name: &str) -> Vec<NamedValue> {
+        let Ok(declared) = self.declared.lock() else {
+            return Vec::new();
+        };
+        match declared.get(name) {
+            Some(McpServer::Stdio(stdio)) => stdio
+                .env
+                .iter()
+                .map(|variable| NamedValue {
+                    name: variable.name.clone(),
+                    value: variable.value.clone(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     fn name_of(&self, name: &str) -> Result<String, WorkbenchShellError> {
         validate_server_name(name)?;
         Ok(format!("{}{name}.json", self.under))

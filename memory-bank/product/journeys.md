@@ -103,7 +103,15 @@ Walk: `product_front_door::a_person_puts_two_agents_in_one_chat`.
 
 A person opens the Store, adds a catalog by address, installs an agent, an MCP server and a skill,
 each behind its own consent dialog, gives the agent both, and the agent calls the server's tool
-and reads the skill. Walk: `product_front_door::a_person_installs_from_the_store_and_the_agent_uses_it`.
+and reads the skill. A skill that requires another is installed with it under one consent; a
+kind nobody here takes is said so and cannot be installed; a newer version in the catalog is
+offered as an update and taken; a skill not wanted is removed.
+Walk: `product_front_door::a_person_installs_from_the_store_and_the_agent_uses_it`.
+
+A product the harness is built into takes a kind of its own: a helper that does not answer the
+shape of tools the product calls is refused in the product's words; one that does is given to
+the person's agents; removed, it is given no more.
+Walk: `product_front_door::a_product_of_ones_own_has_the_harness_built_in`.
 
 ## GJ-04 — Chats kept across restarts
 

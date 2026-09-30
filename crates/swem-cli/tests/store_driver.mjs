@@ -8,10 +8,10 @@
 import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
-const [url, catalogUrl, agentId, registryId, nonce] = process.argv.slice(2);
+const [url, catalogUrl, agentId, registryId, nonce, laterCatalogUrl] = process.argv.slice(2);
 const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
-if (!url || !catalogUrl || !agentId || !registryId || !nonce) {
-  console.error("usage: store_driver.mjs <url> <catalog-url> <agent-id> <registry-id> <nonce>");
+if (!url || !catalogUrl || !agentId || !registryId || !nonce || !laterCatalogUrl) {
+  console.error("usage: store_driver.mjs <url> <catalog-url> <agent-id> <registry-id> <nonce> <later-catalog-url>");
   process.exit(2);
 }
 
@@ -43,22 +43,60 @@ await b.waitFor("the catalog's entries", async () =>
 const indexes = await b.evaluate(`[...document.querySelectorAll("#store-indexes .index-row")].map(row => row.dataset.index)`);
 step(`catalog added: ${JSON.stringify(indexes)}`);
 
+// A kind nobody here takes is listed, said so, and cannot be installed.
+const nobodys = await b.evaluate(`(() => {
+  const row = document.querySelector('.store-entry[data-id="nothing"]');
+  if (!row) return "no row";
+  const button = row.querySelector(".store-install");
+  return JSON.stringify({words: row.innerText, disabled: button?.disabled});
+})()`);
+const nobody = JSON.parse(nobodys === "no row" ? "{}" : nobodys);
+if (!nobody.disabled || !/does not have/.test(nobody.words ?? "")) cleanup(1, `a kind nobody takes is not said so: ${nobodys}`);
+step("a kind nobody here takes is said so and cannot be installed");
+
 // One install at a time, each against its own consent question.
-const install = async (kind, id) => {
+const install = async (kind, id, {also = null, update = false} = {}) => {
   await b.click(`.store-install[data-kind="${kind}"][data-id="${id}"]`);
   const question = await b.consent();
-  if (!/^Install /.test(question) || !/described by/.test(question)) {
+  if (!(update ? /^Update / : /^Install /).test(question) || !/described by/.test(question)) {
     cleanup(1, `the consent question for ${id} does not say what is fetched: ${JSON.stringify(question)}`);
   }
+  if (also && !question.includes(`also installs what this requires: a skill ${also}`)) {
+    cleanup(1, `the consent question for ${id} does not say what it also installs: ${JSON.stringify(question)}`);
+  }
   await b.waitFor(`${id} installed`, async () =>
-    b.exists(`.store-entry[data-kind="${kind}"][data-id="${id}"][data-installed="true"]`), 600, 500);
+    (await b.exists(`.store-entry[data-kind="${kind}"][data-id="${id}"][data-installed="true"]`)) &&
+    !/^(Reading|Installing) /.test(await text("store-status")), 600, 500);
   const status = await text("store-status");
   if (!/^Installed /.test(status)) cleanup(1, `installing ${id} ended with: ${status}`);
   step(`installed ${kind} ${id}: ${status}`);
 };
 await install("agent", registryId);
 await install("server", "echo");
-await install("skill", "shout");
+// The skill that requires another: one consent, both installed.
+await install("skill", "polite", {also: "shout"});
+if (!(await b.exists('.store-entry[data-kind="skill"][data-id="shout"][data-installed="true"]'))) {
+  cleanup(1, "what polite requires was not installed with it");
+}
+step("what a skill requires was installed with it, in one consent");
+
+// A later catalog with a newer version: an update is offered and taken.
+await setValue("index-url", laterCatalogUrl);
+await b.click("#index-add");
+await b.waitFor("the update offered", async () =>
+  b.evaluate(`/^Update to 1\\.1\\.0/.test(document.querySelector('.store-install[data-kind="skill"][data-id="shout"]')?.textContent ?? "")`), 300);
+await install("skill", "shout", {update: true});
+await b.waitFor("the newer version installed", async () =>
+  b.evaluate(`/^Installed 1\\.1\\.0/.test(document.querySelector('.store-install[data-kind="skill"][data-id="shout"]')?.textContent ?? "")`), 300);
+step("updated the skill to the newer version");
+
+// Removed, after the person said so.
+await b.click('.store-remove[data-kind="skill"][data-id="polite"]');
+const removal = await b.consent();
+if (!/^Remove /.test(removal)) cleanup(1, `removing asked: ${JSON.stringify(removal)}`);
+await b.waitFor("polite removed", async () =>
+  b.exists('.store-entry[data-kind="skill"][data-id="polite"][data-installed="false"]'), 300);
+step("removed the skill that was not wanted");
 
 // The agent is offered as this computer's, under the catalogue's own name.
 step("make an agent of it");

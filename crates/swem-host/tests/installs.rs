@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use swem_host::{
-    INSTALL_RECEIPT_SCHEMA, INSTALLATION_MANIFEST, InstallKind, InstallReceipt, Readiness,
+    INSTALL_RECEIPT_SCHEMA, INSTALLATION_MANIFEST, InstallReceipt, Kind, Readiness,
     adopt_legacy_agents, all_receipts, discover_agents_with, load_receipts,
 };
 
@@ -51,7 +51,7 @@ fn an_agent_installed_from_the_registry_is_discovered_without_a_catalogue_entry(
         &home,
         &InstallReceipt {
             schema: INSTALL_RECEIPT_SCHEMA.into(),
-            kind: InstallKind::Agent,
+            kind: Kind::AGENT,
             plan_id: "sha256:plan".into(),
             source: "file:///registry.json".into(),
             registry_id: "kilo-gate".into(),
@@ -120,12 +120,12 @@ fn an_earlier_products_agents_are_brought_under_the_install_root_with_their_path
     let installed = root.join("swem").join("workbench").join("installed");
     assert_eq!(adopt_legacy_agents(&legacy, &installed).unwrap(), 1);
 
-    let receipts = load_receipts(&installed, InstallKind::Agent);
+    let receipts = load_receipts(&installed, &Kind::AGENT);
     let claude = receipts
         .get("claude-acp")
         .expect("the adopted agent reads from the install root");
     assert_eq!(claude.schema, INSTALL_RECEIPT_SCHEMA);
-    assert_eq!(claude.kind, InstallKind::Agent);
+    assert_eq!(claude.kind, Kind::AGENT);
     assert_eq!(claude.version, "0.81.0");
     let moved_entry = claude
         .entry_script
@@ -145,7 +145,7 @@ fn an_earlier_products_agents_are_brought_under_the_install_root_with_their_path
 
     // Adopting again moves nothing and changes nothing.
     assert_eq!(adopt_legacy_agents(&legacy, &installed).unwrap(), 0);
-    assert_eq!(load_receipts(&installed, InstallKind::Agent).len(), 1);
+    assert_eq!(load_receipts(&installed, &Kind::AGENT).len(), 1);
 }
 
 #[test]
@@ -153,8 +153,8 @@ fn every_kind_reads_as_one_list_of_receipts() {
     let root = fresh_root("all-kinds");
     let installed = root.join("installed");
     for (kind, id, file) in [
-        (InstallKind::Agent, "opencode", "opencode"),
-        (InstallKind::Tool, "ffmpeg", "ffmpeg"),
+        (Kind::AGENT, "opencode", "opencode"),
+        (Kind::TOOL, "ffmpeg", "ffmpeg"),
     ] {
         let home = installed.join(kind.directory()).join(id).join("1.0.0");
         std::fs::create_dir_all(&home).unwrap();
@@ -185,16 +185,10 @@ fn every_kind_reads_as_one_list_of_receipts() {
         );
     }
     let receipts = all_receipts(&installed);
-    let kinds: Vec<(InstallKind, &str)> = receipts
+    let kinds: Vec<(Kind, &str)> = receipts
         .iter()
-        .map(|receipt| (receipt.kind, receipt.registry_id.as_str()))
+        .map(|receipt| (receipt.kind.clone(), receipt.registry_id.as_str()))
         .collect();
-    assert_eq!(
-        kinds,
-        [
-            (InstallKind::Agent, "opencode"),
-            (InstallKind::Tool, "ffmpeg")
-        ]
-    );
+    assert_eq!(kinds, [(Kind::AGENT, "opencode"), (Kind::TOOL, "ffmpeg")]);
     assert!(receipts.iter().all(|r| r.schema == INSTALL_RECEIPT_SCHEMA));
 }

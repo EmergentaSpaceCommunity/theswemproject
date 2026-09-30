@@ -4,7 +4,8 @@ Each item ends in something a person can do through a real entry point. Order is
 C1 and C4 are done. The Workbench items (A, then B) come next: with the project space gone the
 harness and its Workbench are a product of their own, and as one they are judged by a person
 using them on their own data (`product/agents.md`). S goes first among what is left of them:
-it is what the harness needs before another product is built on it. C3 follows.
+it is what the harness needs before another product is built on it. P, the Store for several
+hosts, is done on the core's side; C3 is folded into it.
 
 ## A — Agents and chats
 
@@ -45,6 +46,20 @@ ADR-0010 and ADR-0011. Each item is one ExecPlan.
 | S2 | have an agent on a machine that is not this one | B1, B4, B5, B6 |
 | S5 | install a kind of machine or of keeper of time from the Store | after S2 and S3 |
 
+## P — One Store, many hosts
+
+ADR-0012, ExecPlan 018. The Store is a library that knows kinds by name; the harness, a server
+that says it takes a kind, and a product the harness is built into each register what they take.
+
+| Item | A person can | State |
+|---|---|---|
+| P0 | link `swem-host` into a workspace that has `sqlx 0.8` | **done** (2026-09-30) |
+| P1 | install, update and remove a package of any kind through one library | **done** |
+| P2 | see the Store's kinds in the host's words, install what a package requires in one consent, update, remove; see a kind nobody here takes said so | **done**. Left: sections by host on the page |
+| P3 | install a Cycle package from the Store, use it in a project without restarting, update and remove it | **the core's half is done**: a declared server that says `takes` installs through its own tools, proved with a fixture; the shipped catalog says the Cycle takes `swem.cycle/package@1`. The Cycle's half waits for the owner: `check_assembly` at plan time, a published `catalog.json`, its walk on the new pin |
+| P4 | (as a product) take a kind of one's own and check a candidate's tools against a shape | **done**: the example product does, walked by the gate |
+| P5 | read one document that says everything a product that builds the harness in needs | **done**: `docs/building-in.md` |
+
 ## C1 — Embed the harness
 
 `cargo run -p swem-host --example embed` prints a Workbench URL; a person installs an agent from
@@ -60,8 +75,9 @@ Related journeys: GJ-07.
 
 ## C3 — Store dependencies and `server.json`
 
-An entry that requires another installs both; an unmet requirement is refused in words; a
-`server.json` document added as an index lists its server.
+An entry that requires another installs both; an unmet requirement is refused in words:
+**done** in P (2026-09-30, ExecPlan 018). A `server.json` document added as an index is not
+read; a catalog is the one index format beside the ACP registry.
 Related journeys: GJ-03.
 
 ## C4 — A server's home App is a space
@@ -79,7 +95,8 @@ and the package and tool routes are gone; an App says what a person is looking a
 ## Debt
 
 - The install plan's fields are named for an agent whatever kind it installs (`agent_id`,
-  `registry_id`); rename with C3.
+  `registry_id`); kept through P so receipts stay readable; rename when the receipt schema
+  next changes.
 - A server's environment values are given in the MCP catalogue, not from the Store row.
 - `scripts/unwalked_controls.py` counts controls by the names the old page gave them and
   checks itself against five of those; it refuses to count the new page, whose controls a walk

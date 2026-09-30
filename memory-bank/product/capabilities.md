@@ -13,7 +13,9 @@
 | An agent makes, lists, pauses and removes its own schedules | proven | GJ-11; `chat_runtime::an_agent_makes_its_own_schedule_in_the_chat_it_was_asked_in`; by hand with a real engine |
 | An agent's files as a tree with an editor; saved only while it is what was opened | proven below the page and by hand | GJ-13; `swem-runner/tests/fs.rs`, `agent_files` |
 | This machine as it was found; a container offered only where one can start | proven below the page and by hand | GJ-10; `hosts` |
-| Store over the ACP registry and added catalogs; servers and skills installed and used | proven | GJ-03; `tests/store.rs` |
+| Store over the ACP registry and added catalogs; servers and skills installed and used; requirements under one consent; update; removal; a kind nobody takes said so | proven | GJ-03; `swem-store/tests/store.rs`, `swem-host/tests/store.rs` |
+| A product the harness is built into takes a kind of its own, checked against a shape | proven | GJ-03's second walk; `examples/built_in.rs` |
+| A server that says it takes a kind installs packages through its own tools | proven with a fixture | `swem-host/tests/store.rs`; the Cycle's own packages wait for its half (ExecPlan 018) |
 | Chats listed, read with each message under its sender, gone on with, kept across restarts | proven by hand and below the page | GJ-04 |
 | Several agents at work at once; a turn stopped from the composer; a question answered after the page was closed | proven by hand and below the page | GJ-09 |
 | A chat of several agents: named and answered, members brought in and taken out, the chain of replies held at the chat's limit | proven | GJ-12; `chat_runtime`, `chats.rs` |
@@ -29,7 +31,6 @@
 | A Workbench served at an address: the first start by a word used once, a device registered with a passkey, codes to come back with, a second device by a word, a device taken away, tokens for programs that say what they may do, what was done and refused | proven on this machine, at `localhost` and at a name over TLS with a certificate made for the trial; not yet done on a server with a name of its own, nor with a phone | GJ-14; `tests/access.rs`, `product_front_door::a_person_comes_to_their_workbench_from_elsewhere_with_a_passkey` |
 | A certificate got by the Workbench itself (ACME) | missing | ExecPlan 015, decision log |
 | A token for an embedder's own page on another origin | missing | roadmap S4; a token is made and checked, the answer names no other origin yet |
-| Store dependencies and the MCP registry's `server.json` as an index | missing | roadmap C3 |
 | A server's home App as a space, the same App when a person comes back to it | proven | `workbench_shell_spaces.rs`, GJ-08's walk; the host draws no space for a server |
 | What an App says a person is looking at, given to the agent | proven below the page | `chat_runtime`; `ui/update-model-context`, text and resource links; no browser walk of its own since the page was rebuilt |
 | Projects | the project server's | the hub of a `swem-cycle` installed from the Store, beside the binary or on PATH is declared as a server; its space and its projects are its own |

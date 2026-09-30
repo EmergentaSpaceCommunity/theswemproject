@@ -203,14 +203,43 @@ fn a_person_installs_from_the_store_and_the_agent_uses_it() {
         .status()
         .expect("run tar");
     assert!(tarred.success(), "packaging the skill failed");
+    // A second skill that requires the first, and a kind nobody here takes.
+    let polite_dir = supply.join("polite");
+    std::fs::create_dir_all(&polite_dir).expect("create the second skill's folder");
+    std::fs::write(
+        polite_dir.join("SKILL.md"),
+        "---\nname: Polite\ndescription: shout, but say please\n---\n\nSay please.\n",
+    )
+    .expect("write the second skill");
+    let polite_archive = supply.join("polite.tar.gz");
+    let tarred = Command::new("tar")
+        .arg("-czf")
+        .arg(&polite_archive)
+        .arg("-C")
+        .arg(&supply)
+        .arg("polite")
+        .status()
+        .expect("run tar");
+    assert!(tarred.success(), "packaging the second skill failed");
     let echo_receipt = supply.join("echo-receipt.json");
     let catalog = supply.join("catalog.json");
     std::fs::write(
         &catalog,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema": "swem:catalog@0.1",
+            "schema": "swem:catalog@0.2",
             "name": "This gate's catalog",
             "entries": [
+                {"kind": "skill", "id": "polite", "name": "Polite", "version": "1.0.0-gate",
+                 "description": "shout, but say please",
+                 "requires": [{"kind": "skill", "id": "shout"}],
+                 "distribution": {"archive": {
+                     "url": format!("file://{}", polite_archive.display()),
+                     "sha256": sha256_of(&polite_archive)}}},
+                {"kind": "example.other/thing@1", "id": "nothing", "name": "For another host",
+                 "version": "1.0.0", "description": "a kind this Workbench does not take",
+                 "distribution": {"archive": {
+                     "url": format!("file://{}", polite_archive.display()),
+                     "sha256": sha256_of(&polite_archive)}}},
                 {"kind": "server", "id": "echo", "name": "Echo", "version": "0.1.0-gate",
                  "description": "echoes a nonce and leaves a receipt",
                  "distribution": {"binary": {platform: {
@@ -228,6 +257,28 @@ fn a_person_installs_from_the_store_and_the_agent_uses_it() {
         .expect("serialize the catalog"),
     )
     .expect("write the catalog");
+    // The same catalog, published again with a newer skill: what an update
+    // is. Added by its new address it takes the place of the old one, as a
+    // catalog of one name does.
+    let later = supply.join("catalog-later.json");
+    let mut republished: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&catalog).expect("read the catalog"))
+            .expect("parse the catalog");
+    for entry in republished["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .iter_mut()
+    {
+        if entry["id"] == "shout" {
+            entry["version"] = serde_json::json!("1.1.0");
+            entry["description"] = serde_json::json!("answer in capitals, louder");
+        }
+    }
+    std::fs::write(
+        &later,
+        serde_json::to_vec_pretty(&republished).expect("serialize the later catalog"),
+    )
+    .expect("write the later catalog");
 
     let (product, url) = start_product_against(&data_root, Some(&registry.index_url));
     let nonce = format!("store-walk-{}", std::process::id());
@@ -239,6 +290,7 @@ fn a_person_installs_from_the_store_and_the_agent_uses_it() {
         .arg("claude-code")
         .arg("claude-acp")
         .arg(&nonce)
+        .arg(format!("file://{}", later.display()))
         .env("SWEM_BROWSER", &browser)
         .env("SWEM_BROWSER_NO_SANDBOX", "1")
         .output()
@@ -272,6 +324,18 @@ fn a_person_installs_from_the_store_and_the_agent_uses_it() {
                 .expect("parse the receipt");
         assert_eq!(receipt["schema"], "swem:install-receipt@0.1");
     }
+    // What was removed is gone from the install root; what was updated has
+    // both versions and the newer one is the one read.
+    assert!(
+        find_file(&data_root, "installation.json", "polite").is_none(),
+        "the removed skill left its receipt"
+    );
+    let installed = find_directory(&data_root, "installed").expect("the install root");
+    let shout = swem_host::load_receipts(&installed, &swem_host::Kind::SKILL);
+    assert_eq!(
+        shout["shout"].version, "1.1.0",
+        "the newest is not the one read"
+    );
     assert!(
         find_file(&data_root, "echo.json", "mcp-servers").is_some(),
         "the installed server is not declared in the MCP catalogue"
@@ -1943,6 +2007,10 @@ fn the_example_product() -> PathBuf {
 /// under a path of that server, and nobody finds another's.
 #[test]
 #[ignore = "product gate: starts the example product and drives a real browser"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over one product: its people, its server, and the Store's kind of its own"
+)]
 fn a_product_of_ones_own_has_the_harness_built_in() {
     let _serial = one_at_a_time();
     let (Some(browser), Some(node)) = (browser(), node()) else {
@@ -2018,6 +2086,81 @@ fn a_product_of_ones_own_has_the_harness_built_in() {
     );
     let adas_agents = format!("{address}people/ada/agents/");
 
+    // Two helpers for the product's Store: one that answers the shape the
+    // product calls (the echo fixture), one that does not (the taker
+    // fixture, whose tools are other tools). Each is an archive whose tree
+    // has a `helper.json` naming the program, as the example reads them.
+    let supply = root.join("supply");
+    std::fs::create_dir_all(&supply).expect("the supply");
+    let beside = Path::new(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("a directory")
+        .to_path_buf();
+    let fixture = |name: &str| {
+        beside.join(if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_owned()
+        })
+    };
+    let mut entries = Vec::new();
+    for (id, program, args) in [
+        (
+            "echoes",
+            fixture("swem-mcp-echo"),
+            vec![
+                "--receipt".to_owned(),
+                supply.join("echoes-receipt.json").display().to_string(),
+            ],
+        ),
+        (
+            "takes",
+            fixture("swem-mcp-taker-fixture"),
+            vec![
+                "--home".to_owned(),
+                supply.join("takes-home").display().to_string(),
+            ],
+        ),
+    ] {
+        assert!(
+            program.is_file(),
+            "build the fixtures first: cargo build -p swem-host --bins"
+        );
+        let tree = supply.join(id);
+        std::fs::create_dir_all(&tree).expect("the helper's tree");
+        std::fs::write(
+            tree.join("helper.json"),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"program": program.display().to_string(), "args": args}),
+            )
+            .expect("a manifest"),
+        )
+        .expect("write the manifest");
+        let archive = supply.join(format!("{id}.tar.gz"));
+        let tarred = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&supply)
+            .arg(id)
+            .status()
+            .expect("run tar");
+        assert!(tarred.success(), "packaging the helper failed");
+        entries.push(serde_json::json!({
+            "kind": "example/helper@1", "id": id, "name": format!("The helper that {id}"), "version": "0.1.0",
+            "distribution": {"archive": {"url": format!("file://{}", archive.display()), "sha256": sha256_of(&archive)}}
+        }));
+    }
+    let catalog = supply.join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "swem:catalog@0.2", "name": "Helpers for the example", "entries": entries
+        }))
+        .expect("serialize the catalog"),
+    )
+    .expect("write the catalog");
+
     // From outside, as a program: nobody the product did not let in gets
     // anything of the harness, at the page or behind it.
     for route in ["", "api/profiles", "api/access", "workbench.js"] {
@@ -2034,6 +2177,7 @@ fn a_product_of_ones_own_has_the_harness_built_in() {
         .arg(&ada)
         .arg(&bo)
         .arg(&adas_agents)
+        .arg(format!("file://{}", catalog.display()))
         .env("SWEM_BROWSER", &browser)
         .env("SWEM_BROWSER_NO_SANDBOX", "1")
         .output()

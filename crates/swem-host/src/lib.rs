@@ -30,7 +30,6 @@ mod envelope;
 mod environment;
 mod environment_profile;
 pub mod host;
-mod install;
 mod keepers;
 mod keys;
 pub mod mcp_observer;
@@ -64,7 +63,6 @@ pub use envelope::{
 pub use environment::*;
 pub use environment_profile::*;
 pub use host::{ContainerEngineLook, EngineStanding, MachineLook};
-pub use install::*;
 pub use keepers::{
     KEEPER_LOOK_SCHEMA, KEEPERS_SCHEMA, KEPT_BY_SWEM, KEPT_BY_THE_SYSTEM, KEPT_FROM_OUTSIDE,
     KeeperLook, Keepers, KeepersError,
@@ -78,11 +76,21 @@ pub use session::agent_takes;
 pub use session::*;
 pub(crate) use surface::NativeOutputProjection;
 pub use surface::{NativeSessionEvent, SurfaceEventSource};
+pub use swem_store::{
+    INSTALL_RECEIPT_SCHEMA, INSTALLATION_MANIFEST, InstallPlan, InstallReceipt, Kind,
+    RegistryDistribution, SKILL_FILE, StoreError, adopt_legacy_agents, all_receipts, fetch_url,
+    install, load_receipts, registry_platform, resolve_registry_install_plan,
+    resolve_registry_install_plan_from_bytes,
+};
+pub use swem_store::{
+    KindWords, Planned, Requirement, SHAPE_SCHEMA, Shape, Store, Taker, Takes, ToolListed,
+    ToolShape,
+};
 pub use time::{Due, NewTimedMessage, RunState, TimedMessage, TimedMessageChange, TimedRun, When};
 pub use time_tools::{TIME_TOOLS, serve_time_tools};
 pub use workbench_apps::{
     AppAttachmentView, DiscoveredAppResource, DiscoveredAppTool, MCP_APP_MIME, OpenedApp,
-    RelayRefusal,
+    RelayRefusal, tools_listed_by, tools_listed_by_blocking,
 };
 pub use workbench_content::{
     WorkbenchContentDescriptor, WorkbenchContentLifecycle, WorkbenchContentSource,
@@ -102,11 +110,11 @@ pub use workbench_shell::{
     McpServerView, ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
     OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
     ResolvedDirectAgentConnection, SaidInChat, Saying, ShellConnectionMode, StartChatBody,
-    StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreView, TerminalInputBody,
-    TerminalOutput, TerminalSizeBody, TerminalView, Way, WorkbenchAgentOption, WorkbenchOnboarding,
-    WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState, credential_environment,
-    mint_session_token, serve_workbench, serve_workbench_http, serve_workbench_http_with_apps,
-    serve_workbench_http_with_apps_at,
+    StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreRemoveBody, StoreView,
+    TerminalInputBody, TerminalOutput, TerminalSizeBody, TerminalView, Way, WorkbenchAgentOption,
+    WorkbenchOnboarding, WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState,
+    credential_environment, mint_session_token, serve_workbench, serve_workbench_http,
+    serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
 };
 pub use workbench_shell::{AskedBody, ShellBody, asked};
 
@@ -191,22 +199,6 @@ pub struct AgentDiscovery {
     pub executable_path: Option<PathBuf>,
     pub launch: Option<LaunchCommand>,
     pub registry_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct InstallPlan {
-    pub plan_id: String,
-    /// What the plan installs; an agent unless the plan says otherwise.
-    #[serde(default)]
-    pub kind: InstallKind,
-    pub agent_id: String,
-    pub registry_id: String,
-    pub registry_index: String,
-    pub name: String,
-    pub version: String,
-    pub distribution: RegistryDistribution,
-    pub requires_explicit_consent: bool,
-    pub executes_remote_shell: bool,
 }
 
 /// Typed result of one ACP v1 `initialize` against a discovered agent.
@@ -413,7 +405,7 @@ pub fn discover_agents_with(
     declared: Vec<AgentCatalogEntry>,
     installed_root: &Path,
 ) -> Vec<AgentDiscovery> {
-    let installations = load_receipts(installed_root, InstallKind::Agent);
+    let installations = load_receipts(installed_root, &Kind::AGENT);
     let mut catalog = builtin_catalog();
     for entry in declared {
         // A declaration replaces a built-in entry of the same id: the person
@@ -685,7 +677,7 @@ pub fn install_plan_at(agent_id: &str, registry_index: &str) -> Result<InstallPl
             .ok_or_else(|| SupplyError::UnmanagedAgent(agent_id.into()))?,
         None => agent_id.to_owned(),
     };
-    resolve_registry_install_plan(agent_id, &registry_id, registry_index)
+    resolve_registry_install_plan(agent_id, &registry_id, registry_index).map_err(SupplyError::from)
 }
 
 /// Launch an explicitly selected discovered agent and verify the stable ACP v1
@@ -1117,6 +1109,23 @@ fn executable_candidates(executable: &str) -> Vec<String> {
     }
 }
 
+impl From<StoreError> for SupplyError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::ConsentRequired(words) => Self::ConsentRequired(words),
+            StoreError::UnsupportedDistribution(words) => Self::UnsupportedDistribution(words),
+            StoreError::MissingExecutable(words) => Self::MissingExecutable(words),
+            StoreError::UnknownAgent(words) => Self::UnknownAgent(words),
+            StoreError::Serialization(words) => Self::Serialization(words),
+            StoreError::Invalid(words)
+            | StoreError::NotFound(words)
+            | StoreError::Conflict(words)
+            | StoreError::Failed(words)
+            | StoreError::Protocol(words) => Self::Protocol(words),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1155,7 +1164,7 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         let installation = InstallReceipt {
             schema: INSTALL_RECEIPT_SCHEMA.into(),
-            kind: InstallKind::Agent,
+            kind: Kind::AGENT,
             plan_id: String::new(),
             source: String::new(),
             registry_id: "opencode".into(),

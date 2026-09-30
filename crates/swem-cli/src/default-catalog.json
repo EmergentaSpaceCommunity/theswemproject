@@ -1,5 +1,5 @@
 {
-  "schema": "swem:catalog@0.1",
+  "schema": "swem:catalog@0.2",
   "name": "SWEM",
   "description": "What this distribution carries.",
   "entries": [
@@ -9,7 +9,18 @@
       "name": "SWEM Cycle",
       "description": "The project server: one Cycle per project, from what was asked to what was delivered, with the domain packages it loads. This product serves it itself (`swem mcp serve`) and creates projects on it; there is nothing to fetch.",
       "version": "0.1.0-dev",
-      "bundled": true
+      "bundled": true,
+      "takes": [
+        {
+          "kind": "swem.cycle/package@1",
+          "plan": "plan_package",
+          "install": "install_package",
+          "remove": "remove_package",
+          "one": "a package for the Cycle",
+          "many": "Packages for the Cycle",
+          "after_install": "Every project's server loads it from its next call on."
+        }
+      ]
     }
   ]
 }

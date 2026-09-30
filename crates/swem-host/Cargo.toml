@@ -41,6 +41,10 @@ name = "swem-mcp-tool-shape-fixture"
 path = "src/bin/swem-mcp-tool-shape-fixture.rs"
 
 [[bin]]
+name = "swem-mcp-taker-fixture"
+path = "src/bin/swem-mcp-taker-fixture.rs"
+
+[[bin]]
 name = "swem-podman-fixture"
 path = "src/bin/swem-podman-fixture.rs"
 
@@ -54,6 +58,7 @@ path = "src/bin/swem-personal-agent-fixture.rs"
 
 [dependencies]
 swem-runner = { path = "../swem-runner" }
+swem-store = { path = "../swem-store" }
 base64 = { workspace = true }
 agent-client-protocol.workspace = true
 flate2.workspace = true

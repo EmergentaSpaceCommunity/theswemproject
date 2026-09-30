@@ -102,9 +102,9 @@ pub use mcp_servers::{
 };
 pub use store::{
     ACP_REGISTRY_CACHE, AddIndexBody, ArchiveDistribution, BinaryDistribution, CATALOG_SCHEMA,
-    Catalog, CatalogDistribution, CatalogEntry, INDEX_SCHEMA, IndexFile, InstalledSkill,
-    NpxDistribution, RegistryStatus, StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody,
-    StoreView,
+    Catalog, CatalogDistribution, CatalogEntry, INDEX_SCHEMA, IndexFile, InstalledSkill, KindShown,
+    KindWords, NpxDistribution, Planned, RegistryStatus, Requirement, StoreEntry, StoreIndexView,
+    StoreInstallBody, StorePlanBody, StoreRemoveBody, StoreView, Taker, Takes, UvxDistribution,
 };
 pub(crate) use terminal::working_directory;
 pub use terminal::{
@@ -804,7 +804,7 @@ pub struct WorkbenchShellState {
     server_apps: server_apps::ServerApps,
     /// The MCP servers a person declared for their agents, and the directory
     /// they are kept in. Absent in tests and embedders that declare their own.
-    mcp_catalogue: std::sync::OnceLock<McpCatalogue>,
+    mcp_catalogue: Arc<std::sync::OnceLock<McpCatalogue>>,
     /// The model providers a profile may name, shipped and declared.
     model_providers: std::sync::OnceLock<ModelProviderBook>,
     /// Where what is found of this machine is kept, and what was found.
@@ -818,7 +818,10 @@ pub struct WorkbenchShellState {
     /// installing is enabled; a host alone installs nothing.
     installed_root: std::sync::OnceLock<PathBuf>,
     /// The indexes the store reads, when a store is enabled.
-    store: std::sync::OnceLock<store::StoreHome>,
+    store: std::sync::OnceLock<store::Store>,
+    /// The way back from the Store to the host it lives in, for servers
+    /// that take packages; filled in once the host is shared.
+    host_of_the_store: Arc<std::sync::OnceLock<std::sync::Weak<WorkbenchShellState>>>,
     /// The standing instructions a clock runs, and the directory they are
     /// kept in. Absent until a host enables them.
     /// The command that serves an agent's own schedules to its session.
@@ -1039,7 +1042,7 @@ impl WorkbenchShellState {
             rediscover: std::sync::OnceLock::new(),
             acp_registry_index: std::sync::OnceLock::new(),
             server_apps: server_apps::ServerApps::new(),
-            mcp_catalogue: std::sync::OnceLock::new(),
+            mcp_catalogue: Arc::new(std::sync::OnceLock::new()),
             model_providers: std::sync::OnceLock::new(),
             provider_keys: std::sync::OnceLock::new(),
             machine_root: std::sync::OnceLock::new(),
@@ -1047,6 +1050,7 @@ impl WorkbenchShellState {
             container_setup: std::sync::Mutex::new(None),
             installed_root: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
+            host_of_the_store: Arc::new(std::sync::OnceLock::new()),
             time_tools: std::sync::OnceLock::new(),
             timekeeper: std::sync::OnceLock::new(),
             removed_root: std::sync::OnceLock::new(),
@@ -4034,11 +4038,18 @@ pub(crate) async fn route_shell(
             Ok(response) => return response,
             Err(request) => request,
         };
-    let request =
-        match stream::route_chats(state, &method, &segments, query.as_deref(), request).await {
-            Ok(response) => return response,
-            Err(request) => request,
-        };
+    let request = match Box::pin(stream::route_chats(
+        state,
+        &method,
+        &segments,
+        query.as_deref(),
+        request,
+    ))
+    .await
+    {
+        Ok(response) => return response,
+        Err(request) => request,
+    };
     match (&method, segments.as_slice()) {
         (&Method::GET, []) => {
             // Opening the address the product printed is how a person hands
@@ -4555,7 +4566,23 @@ pub(crate) async fn route_shell(
                 Err(error) => return error_response(&error),
             };
             let state = Arc::clone(state);
-            blocking_json(move || state.store_install(&body)).await
+            blocking_json(move || {
+                state
+                    .store_install(&body)
+                    .map(|receipts| json!({"installed": receipts}))
+            })
+            .await
+        }
+        (&Method::POST, ["api", "store", "remove"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<StoreRemoveBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            let state = Arc::clone(state);
+            blocking_json(move || state.store_remove(&body)).await
         }
         (&Method::POST, ["api", "store", "indexes"]) => {
             let body = match read_json(request).await.and_then(|value| {

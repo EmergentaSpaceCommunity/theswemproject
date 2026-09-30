@@ -319,7 +319,7 @@ impl WorkbenchShellState {
         loop {
             match self.next_turn(&agent_id).await {
                 Ok(Some((delivery, turn_lock))) => {
-                    self.carry_out(&delivery).await;
+                    Box::pin(self.carry_out(&delivery)).await;
                     drop(turn_lock);
                 }
                 Ok(None) => {
@@ -407,7 +407,7 @@ impl WorkbenchShellState {
     /// Give the message and record how it ended. Nothing that goes wrong
     /// here is lost: it is how the delivery ended, in words.
     async fn carry_out(self: &Arc<Self>, delivery: &Delivery) {
-        let (state, outcome) = match self.give(delivery).await {
+        let (state, outcome) = match Box::pin(self.give(delivery)).await {
             // How a turn ended is said when it is not the ordinary end.
             Ok(Given::Done(reason)) => (
                 DeliveryState::Done,

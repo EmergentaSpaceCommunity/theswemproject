@@ -3,7 +3,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 
 /// What is fetched and from where, asked before it is installed.
-export function Consent({ asked, onAnswer }: { asked: string | null; onAnswer: (yes: boolean) => void }) {
+export function Consent({ asked, yes = "Install", onAnswer }: { asked: string | null; yes?: string; onAnswer: (yes: boolean) => void }) {
   const [title, ...rest] = (asked ?? "").split("\n\n");
   return (
     <Dialog.Root open={asked !== null} onOpenChange={(next) => (next ? undefined : onAnswer(false))}>
@@ -17,7 +17,7 @@ export function Consent({ asked, onAnswer }: { asked: string | null; onAnswer: (
               Not now
             </button>
             <button type="button" className="k-btn k-primary" onClick={() => onAnswer(true)}>
-              Install
+              {yes}
             </button>
           </div>
         </Dialog.Popup>

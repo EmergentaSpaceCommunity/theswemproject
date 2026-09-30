@@ -576,7 +576,14 @@ export async function launchBrowser({browser, url, label, failureDir = tmpdir(),
   b.consent = async (agree = true) => {
     await b.waitFor("the consent question", async () => b.exists('[role="dialog"]'), 200);
     const asked = await b.evaluate(`document.querySelector('[role="dialog"]')?.innerText ?? ""`);
-    if (!(await b.pressText('[role="dialog"] button', agree ? "Install" : "Not now"))) cleanup(1, `the question has no way to answer it: ${JSON.stringify(asked)}`);
+    // Yes is the dialog's one primary button, whatever it says: Install,
+    // Update, Remove.
+    if (agree) {
+      if (!(await b.exists('[role="dialog"] .k-btn.k-primary'))) cleanup(1, `the question has no way to say yes: ${JSON.stringify(asked)}`);
+      await b.click('[role="dialog"] .k-btn.k-primary');
+    } else if (!(await b.pressText('[role="dialog"] button', "Not now"))) {
+      cleanup(1, `the question has no way to answer it: ${JSON.stringify(asked)}`);
+    }
     await b.waitFor("the question is answered", async () => !(await b.exists('[role="dialog"]')), 100);
     return asked;
   };

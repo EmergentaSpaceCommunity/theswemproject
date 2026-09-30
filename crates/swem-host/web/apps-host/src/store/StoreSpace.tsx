@@ -1,19 +1,36 @@
 // The Store: one list of what a person can install, from the indexes this
-// product reads - the ACP registry's agents, and the catalogs of MCP servers
-// and skills a person adds by URL.
+// product reads - the ACP registry's agents, and the catalogs a person adds
+// by URL - for every host that takes something from it: the Workbench takes
+// agents, MCP servers and skills; an installed server or a product the
+// Workbench is built into takes kinds of its own, and says what to call
+// them. A kind nobody here takes is listed as such and cannot be installed.
 //
 // Installing here is the same act as everywhere in the product: the exact
-// plan is read, the person consents to it by name in a dialog, and the
-// install is applied against that plan's id. What differs is where the thing
-// lands afterwards: an agent is offered in the Agent space, a server is
-// declared for a profile to attach, a skill is there for a profile to take.
+// plan is read, with what it requires, the person consents to it by name in
+// a dialog, and the install is applied against that plan's id. What happens
+// afterwards is the taker's, and the taker says it.
 import { useEffect, useState } from "react";
+import { useStore } from "zustand";
 
 import { sessionStore } from "../agent/store.ts";
 import { fetchJson } from "../http.ts";
 import { Consent } from "../page/Consent.tsx";
+import { named } from "../page/door.ts";
 
-type Kind = "agent" | "server" | "skill" | "tool";
+type Kind = string;
+
+interface KindShown {
+  kind: Kind;
+  one: string;
+  many: string;
+  after_install: string;
+}
+
+interface Requirement {
+  kind: Kind;
+  id: string;
+  version?: string;
+}
 
 interface StoreEntry {
   kind: Kind;
@@ -27,6 +44,10 @@ interface StoreEntry {
   needs?: string[];
   installed?: string;
   bundled?: boolean;
+  taken?: boolean;
+  requires?: Requirement[];
+  newer?: boolean;
+  removable?: boolean;
 }
 
 interface StoreIndex {
@@ -41,6 +62,7 @@ interface StoreView {
   registry: { url: string; agents: number; read: string; error?: string };
   indexes: StoreIndex[];
   entries: StoreEntry[];
+  kinds?: KindShown[];
 }
 
 interface InstallPlan {
@@ -50,14 +72,15 @@ interface InstallPlan {
   registry_index: string;
   version: string;
   distribution: { kind?: string; package?: string; archive?: string; url?: string };
+  also?: InstallPlan[];
 }
 
-const KIND_WORDS: Record<Kind, string> = {
-  agent: "agent",
-  server: "MCP server",
-  skill: "skill",
-  tool: "tool",
-};
+/// What a kind is called: the taker's words, or the kind's own name for one
+/// nobody here takes.
+const NOBODY: KindShown = { kind: "", one: "something this Workbench does not have", many: "For something this Workbench does not have", after_install: "" };
+const wordsFor = (kinds: KindShown[], kind: Kind): KindShown => kinds.find((one) => one.kind === kind) ?? { ...NOBODY, kind };
+
+const fetched = (plan: InstallPlan): string => plan.distribution.package ?? plan.distribution.archive ?? plan.distribution.url ?? "its distribution";
 
 function post<T>(path: string, body: unknown): Promise<T> {
   return fetchJson<T>(path, {
@@ -74,8 +97,9 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
   const [kind, setKind] = useState<Kind | "all">("all");
   const [indexUrl, setIndexUrl] = useState("");
   const [status, setStatus] = useState("");
+  const called = useStore(named, (state) => state.called);
   const [busy, setBusy] = useState(false);
-  const [consent, setConsent] = useState<{ asked: string; answer: (yes: boolean) => void } | null>(null);
+  const [consent, setConsent] = useState<{ asked: string; yes: string; answer: (yes: boolean) => void } | null>(null);
 
   const load = async () => {
     try {
@@ -126,24 +150,21 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
     setStatus(`Reading the plan for ${entry.name}…`);
     try {
       const plan = await post<InstallPlan>("/api/store/plan", { kind: entry.kind, id: entry.id });
-      const what = plan.distribution.package ?? plan.distribution.archive ?? plan.distribution.url ?? "its distribution";
+      const words = wordsFor(view?.kinds ?? [], entry.kind);
+      const also = (plan.also ?? []).map((one) => `${wordsFor(view?.kinds ?? [], one.kind).one} ${one.registry_id} ${one.version} (${fetched(one)})`);
       const question =
-        `Install ${KIND_WORDS[entry.kind]} ${plan.registry_id} ${plan.version}?\n\n` +
-        `It fetches ${what}, described by ${plan.registry_index}, ` +
-        "under this product's install root. Nothing else on this machine changes.";
-      if (!(await new Promise<boolean>((answer) => setConsent({ asked: question, answer })))) {
+        `${entry.installed ? "Update" : "Install"} ${words.one} ${plan.registry_id} ${plan.version}?\n\n` +
+        `It fetches ${fetched(plan)}, described by ${plan.registry_index || entry.index}, ` +
+        "under this product's install root." +
+        (also.length > 0 ? ` It also installs what this requires: ${also.join("; ")}.` : "") +
+        " Nothing else on this machine changes.";
+      if (!(await new Promise<boolean>((answer) => setConsent({ asked: question, yes: entry.installed ? "Update" : "Install", answer })))) {
         setStatus("");
         return;
       }
       setStatus(`Installing ${entry.name}…`);
       await post("/api/store/install", { kind: entry.kind, id: entry.id, plan_id: plan.plan_id });
-      const after =
-        entry.kind === "agent"
-          ? "It is offered in the Agent space now."
-          : entry.kind === "server"
-            ? "It is declared; attach it to an agent in Setup."
-            : "A profile can take it in Setup, under Skills.";
-      setStatus(`Installed ${entry.name}. ${after}`);
+      setStatus(`Installed ${entry.name}${also.length > 0 ? ` and what it requires` : ""}. ${words.after_install}`);
       if (entry.kind === "agent") await sessionStore.loadOnboarding();
       if (entry.kind === "server") await sessionStore.loadMcpServers();
       await load();
@@ -154,6 +175,26 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
     }
   };
 
+  /// Remove what was installed, after the person said so.
+  const remove = async (entry: StoreEntry) => {
+    const words = wordsFor(view?.kinds ?? [], entry.kind);
+    const question = `Remove ${words.one} ${entry.id} ${entry.installed ?? ""}?\n\nWhat was installed of it goes; what was made with it stays.`;
+    if (!(await new Promise<boolean>((answer) => setConsent({ asked: question, yes: "Remove", answer })))) return;
+    setBusy(true);
+    setStatus(`Removing ${entry.name}…`);
+    try {
+      await post("/api/store/remove", { kind: entry.kind, id: entry.id });
+      setStatus(`Removed ${entry.name}.`);
+      if (entry.kind === "server") await sessionStore.loadMcpServers();
+      await load();
+    } catch (failure) {
+      setStatus(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const kinds = view?.kinds ?? [];
   const needle = search.trim().toLowerCase();
   const entries = (view?.entries ?? []).filter(
     (entry) =>
@@ -168,6 +209,7 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
     <div id="store-space" className="space store-space" data-workbench-space="store" hidden={hidden}>
       <Consent
         asked={consent?.asked ?? null}
+        yes={consent?.yes}
         onAnswer={(yes) => {
           consent?.answer(yes);
           setConsent(null);
@@ -176,8 +218,8 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
       <aside className="store-sources">
         <div className="k-eyebrow">Where it comes from</div>
         <p className="k-caption k-muted">
-          Agents come from the ACP registry. Servers and skills come from catalogs you add by
-          address; nothing here is hosted by SWEM.
+          Agents come from the ACP registry. The rest comes from catalogs you add by address;
+          nothing here is hosted by {called}. {kinds.length > 0 ? `Here: ${kinds.map((one) => one.many.toLowerCase()).join(", ")}.` : ""}
         </p>
         <div id="registry-status" className="k-caption" data-read={view?.registry.read ?? ""}>
           {view
@@ -189,7 +231,7 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
             <li className="index-row" data-index={index.slug} data-builtin={index.builtin ? "true" : "false"} key={index.slug}>
               <strong>{index.name}</strong>
               <span className="k-caption k-muted">
-                {index.entries} entries · {index.builtin ? "came with SWEM" : index.url}
+                {index.entries} entries · {index.builtin ? `came with ${called}` : index.url}
               </span>
               {index.builtin ? null : (
                 <button className="index-forget" data-index={index.slug} disabled={busy} onClick={() => void forgetIndex(index.slug)}>
@@ -216,16 +258,18 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
         <div className="store-toolbar">
           <input
             id="store-search"
-            placeholder="Search agents, servers and skills"
+            placeholder="Search"
             aria-label="Search the store"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
           <select id="store-kind" aria-label="Kind" value={kind} onChange={(event) => setKind(event.target.value as Kind | "all")}>
             <option value="all">Everything</option>
-            <option value="agent">Agents</option>
-            <option value="server">MCP servers</option>
-            <option value="skill">Skills</option>
+            {kinds.map((one) => (
+              <option value={one.kind} key={one.kind}>
+                {one.many}
+              </option>
+            ))}
           </select>
         </div>
         {error ? <div className="bad k-caption">{error}</div> : null}
@@ -235,21 +279,29 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
               <div className="store-entry-words">
                 <strong>{entry.name}</strong>
                 <small>
-                  {KIND_WORDS[entry.kind]} · {entry.id} · {entry.version} · {entry.index}
+                  {wordsFor(kinds, entry.kind).one} · {entry.id} · {entry.version} · {entry.index}
                   {entry.needs && entry.needs.length > 0 ? ` · needs ${entry.needs.join(", ")}` : ""}
+                  {entry.requires && entry.requires.length > 0 ? ` · requires ${entry.requires.map((one) => one.id).join(", ")}` : ""}
                 </small>
                 {entry.description ? <span className="k-caption k-muted">{entry.description}</span> : null}
                 {!entry.installable && entry.reason ? <span className="k-caption bad">{entry.reason}</span> : null}
               </div>
-              <button
-                className={entry.installed || entry.bundled ? "store-install" : "store-install primary"}
-                data-kind={entry.kind}
-                data-id={entry.id}
-                disabled={busy || !entry.installable}
-                onClick={() => void install(entry)}
-              >
-                {entry.bundled ? "Came with SWEM" : entry.installed ? `Installed ${entry.installed}` : "Install"}
-              </button>
+              <span className="k-inline w-tight w-nowrap">
+                {entry.installed && entry.removable ? (
+                  <button className="store-remove k-quiet" data-kind={entry.kind} data-id={entry.id} disabled={busy} onClick={() => void remove(entry)}>
+                    Remove
+                  </button>
+                ) : null}
+                <button
+                  className={entry.installed || entry.bundled ? "store-install" : "store-install primary"}
+                  data-kind={entry.kind}
+                  data-id={entry.id}
+                  disabled={busy || !entry.installable || (Boolean(entry.installed) && !entry.newer)}
+                  onClick={() => void install(entry)}
+                >
+                  {entry.bundled ? `Came with ${called}` : entry.installed ? (entry.newer ? `Update to ${entry.version}` : `Installed ${entry.installed}`) : "Install"}
+                </button>
+              </span>
             </div>
           ))}
           {view && entries.length === 0 ? <div className="k-caption k-muted">Nothing matches.</div> : null}

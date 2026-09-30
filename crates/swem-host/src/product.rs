@@ -216,6 +216,7 @@ pub struct Product {
     owned_by: Option<String>,
     servers_for: Option<Arc<ServersFor>>,
     secrets: Option<crate::Keeper>,
+    takers: Vec<Arc<dyn crate::Taker>>,
 }
 
 /// What a product says an agent is handed beside what its profile names:
@@ -245,7 +246,17 @@ impl Product {
             owned_by: None,
             servers_for: None,
             secrets: None,
+            takers: Vec::new(),
         }
+    }
+
+    /// A kind of package this product takes from the Store, beside the
+    /// harness's own: what it is called, what it accepts, how a candidate
+    /// is checked, what happens once one is installed.
+    #[must_use]
+    pub fn takes(mut self, taker: Arc<dyn crate::Taker>) -> Self {
+        self.takers.push(taker);
+        self
     }
 
     /// Who keeps what a person gives: the keys of providers, what a
@@ -530,7 +541,7 @@ impl Product {
         // before anything added: the one list says what this product is as
         // well as what it can be given.
         state
-            .enable_store(&root.indexes(), self.shipped)
+            .enable_store_with(&root.indexes(), self.shipped, self.takers)
             .map_err(|error| error.to_string())?;
         // The MCP servers a person declares from the product land in the same
         // declaration map as the ones the product itself declared, so an
@@ -580,8 +591,10 @@ impl Product {
         if let Some(called) = &self.called {
             state.call_it(called);
         }
+        let state = Arc::new(state);
+        state.store_lives_in();
         Ok(Assembled {
-            state: Arc::new(state),
+            state,
             root,
             owned_by: self.owned_by,
         })

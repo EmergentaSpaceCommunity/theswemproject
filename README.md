@@ -99,7 +99,11 @@ let response = ada.answer(request).await;
 
 `cargo run -p swem-host --example built_in` is a product of that shape with two people, and the
 product gate walks it. Who a person is, the product settles before it hands a request over;
-the harness takes its word and asks nothing else.
+the harness takes its word and asks nothing else. A product also takes packages of a kind of its
+own through the Store (`.takes(taker)`), checked against the shape of tools it calls.
+[`docs/building-in.md`](docs/building-in.md) says all of it: the builder, the three doors, who
+asks, secrets, servers per agent, the Store's kinds, takers and shapes, time, linking, and what
+is not there.
 
 ## Develop
 
@@ -124,6 +128,7 @@ control a walk presses is a control a person presses.
 | Path | What it is |
 | --- | --- |
 | `crates/swem-host` | The harness: ACP client, MCP host, MCP Apps host, the Workbench shell and its HTTP surface, agent profiles and environments, the installer and the Store. Knows no domain. |
+| `crates/swem-store` | The Store as a library: kinds by name, takers a host registers, catalogs and the agent registry as indexes, one road to install, update and remove, shapes of servers. Knows no host. |
 | `crates/swem-host/web/apps-host` | The Workbench's page (React, TypeScript) and its node suite. `dist/workbench.js` is committed and checked against its source. |
 | `crates/swem-cli` | The product: the `swem` binary that assembles the host into what a person runs, and the front-door gate. |
 | `web/view-kit` | The design tokens both the page and MCP Apps draw with. |
@@ -147,12 +152,12 @@ Everything the Workbench can be given is an index it reads:
 
 - **Agents** come from the ACP registry (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`,
   or the mirror `SWEM_ACP_REGISTRY_INDEX` / `--acp-registry` names).
-- **MCP servers and skills** come from a catalog, a `swem:catalog@0.1` document you publish
-  anywhere and a person adds by address:
+- **MCP servers, skills and packages of other kinds** come from a catalog, a `swem:catalog@0.2`
+  document you publish anywhere and a person adds by address (`@0.1` still reads):
 
 ```json
 {
-  "schema": "swem:catalog@0.1",
+  "schema": "swem:catalog@0.2",
   "name": "My tools",
   "entries": [
     {"kind": "server", "id": "notes", "name": "Notes", "version": "1.2.0",
@@ -162,14 +167,22 @@ Everything the Workbench can be given is an index it reads:
      "distribution": {"binary": {"darwin-aarch64": {"archive": "https://…/search-darwin-aarch64.tar.gz",
                                                      "sha256": "…", "cmd": "./search"}}}},
     {"kind": "skill", "id": "review", "name": "Review", "version": "1.0.0",
-     "distribution": {"archive": {"url": "https://…/review.tar.gz", "sha256": "…"}}}
+     "distribution": {"archive": {"url": "https://…/review.tar.gz", "sha256": "…"}},
+     "requires": [{"kind": "skill", "id": "manners"}]},
+    {"kind": "swem.cycle/package@1", "id": "hello-node", "name": "Hello node", "version": "0.2.0",
+     "distribution": {"archive": {"url": "https://…/hello-node.tar.gz", "sha256": "…"}}}
   ]
 }
 ```
 
-A server is an npm package run through node or a native archive per platform, checked against its
-digest; a skill is an archive holding a `SKILL.md`. Every install is planned, shown, consented to by
-its exact plan id, and receipted under the install root.
+A server is an npm package run through node, a Python package run through `uv`, or a native
+archive per platform, checked against its digest; a skill is an archive holding a `SKILL.md`; a
+package of another kind is an archive for whoever takes that kind - a server whose entry says
+`takes`, as the Cycle's hub takes `swem.cycle/package@1`, or the product the harness is built
+into. A kind nobody here takes is listed as such and cannot be installed. What an entry
+`requires` is installed with it under one consent. Every install is planned, shown, consented to
+by its exact plan id, and receipted under the install root; a newer version in an index is offered
+as an update, and what was installed can be removed.
 
 ## Licence
 

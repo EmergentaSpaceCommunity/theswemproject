@@ -207,6 +207,24 @@ impl WorkbenchShellState {
         self.server_apps.entry(server).await
     }
 
+    /// Call one tool of a declared server, for the Store: a server that
+    /// takes packages is asked to plan, install and remove them.
+    ///
+    /// # Errors
+    ///
+    /// No such server, or the server could not be reached or refused.
+    pub async fn call_declared_server(
+        &self,
+        server: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, WorkbenchShellError> {
+        let entry = self.declared_app_entry(server).await?;
+        workbench_apps::call_tool_of(&entry, tool, arguments)
+            .await
+            .map_err(WorkbenchShellError::Failed)
+    }
+
     /// Every space a declared server offers: its home App, read off the
     /// server's own resource listing. Each server is dialled once per run
     /// and kept; one that does not answer in time is left out of this

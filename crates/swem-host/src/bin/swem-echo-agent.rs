@@ -35,7 +35,7 @@ use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use base64::Engine as _;
 use rmcp::ServiceExt as _;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
     ClientRequest, GetTaskParams, Implementation, JsonObject, Request, TaskPayload,
 };
 use rmcp::service::PeerRequestOptions;
@@ -1774,7 +1774,7 @@ async fn call_as_task(
     tool_name: String,
     arguments: JsonObject,
 ) -> Result<Value, Error> {
-    let client = ClientInfo::new(
+    let client = ClientConfig::new(
         ClientCapabilities::builder().enable_tasks().build(),
         Implementation::new("swem-echo-agent", env!("CARGO_PKG_VERSION")),
     )

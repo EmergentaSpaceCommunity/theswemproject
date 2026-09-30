@@ -790,7 +790,7 @@ fn cycle_server(root: &DataRoot) -> Option<PathBuf> {
     {
         return Some(beside);
     }
-    let installed = swem_host::load_receipts(&root.installed(), swem_host::InstallKind::Server);
+    let installed = swem_host::load_receipts(&root.installed(), &swem_host::Kind::SERVER);
     if let Some(receipt) = installed.get("swem-cycle")
         && let Some(executable) = &receipt.executable
     {

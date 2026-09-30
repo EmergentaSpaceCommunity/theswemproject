@@ -5,7 +5,7 @@ person, and knows nothing about what the person is making with them: the domain 
 packages, music, software - is the Cycle, a separate MCP server in its own repository, which this
 Workbench hosts like any other server.
 
-## Three crates
+## Four crates
 
 ### `swem-host` - the harness
 
@@ -27,15 +27,13 @@ A library plus test fixtures. It owns:
   setup - model provider and model, role, skills - which the host writes into the agent's own
   files before launch (`agent_setup.rs`: `CLAUDE.md`/`AGENTS.md`, a skills folder, the model as
   the agent's own variable and as the session's option when the agent offers one).
-- **The installer** (`install.rs`). One road for everything the product fetches: a plan the person
-  reads and consents to by its exact id, a staged fetch checked against the digest the plan named,
-  one rename into place, one receipt (`swem:install-receipt@0.1`). Kinds: agent, tool, server,
-  skill. Everything lands under `<data root>/installed/<kind>/<id>/<version>/`.
-- **The Store** (`workbench_shell/store.rs`). One list over the indexes the product reads: the ACP
-  registry, fetched live with the last good copy kept under `<data root>/indexes/`, and the catalogs
-  a person adds by URL (`swem:catalog@0.1`). An installed server is declared in the MCP catalogue for
-  a profile to attach; an installed skill is read from its `SKILL.md` for a profile to take a copy
-  of; an installed agent is rediscovered and offered.
+- **The Store's takers** (`workbench_shell/store.rs`). The Store itself is `swem-store`, below;
+  the harness registers what it takes: an agent (rediscovered and offered), an MCP server
+  (declared in the catalogue for a profile to attach, its values kept across an update, its
+  declaration forgotten before a removal), a skill (read from its `SKILL.md` for a profile to
+  take a copy of). A declared or installed server whose catalog entry says `takes` is reached
+  through the harness's own MCP client for the kind it takes. A product the harness is built into
+  registers takers of its own (`Product::takes`). ADR-0012.
 - **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and
@@ -133,6 +131,20 @@ A library plus test fixtures. It owns:
 The host names no domain. A structural test (`tests/genericity.rs`) scans its source for domain
 words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate
 but the runner.
+
+### `swem-store` - the Store
+
+A library that knows no host. Kinds by name (`Kind`: the four built-in words, else reverse-DNS
+with a version, `swem.cycle/package@1`); catalogs (`swem:catalog@0.2`, `@0.1` read as a subset)
+and the ACP registry as indexes, read live with the last good copy kept under `<data root>/indexes/`;
+the installer (`install.rs`): a plan consented to by its exact id, a staged fetch checked against
+the digest the plan named, the taker's check of the staged tree, one rename into place, one
+receipt (`swem:install-receipt@0.1`) under `<data root>/installed/<kind>/<id>/<version>/`;
+distributions `npx`, `uvx`, `binary`, `archive`; `requires` planned as a closure under one consent;
+versions by semver where they parse; update and removal. `Taker` is what a host registers per kind
+(words, accepts, check, after_install, removable, before_remove); `Through` is how a host lets a
+server that says it `takes` a kind be called; `shape.rs` compares a server's listed tools with the
+shape a host calls. ADR-0004, ADR-0012.
 
 ### `swem-runner` - what is put on a host
 

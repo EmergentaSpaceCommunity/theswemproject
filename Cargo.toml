@@ -3,6 +3,7 @@ members = [
   "crates/swem-host",
   "crates/swem-cli",
   "crates/swem-runner",
+  "crates/swem-store",
 ]
 resolver = "3"
 
@@ -26,18 +27,19 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.52", default-features = false }
-rmcp = { version = "3.1", features = [
+rmcp = { version = "3.5", features = [
   "client",
   "server",
   "transport-child-process",
   "transport-io",
   "transport-streamable-http-server",
 ] }
-process-wrap = { version = "9.1", features = ["tokio1"] }
+process-wrap = { version = "10.0", features = ["tokio1"] }
 portable-pty = { version = "0.9", default-features = false }
 percent-encoding = "2.3"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = "1.2"
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"

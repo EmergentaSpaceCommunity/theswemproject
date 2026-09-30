@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{Json, ServerHandler, ServiceExt as _, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
@@ -58,8 +58,8 @@ impl EchoServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for EchoServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 "swem-mcp-echo",
                 env!("CARGO_PKG_VERSION"),

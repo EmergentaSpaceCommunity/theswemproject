@@ -25,7 +25,7 @@ use hyper::Uri;
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use rmcp::ServiceExt as _;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
     ElicitRequestParams, ElicitResult, ElicitationAction, GetTaskParams, Implementation,
     InputRequest, JsonObject, ProtocolVersion, ReadResourceRequestParams, TaskPayload,
 };
@@ -159,7 +159,7 @@ pub(crate) struct ManagedStdioExit {
     completion: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
 }
 
-pub(crate) type HostClient = RunningService<RoleClient, ClientInfo>;
+pub(crate) type HostClient = RunningService<RoleClient, ClientConfig>;
 
 /// Spawn one independent host-side stdio MCP client for a declared server:
 /// the child is contained (kill-on-drop, Job Object / process group), the
@@ -182,7 +182,7 @@ pub(crate) async fn spawn_host_client(
     command.wrap(ProcessGroup::leader());
     let transport = TokioChildProcess::new(command).ok()?;
     let (transport, exit) = managed_stdio(transport);
-    let info = ClientInfo::new(
+    let info = ClientConfig::new(
         // Tasks, because a person's own call to a long tool should leave the
         // same record an agent's does. Without this the server takes the
         // synchronous path for everything the Workbench asks, the operation
@@ -201,6 +201,62 @@ pub(crate) async fn spawn_host_client(
     } else {
         let _ = exit.wait().await;
         None
+    }
+}
+
+/// Start a server once, list its tools, and stop it: what a host that takes
+/// a kind of server checks a candidate's tools against its
+/// [`swem_store::Shape`] with. The server is started as a declared server
+/// is; nothing of it is kept.
+///
+/// # Errors
+///
+/// The program could not be started, refused the handshake, or did not
+/// list its tools.
+pub async fn tools_listed_by(
+    stdio: &McpServerStdio,
+) -> Result<Vec<swem_store::ToolListed>, String> {
+    let (client, exit) = spawn_host_client(stdio).await.ok_or_else(|| {
+        format!(
+            "{} could not be started as a server",
+            stdio.command.display()
+        )
+    })?;
+    let listed = client.list_all_tools().await;
+    let _ = client.cancel().await;
+    let _ = exit.wait().await;
+    Ok(listed
+        .map_err(|error| {
+            format!(
+                "{} did not list its tools: {error}",
+                stdio.command.display()
+            )
+        })?
+        .iter()
+        .map(|tool| swem_store::ToolListed {
+            name: tool.name.to_string(),
+            input_schema: Value::Object((*tool.input_schema).clone()),
+        })
+        .collect())
+}
+
+/// [`tools_listed_by`] from code that is not async: a taker's check runs
+/// on a blocking thread of the runtime the product serves on, or on no
+/// runtime at all.
+///
+/// # Errors
+///
+/// As [`tools_listed_by`].
+pub fn tools_listed_by_blocking(
+    stdio: &McpServerStdio,
+) -> Result<Vec<swem_store::ToolListed>, String> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(tools_listed_by(stdio))),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?
+            .block_on(tools_listed_by(stdio)),
     }
 }
 
@@ -1259,13 +1315,52 @@ const TASK_DEADLINE: Duration = Duration::from_secs(3600);
 ///
 /// The Workbench declares the tasks capability, so a long tool comes back as a
 /// task handle rather than a result. That is the point: the server writes the
+/// Call one tool of an attachment's server, for the host's own reasons
+/// rather than an agent's, and answer what it answered as one value: its
+/// structured content, or its text read as JSON, or its text.
+///
+/// # Errors
+///
+/// The server could not be reached, or said it failed.
+pub(crate) async fn call_tool_of(
+    entry: &AppAttachmentEntry,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = entry.relay_client()?;
+    let arguments = match arguments {
+        Value::Object(fields) => fields,
+        Value::Null => serde_json::Map::new(),
+        other => return Err(format!("a tool's arguments are an object, not {other}")),
+    };
+    let request = CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments);
+    let result = call_through_task(&client, request).await?;
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if result.is_error == Some(true) {
+        return Err(if text.is_empty() {
+            format!("{tool} failed")
+        } else {
+            text
+        });
+    }
+    if let Some(structured) = result.structured_content {
+        return Ok(structured);
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+}
+
 /// operation's start record before the body runs, so what a person started is
 /// in the project's records while it is still running, and survives a reload.
 /// The waiting itself belongs here rather than on the page - a surface that
 /// polled would be a second client of the task surface, with its own timeout
 /// and its own idea of an ending, over a record it can already read.
 async fn call_through_task(
-    client: &RunningService<RoleClient, ClientInfo>,
+    client: &RunningService<RoleClient, ClientConfig>,
     request: CallToolRequestParams,
 ) -> Result<CallToolResult, String> {
     let created = match client

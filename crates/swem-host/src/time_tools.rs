@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use chrono::DateTime;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{Json, ServerHandler, ServiceExt as _, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
@@ -226,8 +226,8 @@ impl TimeTools {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for TimeTools {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(TIME_TOOLS, env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Schedules: messages said to you on time, in the chat you are in. Make one when \
