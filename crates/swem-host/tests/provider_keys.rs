@@ -87,7 +87,7 @@ fn shell(root: &Path) -> Arc<WorkbenchShellState> {
 /// look for. The echo engine says whether, never what.
 async fn handed(state: &Arc<WorkbenchShellState>, profile: &str) -> bool {
     let (connection, _route, _session) = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         state.open_connection(profile, ShellConnectionMode::New, None),
     )
     .await

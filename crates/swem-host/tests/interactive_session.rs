@@ -30,7 +30,7 @@ fn text(value: &str) -> Vec<ContentBlock> {
 }
 
 async fn wait_until_idle(control: &NativeSessionControl) {
-    tokio::time::timeout(Duration::from_secs(60), control.wait_until_ready())
+    tokio::time::timeout(Duration::from_mins(1), control.wait_until_ready())
         .await
         .expect("interactive session did not become idle")
         .expect("interactive session finished before idle");
@@ -378,7 +378,7 @@ async fn live_claude_accepts_two_turns_submitted_after_connection_start() {
         .expect("verified Claude executable path");
     let root = fixture_workspace("interactive-live-claude");
     let control = NativeSessionControl::new();
-    let mut options = NativeSessionOptions::interactive(Duration::from_secs(180));
+    let mut options = NativeSessionOptions::interactive(Duration::from_mins(3));
     options.control = Some(control.clone());
     let run_root = root.clone();
     let task = tokio::spawn(async move {

@@ -1,7 +1,8 @@
 # ADR-0009 - AGPL, a commercial licence by permission, and a CLA
 
-**Status:** accepted. Restates for this repository what was decided for SWEM as a whole before
-the harness and the Cycle had repositories of their own.
+**Status:** accepted; amended 2026-10-01 (the author named, the agreement adopted). Restates for
+this repository what was decided for SWEM as a whole before the harness and the Cycle had
+repositories of their own.
 
 ## Context
 
@@ -19,13 +20,18 @@ the whole of SWEM.
 
 - SWEM is **AGPL-3.0-or-later**. Built into another program, it makes that program a work the
   AGPL covers: it is conveyed with its source under the AGPL, or not at all.
-- A **commercial licence** is granted by the copyright holder, by permission. It is the only
-  way to build SWEM into a product that is not offered under the AGPL.
+- A **commercial licence** is granted by the author alone, by written permission. It is the
+  only way to build SWEM into a product that is not offered under the AGPL. No contributor,
+  distributor or user acquires that right.
+- The author is named by the name they publish under, `wathipol`, reached at
+  `hi@emergenta.space`; a legal identity is disclosed in a commercial contract, which is signed
+  outside the repository. The agreement may be assigned to a successor who takes over the
+  publishing.
 - Contributions are taken under a **Contributor License Agreement**, not under the AGPL alone
-  and not under a certificate of origin. The contributor keeps their copyright; the copyright
-  holder is granted the right to license the contribution under other terms as well.
-- Until the agreement is adopted - reviewed, the copyright holder named, the way of agreeing
-  chosen - **no outside contribution is merged**.
+  and not under a certificate of origin. The contributor keeps their copyright and grants the
+  author the right to license the contribution under other terms as well; the grant runs to
+  the author and to nobody else, and says so.
+- Agreement is recorded by the line in a pull request that `CONTRIBUTING.md` asks for.
 - What SWEM installs and talks to - agents, MCP servers, skills, catalogs - is not linked into
   it and is licensed by its author as they like.
 
@@ -39,4 +45,5 @@ The AGPL does not forbid commercial use; it forbids keeping the source of the wh
 product that is sold and is itself offered under the AGPL needs no permission. If that is ever
 to need permission too, the licence is another one, and no longer an open-source one.
 
-`NOTICE` and `CLA.md` carry a placeholder for the copyright holder's legal name.
+`NOTICE`, `CLA.md` and `LICENSES.md` name the author and the address. The agreement has not been
+read by a lawyer on the author's behalf; `CLA.md` says so.

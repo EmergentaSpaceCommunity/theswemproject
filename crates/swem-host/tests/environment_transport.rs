@@ -697,7 +697,7 @@ async fn run_live_claude_lease(
         integration: IntegrationKind::AcpAdapter,
     };
     let control = NativeSessionControl::new();
-    let mut options = NativeSessionOptions::new(Duration::from_secs(240));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(4));
     options.start = start;
     options.environment_lease = Some(lease);
     options.environment_transport = Some(transport);

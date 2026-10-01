@@ -275,7 +275,7 @@ async fn live_agent_receives_baseline_and_every_rich_content_kind_it_advertises(
             ),
         )));
     }
-    let mut options = NativeSessionOptions::new(Duration::from_secs(180));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(3));
     options.transcript_path = Some(transcript.clone());
     let outcome = run_native_session_with_content(&launch, &executable, &root, &[prompt], &options)
         .await

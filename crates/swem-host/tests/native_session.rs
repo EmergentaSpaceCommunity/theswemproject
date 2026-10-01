@@ -840,7 +840,7 @@ async fn live_native_agent_invokes_arbitrary_mcp_without_cycle() {
     let transcript = root.join("transcript.jsonl");
     let mcp_fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem-mcp-echo"));
     let nonce = format!("live-{agent_id}-9c2f70e1");
-    let mut options = NativeSessionOptions::new(Duration::from_secs(180));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(3));
     options.transcript_path = Some(transcript.clone());
     let control = NativeSessionControl::new();
     options.control = Some(control.clone());
@@ -860,7 +860,7 @@ async fn live_native_agent_invokes_arbitrary_mcp_without_cycle() {
         run_native_session(&launch, &executable, &run_root, &[prompt], &options).await
     });
     let permission =
-        tokio::time::timeout(Duration::from_secs(120), control.next_permission_request())
+        tokio::time::timeout(Duration::from_mins(2), control.next_permission_request())
             .await
             .expect("live permission observation timed out");
     if let Some(permission) = permission {
@@ -941,7 +941,7 @@ async fn live_native_agent_confirms_active_turn_cancellation() {
     fs::create_dir_all(&root).expect("create live cancellation workspace");
     let transcript = root.join("transcript.jsonl");
     let control = NativeSessionControl::new();
-    let mut options = NativeSessionOptions::new(Duration::from_secs(60));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(1));
     options.transcript_path = Some(transcript.clone());
     options.control = Some(control.clone());
     let run_root = root.clone();

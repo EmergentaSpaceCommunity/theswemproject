@@ -1,0 +1,25 @@
+# The product gate: the real binary, the example product and a real browser,
+# walked through what a person does. Started by hand, or weekly, because it
+# takes ten minutes and the machine's attention.
+name: gate
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+jobs:
+  walks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config chromium-browser || sudo apt-get install -y chromium
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: scripts/gate.sh
+        env:
+          SWEM_BROWSER: /usr/bin/chromium

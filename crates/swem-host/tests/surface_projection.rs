@@ -421,14 +421,14 @@ async fn live_claude_updates_reach_the_same_durable_surface_contract() {
     let surface_events = control
         .take_surface_events()
         .expect("claim live surface lane before launch");
-    let mut options = NativeSessionOptions::new(Duration::from_secs(180));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(3));
     options.control = Some(control.clone());
     let prompt = "Reply with the exact marker SWEM_SURFACE_LIVE_043 and nothing else.".to_owned();
     let run_root = root.clone();
     let task = tokio::spawn(async move {
         run_native_session(&launch, &executable, &run_root, &[prompt], &options).await
     });
-    let active = tokio::time::timeout(Duration::from_secs(120), control.wait_for_active_turn())
+    let active = tokio::time::timeout(Duration::from_mins(2), control.wait_for_active_turn())
         .await
         .expect("Claude reached an active turn")
         .expect("Claude connection stayed active");

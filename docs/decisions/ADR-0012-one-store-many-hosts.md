@@ -1,6 +1,7 @@
 # ADR-0012 — One Store, many hosts
 
-**Status:** accepted (2026-09-30, roadmap P). Extends ADR-0004.
+**Status:** accepted (2026-09-30, roadmap P); amended 2026-10-01: the vocabulary is its own crate.
+Extends ADR-0004.
 
 ## Context
 
@@ -46,3 +47,11 @@ stay the Cycle's (ADR-0011 of the Cycle). The harness's check of a candidate can
 program from the staged tree; a taker does that on a blocking thread. `rusqlite` is held at
 0.32 so the harness links beside `sqlx 0.8` in one workspace. Indexes are still consumed, never
 hosted (ADR-0004).
+
+## Amendment (2026-10-01)
+
+The vocabulary - `Kind`, catalogs, plans, receipts, `Taker`, `Through`, shapes - is its own crate,
+`swem-sdk`, under Apache-2.0, apart from the Store that implements it. Without that a host, a
+taker or a tool for catalogs could only be written by linking an AGPL crate, and the Store could
+not be extended by anyone who does not accept the AGPL for their own code; with it, what is
+written against the vocabulary is its author's under any licence (`LICENSE-EXCEPTION.md`).

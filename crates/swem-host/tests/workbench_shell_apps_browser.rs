@@ -463,7 +463,7 @@ async fn a_real_browser_drives_the_generic_apps_host_through_the_whole_acceptanc
     let driver =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/workbench_shell_apps_cdp_driver.mjs");
     let output = tokio::time::timeout(
-        Duration::from_secs(240),
+        Duration::from_mins(4),
         tokio::process::Command::new("node")
             .arg(&driver)
             .arg(&browser)
@@ -711,7 +711,7 @@ async fn a_real_browser_receives_the_native_agent_call_input_and_result() {
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/workbench_shell_apps_observed_cdp_driver.mjs");
     let output = tokio::time::timeout(
-        Duration::from_secs(180),
+        Duration::from_mins(3),
         tokio::process::Command::new("node")
             .arg(driver)
             .arg(browser)
@@ -889,7 +889,7 @@ async fn a_real_browser_preserves_terminal_states_and_cannot_cancel_on_teardown(
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/workbench_shell_apps_terminal_cdp_driver.mjs");
     let output = tokio::time::timeout(
-        Duration::from_secs(180),
+        Duration::from_mins(3),
         tokio::process::Command::new("node")
             .arg(driver)
             .arg(browser)
@@ -1054,7 +1054,7 @@ async fn the_apps_host_discovers_apps_on_a_live_native_profile_and_the_agent_use
     let state = WorkbenchShellState::open(
         &inventory,
         &ledger,
-        Duration::from_secs(120),
+        Duration::from_mins(2),
         move |profile| {
             let discovery = swem_host::discover_agents()
                 .into_iter()
@@ -1125,7 +1125,7 @@ async fn the_apps_host_discovers_apps_on_a_live_native_profile_and_the_agent_use
     let allower = tokio::spawn(async move {
         loop {
             let Ok(Some(request)) = permission_state
-                .next_permission(&permission_connection, Duration::from_secs(60))
+                .next_permission(&permission_connection, Duration::from_mins(1))
                 .await
             else {
                 break;

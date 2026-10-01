@@ -5,7 +5,7 @@ person, and knows nothing about what the person is making with them: the domain 
 packages, music, software - is the Cycle, a separate MCP server in its own repository, which this
 Workbench hosts like any other server.
 
-## Four crates
+## Five crates
 
 ### `swem-host` - the harness
 
@@ -132,19 +132,25 @@ The host names no domain. A structural test (`tests/genericity.rs`) scans its so
 words and fails when one appears. `cargo tree -p swem-host -e normal` names no other SWEM crate
 but the runner.
 
+### `swem-sdk` - the vocabulary of the Store
+
+Apache-2.0, so that anything written against it is its author's under any licence. Kinds by name
+(`Kind`: the four built-in words, else reverse-DNS with a version, `swem.cycle/package@1`);
+catalogs (`swem:catalog@0.2`, `@0.1` read as a subset) and their entries, distributions,
+`requires` and `takes`; the install plan and the receipt (`swem:install-receipt@0.1`); `Taker`,
+what a host registers per kind (words, accepts, check, after_install, removable, before_remove);
+`Through`, how a host lets a server that says it `takes` a kind be called; `shape`, the tools a
+host calls compared with what a server lists. Nothing in it installs anything.
+
 ### `swem-store` - the Store
 
-A library that knows no host. Kinds by name (`Kind`: the four built-in words, else reverse-DNS
-with a version, `swem.cycle/package@1`); catalogs (`swem:catalog@0.2`, `@0.1` read as a subset)
-and the ACP registry as indexes, read live with the last good copy kept under `<data root>/indexes/`;
+A library over the vocabulary that knows no host. The ACP registry and catalogs as indexes, read live with the last good copy kept under `<data root>/indexes/`;
 the installer (`install.rs`): a plan consented to by its exact id, a staged fetch checked against
 the digest the plan named, the taker's check of the staged tree, one rename into place, one
 receipt (`swem:install-receipt@0.1`) under `<data root>/installed/<kind>/<id>/<version>/`;
 distributions `npx`, `uvx`, `binary`, `archive`; `requires` planned as a closure under one consent;
-versions by semver where they parse; update and removal. `Taker` is what a host registers per kind
-(words, accepts, check, after_install, removable, before_remove); `Through` is how a host lets a
-server that says it `takes` a kind be called; `shape.rs` compares a server's listed tools with the
-shape a host calls. ADR-0004, ADR-0012.
+versions by semver where they parse; update and removal; the delegated taker that calls a server
+through the host. ADR-0004, ADR-0012.
 
 ### `swem-runner` - what is put on a host
 

@@ -233,7 +233,7 @@ impl Product {
             root,
             profiles: None,
             routes: None,
-            operation_timeout: Duration::from_secs(600),
+            operation_timeout: Duration::from_mins(10),
             shipped: Vec::new(),
             acp_registry: None,
             declarations: Vec::new(),

@@ -251,7 +251,7 @@ async fn run_profile_session(
     let distribution = distribution_receipt()?;
     let connection = resolved_connection(&profile, distribution, probe)?;
     let control = NativeSessionControl::new();
-    let mut options = NativeSessionOptions::new(Duration::from_secs(240));
+    let mut options = NativeSessionOptions::new(Duration::from_mins(4));
     options.start = start;
     options.transcript_path = Some(transcript.to_path_buf());
     options.control = Some(control.clone());

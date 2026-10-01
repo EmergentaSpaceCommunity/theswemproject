@@ -1,15 +1,24 @@
 SWEM
-Copyright (c) 2025-2026 the SWEM authors
+Copyright (c) 2025-2026 wathipol
 
-  [TO FILL IN: the copyright holder's legal name, as it should appear in every
-  copy. "the SWEM authors" is a placeholder, not a decision. It must also
-  replace the placeholder in CLA.md.]
+The author publishes SWEM under the name wathipol and is reached at
+hi@emergenta.space.
 
-This product is licensed under the GNU Affero General Public License, version 3
-or later. See LICENSES.md for what that means and LICENSE for the text.
+This product is licensed to everyone under the GNU Affero General Public
+License, version 3 or later, except `crates/swem-sdk`, which is licensed
+under the Apache License 2.0 (its own LICENSE file), and with the SWEM
+Extension Exception: what extends
+SWEM through its published interfaces - an agent, a server, a skill, a
+catalog, a package, anything written against an SDK - is not covered by the
+AGPL for that reason and may be licensed however its author likes. See
+LICENSE for the licence text, LICENSE-EXCEPTION.md for the exception and
+LICENSES.md for what both mean.
 
-A commercial licence is available from the copyright holder, and is required to
-build this product into one that is not itself offered under the AGPL.
+A licence under any other terms - a commercial licence, or any licence that
+lets SWEM be built into a product whose source is not offered under the AGPL -
+is granted only by the author, and only by the author's written permission.
+No contributor, distributor or user acquires that right. Ask at the address
+above.
 
 This NOTICE file must be included in copies and in derivative works. The licence
 requires that copyright and licence notices survive, and that modified files
@@ -20,13 +29,14 @@ Third-party code this product contains or conveys
 --------------------------------------------------------------------------------
 
 Rust crate dependencies
-  Permissive (MIT, Apache-2.0, BSD, Zlib, Unicode-3.0 and similar). Their
-  licences are named in `Cargo.lock`'s packages and are, verbatim, in each
-  crate's own source. None of them imposes a copyleft obligation on this
+  Permissive (MIT, Apache-2.0, BSD, Zlib, Unicode-3.0, MPL-2.0 and similar).
+  Their licences are named in `Cargo.lock`'s packages and are, verbatim, in
+  each crate's own source. None of them imposes a copyleft obligation on this
   product.
 
 npm dependencies of the Workbench's page
-  Permissive (MIT, ISC, BSD, Apache-2.0). They are named with their versions in
-  `crates/swem-host/web/apps-host/package-lock.json`, and their built code is
-  conveyed in `crates/swem-host/web/apps-host/dist`, which the `swem` binary
-  carries. None of them imposes a copyleft obligation on this product.
+  Permissive (MIT, ISC, BSD, Apache-2.0, 0BSD). Their built code is conveyed in
+  `crates/swem-host/web/apps-host/dist`, which the `swem` binary carries, and
+  the build strips their licence headers; so every package, its licence and
+  its copyright line are listed in `THIRD-PARTY-NOTICES.md`, which travels with
+  this file. None of them imposes a copyleft obligation on this product.

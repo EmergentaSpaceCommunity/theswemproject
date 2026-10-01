@@ -7,11 +7,11 @@ operating contract, not the architecture: read `ARCHITECTURE.md` for what the pi
 ## Sources of truth
 
 Recover context in this order: `git status` and the code, tests and runtime behaviour (what exists
-now); `memory-bank/product/` (what a person must be able to do); `memory-bank/roadmap/roadmap.md`
-(what comes next); `memory-bank/exec-plans/active/` (what is being built right now, one plan at a
-time, per `memory-bank/exec-plans/PLANS.md`); `ARCHITECTURE.md` and `memory-bank/architecture/`
-(current boundaries); `memory-bank/decisions/` (durable decisions). `memory-bank/README.md` says
-what each holds and when to update it; `scripts/check_memory_bank.py` keeps the shape.
+now); `README.md` (what a person can do today, and what is not there yet); `ROADMAP.md` (what
+comes next, by capability); `ARCHITECTURE.md` and `docs/architecture/` (current boundaries);
+`docs/decisions/` (durable decisions, as ADRs). A change that touches a boundary or a decision
+updates those; a change that adds or removes something a person can do updates the README's
+table.
 
 ## What a change is for
 

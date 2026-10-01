@@ -376,7 +376,7 @@ fn an_embedder_serves_a_workbench_from_a_page_of_code() {
         .expect("start the embed example");
     let stdout = child.stdout.take().expect("the example's stdout");
     let mut lines = BufReader::new(stdout).lines();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     let mut url = None;
     while Instant::now() < deadline {
         let Some(Ok(line)) = lines.next() else { break };

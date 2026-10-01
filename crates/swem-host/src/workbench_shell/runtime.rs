@@ -38,7 +38,7 @@ use crate::{
 const LOOK: Duration = Duration::from_millis(150);
 
 /// How long an agent's sessions are kept open after its last turn.
-const IDLE: Duration = Duration::from_secs(600);
+const IDLE: Duration = Duration::from_mins(10);
 
 /// How much of what was said before a fresh session is given in its first
 /// turn; the whole of it is handed over as a file beside.

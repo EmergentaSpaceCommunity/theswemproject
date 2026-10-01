@@ -202,7 +202,7 @@ async fn say(address: SocketAddr, chat: &Value, saying: &Value) -> Value {
             });
         }
         assert!(
-            began.elapsed() < Duration::from_secs(60),
+            began.elapsed() < Duration::from_mins(1),
             "the turn did not end in a minute"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;

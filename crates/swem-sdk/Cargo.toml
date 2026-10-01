@@ -1,0 +1,20 @@
+[package]
+name = "swem-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Apache-2.0, not the workspace's AGPL: what is written against this crate
+# - a host, a taker, a catalog tool, a package - is its author's, under any
+# licence. See LICENSE-EXCEPTION.md at the repository's root.
+license = "Apache-2.0"
+repository.workspace = true
+description = "The vocabulary of the SWEM Store: kinds, catalogs, plans, receipts, takers and shapes, for whoever extends it."
+publish = false
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

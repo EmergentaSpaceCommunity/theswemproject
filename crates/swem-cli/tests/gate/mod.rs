@@ -157,7 +157,7 @@ pub fn start_product_against(data_root: &Path, registry_index: Option<&str>) -> 
         .expect("start the swem binary");
     let stdout = child.stdout.take().expect("product stdout");
     let mut lines = BufReader::new(stdout).lines();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     while Instant::now() < deadline {
         let Some(Ok(line)) = lines.next() else { break };
         println!("product: {line}");
@@ -220,7 +220,7 @@ pub fn start_product_at_an_address(data_root: &Path) -> (Product, String, String
         .expect("start the swem binary");
     let stdout = child.stdout.take().expect("product stdout");
     let mut lines = BufReader::new(stdout).lines();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     let mut address = None;
     while Instant::now() < deadline {
         let Some(Ok(line)) = lines.next() else { break };
@@ -255,7 +255,7 @@ pub fn start_product_at_an_address(data_root: &Path) -> (Product, String, String
 /// How long a gate's leavings are kept before the next run sweeps them: long
 /// enough that a run under way, or one whose failure someone is still looking
 /// at, is never touched.
-pub const KEEP_LEAVINGS: Duration = Duration::from_secs(6 * 60 * 60);
+pub const KEEP_LEAVINGS: Duration = Duration::from_hours(6);
 
 /// How many leavings survive the sweep whatever their age. A walk's data root
 /// holds the browser profile and the release it built, which runs to hundreds

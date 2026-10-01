@@ -159,7 +159,7 @@ struct Held {
 }
 
 /// The files are looked at no more often than this.
-const LOOKED_EVERY: Duration = Duration::from_secs(60);
+const LOOKED_EVERY: Duration = Duration::from_mins(1);
 
 impl std::fmt::Debug for FromFiles {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -195,7 +195,7 @@ async fn probe_facts(app_uri: &str, label: &str) -> (serde_json::Value, PathBuf,
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/workbench_apps_engine_probe_cdp_driver.mjs");
     let output = tokio::time::timeout(
-        Duration::from_secs(180),
+        Duration::from_mins(3),
         tokio::process::Command::new("node")
             .arg(&driver)
             .arg(&browser)

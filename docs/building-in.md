@@ -114,9 +114,14 @@ a person gave it.
 
 ### A taker in process
 
+The vocabulary a taker is written against - `Kind`, `KindWords`, `Taker`, `CatalogEntry`,
+`InstallPlan`, `InstallReceipt`, `Shape` - is the crate `swem-sdk`, Apache-2.0, re-exported by
+`swem-host`; a taker, a host or a tool for catalogs written against it is yours under any licence
+(`LICENSE-EXCEPTION.md`).
+
 ```rust
 use std::path::Path;
-use swem_host::{CatalogEntry, InstallPlan, InstallReceipt, Kind, KindWords, Shape, Taker};
+use swem_sdk::{CatalogEntry, InstallPlan, InstallReceipt, Kind, KindWords, Shape, Taker};
 
 impl Taker for Helpers {
     fn kind(&self) -> Kind { Kind::parse("example/helper@1").expect("a kind") }

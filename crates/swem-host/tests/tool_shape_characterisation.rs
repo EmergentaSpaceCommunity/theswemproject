@@ -271,7 +271,7 @@ async fn live_agent_model_stack_records_tool_shape_observations_without_global_l
         })
         .collect::<Vec<_>>();
     let control = NativeSessionControl::new();
-    let mut options = NativeSessionOptions::interactive(Duration::from_secs(360));
+    let mut options = NativeSessionOptions::interactive(Duration::from_mins(6));
     options.control = Some(control.clone());
     options.permission_policy = SessionPermissionPolicy::Surface;
     options.transcript_path = Some(transcript.clone());
@@ -298,7 +298,7 @@ async fn live_agent_model_stack_records_tool_shape_observations_without_global_l
                 .expect("select exact allow_once option");
         }
     });
-    tokio::time::timeout(Duration::from_secs(60), control.wait_until_ready())
+    tokio::time::timeout(Duration::from_mins(1), control.wait_until_ready())
         .await
         .expect("OpenCode did not reach idle")
         .expect("OpenCode finished before configuration");

@@ -51,7 +51,7 @@ async fn unadvertised_client_callbacks_fail_without_host_effects_or_disabling_na
     let mut options = NativeSessionOptions::interactive(Duration::from_secs(15));
     options.transcript_path = Some(root.join("host-trace.jsonl"));
     let outcome = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         run_native_session(
             &launch,
             &executable,
@@ -192,7 +192,7 @@ async fn advertised_file_callbacks_reach_the_surface_and_stop_at_the_boundary() 
     });
 
     let outcome = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         run_native_session(
             &launch,
             &executable,
@@ -377,7 +377,7 @@ async fn advertised_terminal_callbacks_run_in_the_profiles_environment_and_stop_
     });
 
     let outcome = tokio::time::timeout(
-        Duration::from_secs(120),
+        Duration::from_mins(2),
         run_native_session(
             &launch,
             &executable,
@@ -652,7 +652,7 @@ async fn a_command_is_put_to_the_person_first_and_runs_only_on_a_yes() {
     });
 
     let outcome = tokio::time::timeout(
-        Duration::from_secs(120),
+        Duration::from_mins(2),
         run_native_session(
             &launch,
             &executable,

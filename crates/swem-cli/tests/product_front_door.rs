@@ -1694,7 +1694,7 @@ fn a_person_puts_their_agent_in_a_container_and_it_still_works() {
         .expect("start the swem binary");
     let stdout = child.stdout.take().expect("product stdout");
     let mut lines = BufReader::new(stdout).lines();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     let mut url = None;
     while Instant::now() < deadline {
         let Some(Ok(line)) = lines.next() else { break };
@@ -2061,7 +2061,7 @@ fn a_product_of_ones_own_has_the_harness_built_in() {
     let product = Product { child };
     let mut lines = BufReader::new(stdout).lines();
     let (mut address, mut ada, mut bo) = (None, None, None);
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     while Instant::now() < deadline && bo.is_none() {
         let Some(Ok(line)) = lines.next() else { break };
         println!("example: {line}");

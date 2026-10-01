@@ -286,7 +286,7 @@ async fn live_agent_controls_are_exercised_or_reported_explicitly_unsupported() 
         &executable,
         &root,
         &["Reply with SWEM_CONFIG_PROBE_OK.".into()],
-        &NativeSessionOptions::new(Duration::from_secs(180)),
+        &NativeSessionOptions::new(Duration::from_mins(3)),
     )
     .await
     .expect("probe live session controls");
@@ -305,7 +305,7 @@ async fn live_agent_controls_are_exercised_or_reported_explicitly_unsupported() 
             tokio::spawn(async move { control.set_config_option(id, value).await })
         };
         tokio::task::yield_now().await;
-        let mut options = NativeSessionOptions::new(Duration::from_secs(180));
+        let mut options = NativeSessionOptions::new(Duration::from_mins(3));
         options.control = Some(control);
         run_native_session(
             &launch,
@@ -332,7 +332,7 @@ async fn live_agent_controls_are_exercised_or_reported_explicitly_unsupported() 
             tokio::spawn(async move { control.set_legacy_mode(current).await })
         };
         tokio::task::yield_now().await;
-        let mut options = NativeSessionOptions::new(Duration::from_secs(180));
+        let mut options = NativeSessionOptions::new(Duration::from_mins(3));
         options.control = Some(control);
         run_native_session(
             &launch,

@@ -1308,7 +1308,7 @@ pub(crate) async fn allow_relay_now(
 /// How long the relay waits on one long operation before giving up. A render
 /// is seconds and an unlucky one is minutes; an hour is the point past which
 /// something is wrong rather than slow.
-const TASK_DEADLINE: Duration = Duration::from_secs(3600);
+const TASK_DEADLINE: Duration = Duration::from_hours(1);
 
 /// Call a tool and answer with its result, whether the server ran it there and
 /// then or made a task of it.

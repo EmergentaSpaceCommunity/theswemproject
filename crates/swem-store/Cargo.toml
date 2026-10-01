@@ -8,6 +8,7 @@ repository.workspace = true
 description = "One catalog and one installer for whatever a host takes: agents, MCP servers, skills, and packages of other hosts."
 
 [dependencies]
+swem-sdk = { path = "../swem-sdk" }
 flate2.workspace = true
 semver.workspace = true
 serde.workspace = true

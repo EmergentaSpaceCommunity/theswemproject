@@ -12,4 +12,4 @@ Each ADR should contain:
 - links to superseded/current decisions when applicable.
 
 Do not create an ADR for every implementation detail. If a decision is temporary to one task, keep
-it in the active ExecPlan.
+it with that task's plan or pull request.

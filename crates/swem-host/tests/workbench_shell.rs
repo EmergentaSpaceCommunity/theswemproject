@@ -273,7 +273,7 @@ async fn a_direct_connection_opens_with_a_bound_credential_and_fails_closed_with
             .expect("persist bound profile");
     }
     let opened = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         state.open_connection("echo-bound", ShellConnectionMode::New, None),
     )
     .await
@@ -1308,7 +1308,7 @@ async fn a_profiles_role_and_model_reach_the_agent_by_file_variable_and_session(
         .expect("persist profile");
 
     let (connection, _route, _session) = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         state.open_connection("echo-ada", ShellConnectionMode::New, None),
     )
     .await
