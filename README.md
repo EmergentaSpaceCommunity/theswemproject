@@ -125,7 +125,6 @@ product can build in. The order is in `ROADMAP.md`; the decisions are in `docs/d
 | --- | --- |
 | `crates/swem-host` | The harness: ACP client, MCP host, MCP Apps host, the Workbench shell and its HTTP surface, agent profiles and environments, the installer and the Store. Knows no domain. |
 | `crates/swem-sdk` | The vocabulary of the Store - kinds, catalogs, plans, receipts, takers, shapes - that a host, a taker, a catalog tool or a package is written against. Apache-2.0. |
-| `crates/swem-sdk` | The vocabulary of the Store - kinds, catalogs, plans, receipts, takers, shapes - that a host, a taker, a catalog tool or a package is written against. Apache-2.0. |
 | `crates/swem-store` | The Store as a library: kinds by name, takers a host registers, catalogs and the agent registry as indexes, one road to install, update and remove, shapes of servers. Knows no host. |
 | `crates/swem-host/web/apps-host` | The Workbench's page (React, TypeScript) and its node suite. `dist/workbench.js` is committed and checked against its source. |
 | `crates/swem-cli` | The product: the `swem` binary that assembles the host into what a person runs, and the front-door gate. |
