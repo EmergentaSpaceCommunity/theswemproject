@@ -5,11 +5,11 @@
 // step is a real click on the running product; the product's own list is
 // what says the agent is available.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, agentId] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !agentId) {
   console.error("usage: agent_from_registry_driver.mjs <url> <agent-id>");
   process.exit(2);

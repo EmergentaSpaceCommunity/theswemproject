@@ -469,6 +469,9 @@ impl RoutingLedger {
         ledger.with_its_schema()?;
         // Beside the rest and made when missing: the version does not move.
         ledger.connection.execute_batch(crate::time::TIME_SCHEMA)?;
+        ledger
+            .connection
+            .execute_batch(crate::chat_ledger::CHANNELS_SCHEMA)?;
         Ok(ledger)
     }
 

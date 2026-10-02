@@ -42,6 +42,10 @@ impl Assembled {
         self.name_the_owner().await?;
         let failed = |error: WorkbenchShellError| error.to_string();
         self.state.build_into(&at.under);
+        // The channels a person added start with the product too.
+        self.state
+            .enable_channels(&self.root.channels())
+            .map_err(|error| error.to_string())?;
         self.state
             .keep_time(&self.root.schedules())
             .await

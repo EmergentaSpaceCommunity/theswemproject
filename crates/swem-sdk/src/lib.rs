@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod channel;
 pub mod shape;
 
 use std::borrow::Cow;

@@ -6,11 +6,11 @@
 // this checks on the host's own disk that the file the agent wrote came out
 // of the container into the person's workspace.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, environment, wrote, text] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !environment || !wrote || !text) {
   console.error("usage: agent_in_a_container_driver.mjs <url> <environment id> <file> <text>");
   process.exit(2);

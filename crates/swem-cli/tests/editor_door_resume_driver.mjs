@@ -7,11 +7,11 @@
 // checks the one it finds is the one the editor named, and reads what was
 // said in it back through the product's own door.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, profile, kept, ...wanted] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !profile || !kept || wanted.length === 0) {
   console.error("usage: editor_door_resume_driver.mjs <url> <profile> <chat> <said>...");
   process.exit(2);

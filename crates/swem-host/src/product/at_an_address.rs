@@ -290,6 +290,10 @@ impl Assembled {
         self.state.set_session_token(crate::mint_session_token()?);
         self.state
             .serve_at(access, way, Some(origin_of(&at.apps_address)), certificate);
+        // The channels a person added start with the product too.
+        self.state
+            .enable_channels(&self.root.channels())
+            .map_err(|error| error.to_string())?;
         self.state
             .keep_time(&self.root.schedules())
             .await

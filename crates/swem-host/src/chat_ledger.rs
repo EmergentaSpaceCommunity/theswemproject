@@ -106,6 +106,28 @@ pub(crate) const MESSAGES_SCHEMA: &str = "
   );
   CREATE INDEX questions_state ON questions(state, chat_id);";
 
+/// Who a participant is on a messenger's side, and which chats there are
+/// which chats here. Made when missing, beside the rest: the schema version
+/// does not move for it.
+pub(crate) const CHANNELS_SCHEMA: &str = "
+  CREATE TABLE IF NOT EXISTS identities (
+    channel_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    participant_id TEXT NOT NULL REFERENCES participants(participant_id),
+    name TEXT NOT NULL,
+    bound_ms INTEGER NOT NULL,
+    PRIMARY KEY(channel_id, external_id)
+  );
+  CREATE INDEX IF NOT EXISTS identities_participant ON identities(participant_id);
+  CREATE TABLE IF NOT EXISTS channel_chats (
+    channel_id TEXT NOT NULL,
+    external_chat TEXT NOT NULL,
+    chat_id TEXT NOT NULL REFERENCES chats(chat_id),
+    bound_ms INTEGER NOT NULL,
+    PRIMARY KEY(channel_id, external_chat)
+  );
+  CREATE INDEX IF NOT EXISTS channel_chats_chat ON channel_chats(chat_id);";
+
 /// The channel a message came through when it was typed into the Workbench.
 pub const CHANNEL_WORKBENCH: &str = "workbench";
 /// The channel of a message an editor sent through the editor door.
@@ -114,6 +136,33 @@ pub const CHANNEL_EDITOR: &str = "editor";
 pub const CHANNEL_SCHEDULE: &str = "schedule";
 /// The channel of what an agent said in its own turn.
 pub const CHANNEL_AGENT: &str = "agent";
+
+/// The channel of a message that came through a channel a person added: a
+/// messenger. The channel's id follows the colon.
+#[must_use]
+pub fn channel_of(channel_id: &str) -> String {
+    format!("channel:{channel_id}")
+}
+
+/// Who a participant is on a messenger's side.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Identity {
+    pub channel_id: String,
+    pub external_id: String,
+    pub participant_id: String,
+    /// What the messenger called them when they were bound.
+    pub name: String,
+    pub bound_ms: i64,
+}
+
+/// A chat on a messenger's side that is a chat here.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ChannelChat {
+    pub channel_id: String,
+    pub external_chat: String,
+    pub chat_id: String,
+    pub bound_ms: i64,
+}
 
 /// Who can say something in a chat.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -949,6 +998,215 @@ impl RoutingLedger {
         };
         transaction.commit()?;
         self.participant(&schedule)
+    }
+
+    /// Who somebody on a messenger's side is here, if they were bound.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn participant_of_identity(
+        &self,
+        channel_id: &str,
+        external_id: &str,
+    ) -> Result<Option<Participant>, RoutingError> {
+        let known: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT participant_id FROM identities WHERE channel_id = ?1 AND external_id = ?2",
+                params![channel_id, external_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        known.map(|id| self.participant(&id)).transpose()
+    }
+
+    /// The identities a participant has on messengers' sides.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn identities_of(&self, participant_id: &str) -> Result<Vec<Identity>, RoutingError> {
+        let mut statement = self.connection.prepare(
+            "SELECT channel_id, external_id, participant_id, name, bound_ms
+             FROM identities WHERE participant_id = ?1 ORDER BY bound_ms",
+        )?;
+        let rows = statement.query_map([participant_id], |row| {
+            Ok(Identity {
+                channel_id: row.get(0)?,
+                external_id: row.get(1)?,
+                participant_id: row.get(2)?,
+                name: row.get(3)?,
+                bound_ms: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Bind somebody on a messenger's side to a participant here: the owner
+    /// who gave the pairing code, or a guest. An identity bound before is
+    /// bound again to this participant.
+    ///
+    /// # Errors
+    ///
+    /// The participant is unknown, or the ledger could not be written.
+    pub fn bind_identity(
+        &mut self,
+        channel_id: &str,
+        external_id: &str,
+        participant_id: &str,
+        name: &str,
+    ) -> Result<Identity, RoutingError> {
+        self.participant(participant_id)?;
+        let bound_ms = now_ms();
+        self.connection.execute(
+            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(channel_id, external_id)
+             DO UPDATE SET participant_id = excluded.participant_id, name = excluded.name,
+                           bound_ms = excluded.bound_ms",
+            params![channel_id, external_id, participant_id, name, bound_ms],
+        )?;
+        Ok(Identity {
+            channel_id: channel_id.to_owned(),
+            external_id: external_id.to_owned(),
+            participant_id: participant_id.to_owned(),
+            name: name.to_owned(),
+            bound_ms,
+        })
+    }
+
+    /// The guest somebody on a messenger's side is here: the one they were
+    /// bound to, else a new guest named after them, bound now.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be written.
+    pub fn guest_of_identity(
+        &mut self,
+        channel_id: &str,
+        external_id: &str,
+        name: &str,
+    ) -> Result<Participant, RoutingError> {
+        if let Some(known) = self.participant_of_identity(channel_id, external_id)? {
+            return Ok(known);
+        }
+        let name = if name.trim().is_empty() {
+            "Someone"
+        } else {
+            name.trim()
+        };
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let guest = new_id("p")?;
+        transaction.execute(
+            "INSERT INTO participants(participant_id, kind, handle, name, created_ms)
+             VALUES (?1, 'guest', ?2, ?3, ?4)",
+            params![
+                guest,
+                free_handle(&transaction, &handle_from(name))?,
+                name,
+                now_ms()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![channel_id, external_id, guest, name, now_ms()],
+        )?;
+        transaction.commit()?;
+        self.participant(&guest)
+    }
+
+    /// The chat here that a chat on a messenger's side is, if it was bound.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn chat_of_channel_chat(
+        &self,
+        channel_id: &str,
+        external_chat: &str,
+    ) -> Result<Option<String>, RoutingError> {
+        self.connection
+            .query_row(
+                "SELECT chat_id FROM channel_chats WHERE channel_id = ?1 AND external_chat = ?2",
+                params![channel_id, external_chat],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Where a chat here is on messengers' sides.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn channel_chats_of(&self, chat_id: &str) -> Result<Vec<ChannelChat>, RoutingError> {
+        let mut statement = self.connection.prepare(
+            "SELECT channel_id, external_chat, chat_id, bound_ms
+             FROM channel_chats WHERE chat_id = ?1 ORDER BY bound_ms",
+        )?;
+        let rows = statement.query_map([chat_id], |row| {
+            Ok(ChannelChat {
+                channel_id: row.get(0)?,
+                external_chat: row.get(1)?,
+                chat_id: row.get(2)?,
+                bound_ms: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Every chat a channel is bound to.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn chats_of_channel(&self, channel_id: &str) -> Result<Vec<ChannelChat>, RoutingError> {
+        let mut statement = self.connection.prepare(
+            "SELECT channel_id, external_chat, chat_id, bound_ms
+             FROM channel_chats WHERE channel_id = ?1 ORDER BY bound_ms",
+        )?;
+        let rows = statement.query_map([channel_id], |row| {
+            Ok(ChannelChat {
+                channel_id: row.get(0)?,
+                external_chat: row.get(1)?,
+                chat_id: row.get(2)?,
+                bound_ms: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Bind a chat on a messenger's side to a chat here.
+    ///
+    /// # Errors
+    ///
+    /// The chat is unknown, or the ledger could not be written.
+    pub fn bind_channel_chat(
+        &mut self,
+        channel_id: &str,
+        external_chat: &str,
+        chat_id: &str,
+    ) -> Result<ChannelChat, RoutingError> {
+        self.chat(chat_id)?;
+        let bound_ms = now_ms();
+        self.connection.execute(
+            "INSERT INTO channel_chats(channel_id, external_chat, chat_id, bound_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(channel_id, external_chat)
+             DO UPDATE SET chat_id = excluded.chat_id, bound_ms = excluded.bound_ms",
+            params![channel_id, external_chat, chat_id, bound_ms],
+        )?;
+        Ok(ChannelChat {
+            channel_id: channel_id.to_owned(),
+            external_chat: external_chat.to_owned(),
+            chat_id: chat_id.to_owned(),
+            bound_ms,
+        })
     }
 
     /// Bring a participant into a chat. One who is in it already stays as

@@ -5,11 +5,11 @@
 // agent wrote is in the same Files panel. This driver looks for both, through
 // the product's own door, the way a person would.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, profile, wrote, editor] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !profile || !wrote || !editor) {
   console.error("usage: editor_door_record_driver.mjs <url> <profile> <file> <editor name>");
   process.exit(2);

@@ -5,11 +5,11 @@
 // Every step is a real click on the running product; every consent is the
 // product's own dialog, answered and kept for the walk to read.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, catalogUrl, agentId, registryId, nonce, laterCatalogUrl] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !catalogUrl || !agentId || !registryId || !nonce || !laterCatalogUrl) {
   console.error("usage: store_driver.mjs <url> <catalog-url> <agent-id> <registry-id> <nonce> <later-catalog-url>");
   process.exit(2);

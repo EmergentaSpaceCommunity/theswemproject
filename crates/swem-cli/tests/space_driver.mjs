@@ -3,11 +3,11 @@
 // the host's own spaces: choosing it mounts the server's App.
 //
 // usage: node space_driver.mjs <url> <catalog-url>
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, catalogUrl] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !catalogUrl) {
   console.error("usage: space_driver.mjs <url> <catalog-url>");
   process.exit(2);

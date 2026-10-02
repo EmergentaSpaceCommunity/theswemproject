@@ -4,11 +4,11 @@
 // for after an `@`, set after how many replies of agents to each other the
 // chain waits, watch it wait and go on, and take one agent out.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url) {
   console.error("usage: chat_of_several_driver.mjs <url>");
   process.exit(2);

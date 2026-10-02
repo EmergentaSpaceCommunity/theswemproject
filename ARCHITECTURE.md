@@ -34,6 +34,12 @@ A library plus test fixtures. It owns:
   take a copy of). A declared or installed server whose catalog entry says `takes` is reached
   through the harness's own MCP client for the kind it takes. A product the harness is built into
   registers takers of its own (`Product::takes`). ADR-0012.
+- **Channels** (`workbench_shell/channels.rs`). How people reach an agent from a messenger: a
+  channel is a package of kind `swem/channel@1`, a program the harness starts and keeps and
+  talks to through one shape (`swem_sdk::channel`); the harness pulls what arrived and says it
+  in the bound chat as the bound participant, and carries an agent's turn back as it is
+  written. Owner by pairing code, anybody else a guest by the channel's policy; the harness
+  names no messenger. ADR-0013.
 - **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and

@@ -1,11 +1,11 @@
 // Two people of a product that is not SWEM, each with agents of their own
 // built in under a path of that product's server.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [ada, bo, adasAgents, catalogUrl] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!ada || !bo || !adasAgents || !catalogUrl) {
   console.error("usage: built_in_driver.mjs <ada comes in at> <bo comes in at> <ada's agents> <catalog-url>");
   process.exit(2);

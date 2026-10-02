@@ -177,6 +177,13 @@ impl DataRoot {
         self.root.join("time")
     }
 
+    /// The channels a person added: a document per channel; their keys are
+    /// with the other keys.
+    #[must_use]
+    pub fn channels(&self) -> PathBuf {
+        self.root.join("channels")
+    }
+
     /// Where the clock before the ledger's kept its schedules: they are
     /// brought into the ledger and the directory is set aside.
     #[must_use]
@@ -650,6 +657,10 @@ impl Assembled {
         // The clock. A standing instruction runs where the product runs, so
         // it starts with the product and stops with it, and it holds the
         // same state the page does.
+        // The channels a person added start with the product too.
+        self.state
+            .enable_channels(&self.root.channels())
+            .map_err(|error| error.to_string())?;
         self.state
             .keep_time(&self.root.schedules())
             .await

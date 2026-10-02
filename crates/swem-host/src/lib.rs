@@ -104,17 +104,19 @@ pub use workbench_files::read as read_handed_file_for_tests;
 pub use workbench_files::{HandedFile, INBOX, OUTBOX};
 pub use workbench_observation::ObservedAppCall;
 pub use workbench_shell::{
-    ACP_REGISTRY_CACHE, AddIndexBody, AmendProfileBody, ArchiveDistribution, BinaryDistribution,
-    BindModelContextBody, CATALOG_SCHEMA, Catalog, CatalogDistribution, CatalogEntry, ChatPage,
-    DeclareMcpServerBody, INDEX_SCHEMA, IndexFile, InstalledSkill, Listening, McpServerOrigin,
-    McpServerView, ModelContext, ModelContextBlock, NamedValue, NpxDistribution, ObservedAppOpen,
-    OpenTerminalBody, RegistryStatus, ResolvedAgentConnection, ResolvedAgentEnvironment,
-    ResolvedDirectAgentConnection, SaidInChat, Saying, ShellConnectionMode, StartChatBody,
-    StoreEntry, StoreIndexView, StoreInstallBody, StorePlanBody, StoreRemoveBody, StoreView,
-    TerminalInputBody, TerminalOutput, TerminalSizeBody, TerminalView, Way, WorkbenchAgentOption,
-    WorkbenchOnboarding, WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState,
-    credential_environment, mint_session_token, serve_workbench, serve_workbench_http,
-    serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
+    ACP_REGISTRY_CACHE, AddChannelBody, AddIndexBody, AmendProfileBody, ArchiveDistribution,
+    BinaryDistribution, BindModelContextBody, CATALOG_SCHEMA, CHANNEL_SCHEMA, Catalog,
+    CatalogDistribution, CatalogEntry, ChannelDocument, ChannelShown, ChatPage,
+    DeclareMcpServerBody, GuestPolicy, INDEX_SCHEMA, IndexFile, InstalledSkill, Listening,
+    McpServerOrigin, McpServerView, ModelContext, ModelContextBlock, NamedValue, NpxDistribution,
+    ObservedAppOpen, OpenTerminalBody, RegistryStatus, ResolvedAgentConnection,
+    ResolvedAgentEnvironment, ResolvedDirectAgentConnection, SaidInChat, Saying,
+    ShellConnectionMode, StartChatBody, StoreEntry, StoreIndexView, StoreInstallBody,
+    StorePlanBody, StoreRemoveBody, StoreView, TerminalInputBody, TerminalOutput, TerminalSizeBody,
+    TerminalView, Way, WorkbenchAgentOption, WorkbenchOnboarding, WorkbenchShellError,
+    WorkbenchShellHandle, WorkbenchShellState, credential_environment, mint_session_token,
+    serve_workbench, serve_workbench_http, serve_workbench_http_with_apps,
+    serve_workbench_http_with_apps_at,
 };
 pub use workbench_shell::{AskedBody, ShellBody, asked};
 

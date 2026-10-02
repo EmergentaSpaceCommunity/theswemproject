@@ -1,0 +1,47 @@
+# ADR-0013 — A channel is a package with a fixed shape, and the harness names no messenger
+
+**Status:** accepted (2026-10-02).
+
+## Context
+
+People reach their agents from the Workbench's page and from an editor. A messenger - Telegram
+first - is the third way in, and the first that brings people the harness does not know: a bot
+is written to by whoever finds it. Messengers differ in everything but the shape of what they
+carry: somebody wrote in a chat, with files, in reply to something; the bot answers, possibly as
+it writes; a question with options; a file each way.
+
+Two things were settled already: a package of any kind is taken by a host that registers a
+`Taker` and checks a candidate against a `Shape` (ADR-0012); the harness's MCP client receives
+no notifications from a server it hosts, so a server cannot push to the harness.
+
+## Decision
+
+- A channel is a package of kind `swem/channel@1`: an MCP server program the harness starts and
+  keeps, and talks to through the tools of one shape (`swem_sdk::channel`): `look`, `pull`,
+  `send`, `stream_begin/update/end`, `ask`, `send_file`, `fetch_file`. The harness checks the
+  shape when the package is installed and before the channel is started; a program short of it
+  is refused in words.
+- The harness calls, the channel answers. What arrived on the messenger's side comes through
+  `pull`, which waits a while and answers what it has. Nothing of the messenger's transport -
+  polling, webhooks, sockets - reaches the harness; the channel owns it.
+- The harness names no messenger. The Telegram channel is a package, shipped with the product
+  as the first one, and anything else is written to the same shape under any licence.
+- A messenger's person is a participant here: the owner, bound by a pairing code they say to
+  the bot once; anybody else a guest, made on first contact and trusted as a guest in the
+  envelope, let in by the channel's policy (nobody, by invitation, anyone). A messenger's chat is
+  a chat here, bound once and kept; a message carries the messenger's reference, so one thing
+  delivered twice is said once.
+- What an agent says in a bound chat is carried back as it is written: a stream begun on the
+  first chunk, updated with what was said so far, ended with the message; a turn that stopped or
+  failed ends the stream with what there was. A question with options is asked on the
+  messenger's side and answered from there.
+- Anything arriving through a channel is a reason to look at the clock, so a harness woken by a
+  message says what was due meanwhile.
+
+## Consequences
+
+The harness grows one module (`workbench_shell/channels.rs`), two ledger tables (`identities`,
+`channel_chats`) and a taker; it grows no knowledge of Telegram. A channel package's key is
+kept as every key is (`channel-<id>`). A channel that needs an address from outside - a webhook,
+a Mini App - asks the harness for a door, which the harness has only when served at an address;
+that door is the next decision, not this one.

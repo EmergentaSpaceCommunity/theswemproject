@@ -6,11 +6,11 @@
 // terminal it runs in is one of the person's, listed in the same panel they
 // open their own in. Watching it is a click.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, marker] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !marker) {
   console.error("usage: agent_terminal_driver.mjs <url> <marker>");
   process.exit(2);

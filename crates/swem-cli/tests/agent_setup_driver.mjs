@@ -7,11 +7,11 @@
 // so `{"read":"AGENTS.md"}` answers with the role the person wrote. The
 // model is asked for through a provider the person declares first.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, role] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !role) {
   console.error("usage: agent_setup_driver.mjs <url> <role>");
   process.exit(2);

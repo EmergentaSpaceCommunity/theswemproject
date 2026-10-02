@@ -270,6 +270,90 @@ impl Taker for Skills {
     }
 }
 
+/// Channels: a program that answers the channel shape, run by the harness
+/// for a bot a person adds under Providers, Channels.
+struct Channels;
+
+impl Taker for Channels {
+    fn kind(&self) -> Kind {
+        Kind::parse(swem_sdk::channel::CHANNEL_KIND).expect("the channel kind is a kind")
+    }
+
+    fn words(&self) -> KindWords {
+        KindWords {
+            one: "a channel".into(),
+            many: "Channels".into(),
+            after_install: "Add a bot that runs on it under Providers, Channels.".into(),
+        }
+    }
+
+    fn accepts(&self, entry: &CatalogEntry) -> Result<(), String> {
+        let distribution = &entry.distribution;
+        if distribution.npx.is_none()
+            && distribution.uvx.is_none()
+            && distribution.binary.is_none()
+            && distribution.archive.is_none()
+        {
+            return Err(
+                "a channel is a program: an npm package, a Python package, a binary or an archive"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Started once from where it was staged, its tools listed and compared
+    /// with the channel shape; refused, nothing lands.
+    fn check(&self, staged: &Path, plan: &swem_sdk::InstallPlan) -> Result<(), String> {
+        let Some(program) = program_in(staged) else {
+            // Nothing to start before the install finishes: an npm or Python
+            // package is checked when the channel is first started.
+            return Ok(());
+        };
+        let stdio = agent_client_protocol::schema::v1::McpServerStdio::new(
+            plan.registry_id.clone(),
+            program.display().to_string(),
+        );
+        let listed = crate::workbench_apps::tools_listed_by_blocking(&stdio)?;
+        swem_sdk::channel::shape()
+            .check(&listed)
+            .map_err(|short| format!("{} is not a channel: it {short}", plan.name))
+    }
+
+    fn after_install(&self, _receipt: &InstallReceipt) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The one program a staged binary or archive tree holds, if it is one.
+fn program_in(staged: &Path) -> Option<std::path::PathBuf> {
+    let tree = staged.join("tree");
+    let mut files: Vec<std::path::PathBuf> =
+        std::fs::read_dir(if tree.is_dir() { &tree } else { staged })
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path.file_name()
+                        != Some(std::ffi::OsStr::new(swem_sdk::INSTALLATION_MANIFEST))
+            })
+            .collect();
+    files.retain(|path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            path.metadata()
+                .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            path.extension().is_some_and(|ext| ext == "exe")
+        }
+    });
+    (files.len() == 1).then(|| files.remove(0))
+}
+
 impl WorkbenchShellState {
     /// Read the store from `indexes`: the catalogs a person added and the
     /// last good copy of the registry, after the catalogs the distribution
@@ -311,6 +395,7 @@ impl WorkbenchShellState {
             catalogue: Arc::clone(&self.mcp_catalogue),
         }));
         store.taken_by(Arc::new(Skills));
+        store.taken_by(Arc::new(Channels));
         for taker in takers {
             store.taken_by(taker);
         }

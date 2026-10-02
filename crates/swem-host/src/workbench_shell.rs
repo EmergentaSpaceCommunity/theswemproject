@@ -46,6 +46,7 @@ pub use door::{Way, certificate_good_until};
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
 pub use hosts::{EnvironmentOffered, HostStanding, MachineWanted, SetUp, SetUpStep};
+mod channels;
 mod model_providers;
 mod provider_keys;
 pub use model_providers::{
@@ -78,6 +79,7 @@ pub use removal::AgentRemoved;
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
+pub use channels::{AddChannelBody, CHANNEL_SCHEMA, ChannelDocument, ChannelShown, GuestPolicy};
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
 #[path = "workbench_shell/timekeeper.rs"]
 mod timekeeper;
@@ -832,6 +834,7 @@ pub struct WorkbenchShellState {
     removed_root: std::sync::OnceLock<PathBuf>,
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
+    channels: std::sync::OnceLock<channels::Channels>,
     /// The command the system's scheduler starts to keep time once.
     keep_time_command: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The terminals open on this host. A terminal runs in the environment of
@@ -1055,6 +1058,7 @@ impl WorkbenchShellState {
             timekeeper: std::sync::OnceLock::new(),
             removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
+            channels: std::sync::OnceLock::new(),
             keep_time_command: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
             chat_runtime: runtime::ChatRuntime::default(),

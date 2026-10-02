@@ -2804,6 +2804,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "swem-runner",
+ "swem-sdk",
  "swem-store",
  "sysinfo",
  "tar",

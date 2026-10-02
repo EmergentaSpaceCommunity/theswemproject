@@ -3,7 +3,7 @@
 // the DOM/input helpers the drivers use. Clicks and typing are real Input
 // events; the JS shortcuts only read DOM state.
 import {spawn} from "node:child_process";
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {assertHandshakeOrder, handshakeViolations} from "./app_handshake.mjs";
@@ -76,6 +76,24 @@ process.on("unhandledRejection", (error) => {
 /// Chromium refuses to start its sandbox as uid 0, which is how the container
 /// gates run. This is a property of the machine, not of any one driver, so it
 /// is decided here once rather than threaded through ten argument lists.
+/// The browser a walk runs: `SWEM_BROWSER`, else the places a Chromium-family
+/// browser lives on the three platforms. The Rust side of a walk sets the
+/// variable; this is for a driver run by hand.
+export function browserPath() {
+  if (process.env.SWEM_BROWSER) return process.env.SWEM_BROWSER;
+  const candidates = [
+    "/opt/pw-browsers/chromium",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
 const sandboxArgs = process.env.SWEM_BROWSER_NO_SANDBOX === "1" ? ["--no-sandbox"] : [];
 
 // The failure screenshot goes where this machine keeps temporary files unless

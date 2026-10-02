@@ -7,11 +7,11 @@
 // person can act on, and starting a session is refused with the name in the
 // message rather than quietly run here.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, profileId, environmentId] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !profileId || !environmentId) {
   console.error("usage: agent_unknown_environment_driver.mjs <url> <profile> <environment>");
   process.exit(2);

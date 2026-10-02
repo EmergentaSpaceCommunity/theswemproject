@@ -7,11 +7,11 @@
 // agent could have written, a run that says it was answered, and a chat
 // whose first message is the schedule's own.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, answer] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !answer) {
   console.error("usage: agent_schedule_driver.mjs <url> <answer>");
   process.exit(2);

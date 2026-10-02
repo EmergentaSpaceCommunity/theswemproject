@@ -5,11 +5,11 @@
 // into the inventory by the gate. So this driver does only that, and says
 // which profile it made.
 
-import {launchBrowser, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url) {
   console.error("usage: editor_door_setup_driver.mjs <url>");
   process.exit(2);

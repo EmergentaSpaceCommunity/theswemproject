@@ -4,11 +4,11 @@
 // fingerprint answers is answered by an authenticator the browser is given
 // for the walk. The ceremony, the page and the host are the product's.
 
-import {launchBrowser, sleep, cleanup} from "../../swem-host/tests/cdp_browser.mjs";
+import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, word] = process.argv.slice(2);
-const browser = process.env.SWEM_BROWSER || "/opt/pw-browsers/chromium";
+const browser = browserPath();
 if (!url || !word) {
   console.error("usage: door_driver.mjs <address> <word>");
   process.exit(2);
