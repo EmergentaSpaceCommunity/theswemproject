@@ -8,7 +8,7 @@ and machine, and kept. You talk to it today and next month. It works while you a
 of them can share one chat. They live on your computer, in a container, or on a server of yours;
 the keys and the history are yours. And any product can build SWEM in.
 
-![Two agents and a person in one chat on the Workbench: the researcher looked things up and asked before fetching, the editor tightened the text, and the chain waits for a person after four replies](docs/images/workbench-chat.jpg)
+![Two agents and a person in one chat on the Workbench: the researcher wrote, the editor tightened, the researcher checked the edit and said what is still unverified; after four replies in a row the chain waits for a person](docs/images/workbench-chat.jpg)
 
 ## Why
 
