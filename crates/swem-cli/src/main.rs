@@ -668,11 +668,8 @@ fn product(
     container_image: Option<String>,
 ) -> Result<Product> {
     let root = DataRoot::for_this_machine().map_err(anyhow::Error::msg)?;
-    let shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
-        .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
     let mut product = Product::at(root.clone())
         .operation_timeout(std::time::Duration::from_secs(operation_timeout_secs))
-        .shipped_catalog(shipped)
         .container_image(container_image)
         // The Apps bridge ships inside this binary, so the observer the
         // App relay needs is always configured.
@@ -693,7 +690,13 @@ fn product(
     // its home App is its space on the Workbench and an agent attaches it by
     // name. Without one the product is an agent harness alone.
     if let Some(hub) = cycle_hub(&root) {
-        product = product.declare(hub);
+        // The shipped catalog says what came with the product: the Cycle,
+        // and the kind of package it takes. Without a hub nothing came, and
+        // the Store says nothing rather than "came with SWEM" of something
+        // that did not.
+        let shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
+            .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
+        product = product.declare(hub).shipped_catalog(shipped);
     }
     if let Some(inventory) = inventory {
         product = product.profiles_at(inventory);

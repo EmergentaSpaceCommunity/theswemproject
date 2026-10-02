@@ -29,11 +29,10 @@ await b.goTo("#/store");
 await b.waitFor("the registry's agents", async () =>
   b.exists(`.store-entry[data-kind="agent"][data-id="${registryId}"]`), 300);
 step("the Store lists the registry's agents");
-// And what the product already is: the Cycle, listed by the catalog the
-// distribution ships, with nothing to install.
-const bundled = await b.evaluate(`document.querySelector('.store-entry[data-kind="server"][data-id="swem-cycle"][data-bundled="true"] .store-install')?.textContent ?? ""`);
-if (bundled !== "Came with SWEM") cleanup(1, `the Cycle is not listed as what came with SWEM: ${JSON.stringify(bundled)}`);
-step("the Cycle is listed as what came with SWEM");
+// And nothing that did not come with the product: this product has no
+// Cycle beside it, so the Store lists no Cycle as "came with SWEM".
+if (await b.exists('.store-entry[data-id="swem-cycle"]')) cleanup(1, "the Store lists a Cycle this product does not have");
+step("nothing is listed as what came with SWEM, because nothing did");
 
 step("add a catalog by address");
 await setValue("index-url", catalogUrl);
