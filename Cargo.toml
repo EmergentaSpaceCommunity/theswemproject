@@ -3,6 +3,7 @@ members = [
   "crates/swem-host",
   "crates/swem-cli",
   "crates/swem-runner",
+  "crates/swem-channel-telegram",
   "crates/swem-sdk",
   "crates/swem-store",
 ]

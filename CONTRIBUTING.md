@@ -51,8 +51,14 @@ two at once contend for the machine hard enough that the browser can miss its de
 The product gate (`crates/swem-cli/tests/product_front_door.rs`) starts the real binary on an empty
 data directory and drives a real browser through what a person does: install an agent from the
 plan it is shown, make it theirs, set it up, talk to it, keep the session across a restart, run it
-in a container, work with it from an editor, add a catalog and install from the Store. Every
-control a walk presses is a control a person presses.
+in a container, work with it from an editor, add a catalog and install from the Store, reach it
+from a messenger. Every control a walk presses is a control a person presses.
+
+Nothing in a test or a walk depends on a particular machine, account, bot or network. An outside
+service is a fixture the test starts: the agent registry, a catalog's file server, the Bot API
+(`swem-telegram-api-fixture`) are such. A real messenger, a real vendor agent or a real machine
+are tried by hand by whoever has them, and the pull request says what was tried and what was
+not. A token or a key is never in the tree or in a test; a fixture takes any string as one.
 
 ## What goes where
 

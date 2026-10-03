@@ -27,7 +27,7 @@ import { fetchJson } from "../http.ts";
 import { ChatApps } from "./ChatApps.tsx";
 import { useOffers } from "./session.ts";
 import { sessionStore, useSession } from "../agent/store.ts";
-import { Arrow, Check, Chevron, Clip, Clock, Cross, Down, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
+import { Arrow, Check, ChatSign, Chevron, Clip, Clock, Cross, Down, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
 import { Handles, Prose } from "./Prose.tsx";
 import { grouped, type Group, type Item } from "./timeline.ts";
 import type { Chat, Message, Participant, Question } from "./types.ts";
@@ -285,6 +285,13 @@ const THROUGH: Record<string, { words: string; sign: typeof Clock }> = {
   editor: { words: "from your editor", sign: Laptop },
 };
 
+/// Where a message came in through, when not this page: a schedule, the
+/// editor, or a channel (a bot in a messenger).
+function through(channel: string): { words: string; sign: typeof Clock } | undefined {
+  if (channel.startsWith("channel:")) return { words: "from a messenger", sign: ChatSign };
+  return THROUGH[channel];
+}
+
 function One({ item, people }: { item: Item; people: Record<string, Participant> }) {
   switch (item.kind) {
     case "said":
@@ -325,13 +332,13 @@ function Said() {
   const by = group.by ? people[group.by] : undefined;
   const mine = first?.kind === "said" && group.by === owner?.participant_id;
   if (mine && first?.kind === "said") {
-    const through = THROUGH[first.message.channel];
+    const came = through(first.message.channel);
     return (
-      <MessagePrimitive.Root className="w-mine">
-        {through ? (
+      <MessagePrimitive.Root className="w-mine" data-through={first.message.channel || undefined}>
+        {came ? (
           <span className="k-status">
-            <through.sign size={13} />
-            <span>Said {through.words}</span>
+            <came.sign size={13} />
+            <span>Said {came.words}</span>
           </span>
         ) : null}
         <div className="k-bubble">

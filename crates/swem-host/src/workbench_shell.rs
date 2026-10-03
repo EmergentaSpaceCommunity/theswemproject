@@ -79,7 +79,10 @@ pub use removal::AgentRemoved;
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
-pub use channels::{AddChannelBody, CHANNEL_SCHEMA, ChannelDocument, ChannelShown, GuestPolicy};
+pub use channels::{
+    AddChannelBody, CHANNEL_SCHEMA, ChannelDocument, ChannelPackage, ChannelShown,
+    ChannelsStanding, GuestPolicy,
+};
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
 #[path = "workbench_shell/timekeeper.rs"]
 mod timekeeper;
@@ -4381,6 +4384,34 @@ pub(crate) async fn route_shell(
                 .await
                 .map(|()| json!({ "forgotten": schedule_id })),
         ),
+        // Channels: how people reach an agent from a messenger.
+        (&Method::GET, ["api", "channels"]) => json_result(state.channels_standing().await),
+        (&Method::POST, ["api", "channels"]) => {
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<AddChannelBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.add_channel(body).await)
+        }
+        (&Method::DELETE, ["api", "channels", channel_id]) => {
+            let channel_id = (*channel_id).to_owned();
+            json_result(
+                state
+                    .remove_channel(&channel_id)
+                    .await
+                    .map(|()| json!({ "removed": channel_id })),
+            )
+        }
+        (&Method::POST, ["api", "channels", channel_id, "start"]) => {
+            let channel_id = (*channel_id).to_owned();
+            match state.start_channel(&channel_id).await {
+                Ok(()) => json_result(state.channels_standing().await),
+                Err(error) => error_response(&error),
+            }
+        }
         (&Method::GET, ["api", "time"]) => json_result(state.keeper().await),
         // A scheduler outside knocks: it is time to look. It carries
         // nothing and is told how many messages were taken up.

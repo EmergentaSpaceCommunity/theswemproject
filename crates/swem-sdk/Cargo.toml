@@ -12,6 +12,7 @@ description = "The vocabulary of the SWEM Store: kinds, catalogs, plans, receipt
 publish = false
 
 [dependencies]
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

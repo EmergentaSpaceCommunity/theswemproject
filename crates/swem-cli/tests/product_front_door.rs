@@ -2353,3 +2353,102 @@ fn a_person_installs_a_server_with_a_home_app_and_opens_its_space() {
         "the server did not land under the install root"
     );
 }
+
+/// A person reaches their agent from a messenger: they add a bot on
+/// Providers → Channels with the token the messenger gave them, say the
+/// code shown there to the bot once, and from then on what they write to
+/// the bot is a chat with their agent - on the page as well, marked as from
+/// the messenger - and the agent's answer is drafted while it is written and
+/// sent when done. A stranger gets one line and no chat.
+///
+/// The messenger is a Bot API that is a fixture, started here: the Telegram
+/// channel that ships with the product talks to it at the "Bot API address"
+/// the walk types on the page, which is the setting a local Bot API server
+/// needs too. A real bot is tried by hand, by whoever has one.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_reaches_their_agent_from_a_messenger() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("messenger");
+    declare_the_fixture_agent(&data_root);
+
+    // The messenger, as far as a bot can tell: on loopback, printing its
+    // address on one line.
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join(if cfg!(windows) {
+            "swem-telegram-api-fixture.exe"
+        } else {
+            "swem-telegram-api-fixture"
+        });
+    let mut api = Command::new(&fixture)
+        .arg("--files")
+        .arg(data_root.join("messenger-files"))
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let api_address = {
+        let stdout = api.stdout.take().expect("the fixture's stdout");
+        BufReader::new(stdout)
+            .lines()
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+
+    let (product, url) = start_product(&data_root);
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&url)
+        .arg(&api_address)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the messenger driver");
+    product.stop();
+    let _ = api.kill();
+    let _ = api.wait();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("messenger OK"),
+        "the messenger walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The bot's token went to the keys and nowhere else: not into the
+    // channel's document, the ledger, a log or the chat.
+    fn files_under(dir: &Path, into: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "keys") {
+                    continue;
+                }
+                files_under(&path, into);
+            } else {
+                into.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    files_under(&data_root, &mut files);
+    assert!(
+        !files.is_empty(),
+        "the product wrote nothing under its root"
+    );
+    for path in files {
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("walk-not-a-token"),
+            "the token is in {}",
+            path.display()
+        );
+    }
+}

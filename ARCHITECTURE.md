@@ -39,7 +39,10 @@ A library plus test fixtures. It owns:
   talks to through one shape (`swem_sdk::channel`); the harness pulls what arrived and says it
   in the bound chat as the bound participant, and carries an agent's turn back as it is
   written. Owner by pairing code, anybody else a guest by the channel's policy; the harness
-  names no messenger. ADR-0013.
+  names no messenger. The Telegram channel ships as `swem-channel-telegram` beside the binary
+  (`crates/swem-channel-telegram`: the Bot API over long-polling, drafts while a turn is
+  written, Markdown to the HTML Telegram shows). A bot belongs to one harness and its token is
+  one more key. ADR-0013, ADR-0014.
 - **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and

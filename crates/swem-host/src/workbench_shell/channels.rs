@@ -97,6 +97,24 @@ pub struct ChannelShown {
     pub said: String,
 }
 
+/// What can run a channel here: a package the Store installed, or one that
+/// came with the product.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelPackage {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    pub bundled: bool,
+}
+
+/// What the Channels page reads.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelsStanding {
+    pub channels: Vec<ChannelShown>,
+    pub packages: Vec<ChannelPackage>,
+}
+
 /// What a person gives to add a channel.
 #[derive(Clone, Debug, Deserialize)]
 pub struct AddChannelBody {
@@ -291,6 +309,56 @@ impl WorkbenchShellState {
         })
     }
 
+    /// Channels as the page shows them: each one, and what can run one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::channels_shown`].
+    pub async fn channels_standing(
+        self: &Arc<Self>,
+    ) -> Result<ChannelsStanding, WorkbenchShellError> {
+        let channels = self.channels_shown().await?;
+        let mut packages: Vec<ChannelPackage> = Vec::new();
+        // What the Store installed of the kind, and what came with the
+        // product beside the binary.
+        if let Ok(installed) = self.installed_root()
+            && let Ok(kind) = swem_sdk::Kind::parse(channel::CHANNEL_KIND)
+        {
+            for (id, receipt) in swem_store::load_receipts(installed, &kind) {
+                packages.push(ChannelPackage {
+                    id,
+                    name: receipt.name,
+                    version: receipt.version,
+                    bundled: false,
+                });
+            }
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+            && let Ok(entries) = std::fs::read_dir(dir)
+        {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let stem = name.strip_suffix(".exe").unwrap_or(&name).to_owned();
+                if let Some(package) = stem.strip_prefix("swem-channel-")
+                    && !package.is_empty()
+                    && package != "fixture"
+                    && entry.path().is_file()
+                    && !packages.iter().any(|known| known.id == package)
+                {
+                    packages.push(ChannelPackage {
+                        id: package.to_owned(),
+                        name: package.to_owned(),
+                        version: String::new(),
+                        bundled: true,
+                    });
+                }
+            }
+        }
+        packages.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(ChannelsStanding { channels, packages })
+    }
+
     /// Add a channel: its document, its key, a pairing code; then start it.
     ///
     /// # Errors
@@ -373,8 +441,20 @@ impl WorkbenchShellState {
             .remove(id);
         if let Some(run) = taken {
             run.stop.notify_waiters();
-            if let Some(entry) = Arc::into_inner(run.entry) {
-                let _ = entry.shutdown().await;
+            // The two loops let go of the program once they are told; the
+            // program is ended by whoever holds it last, and this is where
+            // that is waited for, so a removed bot stops polling at once
+            // rather than when its loops happen to end.
+            let mut entry = run.entry;
+            for _ in 0..50 {
+                match Arc::try_unwrap(entry) {
+                    Ok(alone) => {
+                        let _ = alone.shutdown().await;
+                        return;
+                    }
+                    Err(shared) => entry = shared,
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
     }

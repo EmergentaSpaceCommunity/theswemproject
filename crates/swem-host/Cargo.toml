@@ -49,6 +49,10 @@ name = "swem-channel-fixture"
 path = "src/bin/swem-channel-fixture.rs"
 
 [[bin]]
+name = "swem-telegram-api-fixture"
+path = "src/bin/swem-telegram-api-fixture.rs"
+
+[[bin]]
 name = "swem-podman-fixture"
 path = "src/bin/swem-podman-fixture.rs"
 

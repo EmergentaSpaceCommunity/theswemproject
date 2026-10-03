@@ -92,7 +92,7 @@ pub fn shape() -> Shape {
 }
 
 /// Who the bot is, as `look` answers.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Bot {
     /// The messenger's id for the bot.
     pub id: String,
@@ -105,7 +105,7 @@ pub struct Bot {
 }
 
 /// Somebody on the messenger's side.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Person {
     /// The messenger's id for them; stable, unlike a username.
     pub id: String,
@@ -117,7 +117,7 @@ pub struct Person {
 
 /// A file that came with a message, as the messenger names it; fetched
 /// with `fetch_file`.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct FileRef {
     pub file: String,
     #[serde(default)]
@@ -129,14 +129,14 @@ pub struct FileRef {
 }
 
 /// What `pull` answers: events in the order they happened.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Pulled {
     #[serde(default)]
     pub events: Vec<Inbound>,
 }
 
 /// One thing that happened on the messenger's side.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Inbound {
     /// Somebody wrote in a chat. `reference` is the messenger's own id for
@@ -220,7 +220,7 @@ impl Inbound {
 
 /// A chat on the messenger's side: direct messages with one person, a
 /// group, or a topic in a group.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct ChatRef {
     /// The messenger's id for the chat, with the topic when there is one,
     /// as the channel spells it; opaque to the harness.
@@ -232,7 +232,9 @@ pub struct ChatRef {
     pub title: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatKind {
     /// One person and the bot.
@@ -245,7 +247,7 @@ pub enum ChatKind {
 }
 
 /// One option of a question, as `ask` takes them.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Option_ {
     pub id: String,
     pub label: String,
@@ -253,7 +255,7 @@ pub struct Option_ {
 
 /// What `send`, `send_file` and the stream tools answer: the messenger's
 /// reference for what was sent, when it has one.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Sent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reference: String,
@@ -261,7 +263,7 @@ pub struct Sent {
 
 /// What `fetch_file` answers: where the file now is, under the channel's
 /// home.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Fetched {
     pub path: String,
     #[serde(default)]
@@ -270,7 +272,7 @@ pub struct Fetched {
 
 /// The settings every channel has, handed in [`SETTINGS_VARIABLE`] beside
 /// whatever the package's own settings are.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Settings {
     /// Where the messenger's API is, when not its public one: a local Bot
     /// API server, or a fixture.

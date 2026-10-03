@@ -103,10 +103,20 @@ pub fn require_the_binaries_cargo_does_not_build() {
         .expect("the product binary has a directory")
         .to_path_buf();
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let missing: Vec<&str> = [(
-        "swem-hands-agent",
-        "cargo build -p swem-host --bin swem-hands-agent",
-    )]
+    let missing: Vec<&str> = [
+        (
+            "swem-hands-agent",
+            "cargo build -p swem-host --bin swem-hands-agent",
+        ),
+        (
+            "swem-telegram-api-fixture",
+            "cargo build -p swem-host --bin swem-telegram-api-fixture",
+        ),
+        (
+            "swem-channel-telegram",
+            "cargo build -p swem-channel-telegram",
+        ),
+    ]
     .into_iter()
     .filter(|(name, _)| !beside.join(format!("{name}{suffix}")).is_file())
     .map(|(_, command)| command)

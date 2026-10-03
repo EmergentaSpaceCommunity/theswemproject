@@ -338,3 +338,158 @@ async fn a_program_that_is_not_a_channel_is_refused_in_words() {
         shown.said
     );
 }
+
+/// The Telegram channel beside this crate's binaries, when it was built
+/// (`cargo build -p swem-channel-telegram`; the gate does).
+fn telegram_channel() -> Option<PathBuf> {
+    let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem-echo-agent"));
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let program = beside
+        .parent()?
+        .join(format!("swem-channel-telegram{suffix}"));
+    program.is_file().then_some(program)
+}
+
+/// One HTTP/1.1 request to the Bot API fixture's side door, by hand: the
+/// test needs nothing more than a line and a body.
+fn fixture_call(address: &str, method: &str, path: &str, body: Option<&Value>) -> Value {
+    use std::io::{Read as _, Write as _};
+    let host = address.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(host).expect("the fixture listens");
+    let body = body.map(Value::to_string).unwrap_or_default();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write the request");
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).expect("read the answer");
+    let (_, json) = answer.split_once("\r\n\r\n").expect("a body");
+    serde_json::from_str::<Value>(json).expect("json")["result"].clone()
+}
+
+fn sent(address: &str) -> Vec<Value> {
+    fixture_call(address, "GET", "/_fixture/sent", None)
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn telegram_update(from: (i64, &str), chat: i64, text: &str) -> Value {
+    json!({
+        "message": {
+            "message_id": 1,
+            "from": { "id": from.0, "is_bot": false, "first_name": from.1, "username": from.1.to_lowercase() },
+            "chat": { "id": chat, "type": "private", "first_name": from.1 },
+            "date": 0,
+            "text": text
+        }
+    })
+}
+
+/// The Telegram channel, against a Bot API that is a fixture: the bot is
+/// looked at, the owner pairs, a message becomes a chat, the agent's answer
+/// is drafted while it is written and sent when done, and `/stop` stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
+    let Some(program) = telegram_channel() else {
+        eprintln!(
+            "skipped: build the Telegram channel first: cargo build -p swem-channel-telegram"
+        );
+        return;
+    };
+    let root = fixture_root("telegram");
+    // The Bot API fixture, on loopback, printing its address.
+    let mut api = std::process::Command::new(env!("CARGO_BIN_EXE_swem-telegram-api-fixture"))
+        .arg("--files")
+        .arg(root.join("files"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let address = {
+        use std::io::BufRead as _;
+        let stdout = api.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        lines
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+    let state = shell_with_one_agent(&root);
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "Telegram".into(),
+            package: None,
+            program: Some(program.display().to_string()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Nobody,
+            settings: swem_sdk::channel::Settings {
+                api_root: Some(address.clone()),
+                door: None,
+            },
+            key: Some("123456:fixture".into()),
+        })
+        .await
+        .expect("the channel is added");
+    assert!(shown.running, "{}", shown.said);
+    let bot = shown.document.bot.clone().expect("the bot was looked at");
+    assert_eq!(bot.username, "swem_fixture_bot");
+    let code = shown.document.pairing_code.clone().expect("a code");
+    let channel_id = shown.document.id.clone();
+
+    // The owner says the code; then asks for something.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, &code)),
+    );
+    let welcomed = until("the welcome", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("known here"))
+        })
+    })
+    .await;
+    assert_eq!(welcomed["body"]["chat_id"], "7");
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, "/status and then look")),
+    );
+    let answered = until("the agent's answer on Telegram", || {
+        let calls = sent(&address);
+        let drafted = calls
+            .iter()
+            .any(|call| call["method"] == "sendMessageDraft");
+        calls
+            .into_iter()
+            .filter(|call| call["method"] == "sendMessage")
+            .find(|call| {
+                call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("session_id"))
+            })
+            .filter(|_| drafted)
+    })
+    .await;
+    assert_eq!(answered["body"]["parse_mode"], "HTML");
+    let chats = state.chats().await.expect("chats");
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].title, "Fixture bot");
+    let page = state
+        .chat_page(&chats[0].chat_id, None, 100)
+        .await
+        .expect("the page");
+    assert_eq!(page.messages[0].channel, format!("channel:{channel_id}"));
+    assert_eq!(page.messages[0].text, "/status and then look");
+
+    state.remove_channel(&channel_id).await.expect("removed");
+    let _ = api.kill();
+    let _ = api.wait();
+}
