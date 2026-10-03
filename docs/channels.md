@@ -80,8 +80,19 @@ shows the chat you have with the bot, takes a file of any size to the agent (it 
 agent's inbox with your words, as a file handed over on the Workbench's page does), and lists
 what the agent put out, to save. Opened by nobody, it says what it is; a signature that is not
 the messenger's is refused. The page is one static file the Workbench serves at
-`/channels/<id>/app`; it can be hosted anywhere else just as well, since the Workbench answers
-it from any origin with the signature alone. Telegram opens a Mini App over HTTPS only.
+`/channels/<id>/app`. To host it anywhere else - GitHub Pages, Cloudflare Pages, any static
+host with HTTPS - put the committed `web/mini-app/dist/index.html` there (it is written from
+`web/mini-app/index.html` by `node scripts/mini-app.mjs`, and a test keeps the two together),
+and give the address under **More** when adding the bot ("Where the page the bot opens inside
+the messenger is hosted"); the bot's button then carries this Workbench's address, and the
+Workbench answers the page from any origin with the signature alone. The page loads no script
+of the messenger's: it reads the signed data from the address it was opened with. Either way
+the Workbench has to be reachable from the messenger: served at an address. Telegram opens a
+Mini App over HTTPS only.
+
+The bot answers `/status` with how things stand (what the agent is doing, the chat, how
+updates arrive), `/stop`, and `/app`; while the agent works, the message being answered wears
+👀 and the bot is seen typing.
 
 ## Where the bot lives
 

@@ -48,7 +48,7 @@ export function messenger(api) {
 
 /// Add a bot on Providers → Channels and pair the owner with the code.
 /// Returns the pairing code.
-export async function addBotAndPair(b, api, profile, {guests = "nobody", tg}) {
+export async function addBotAndPair(b, api, profile, {guests = "nobody", appAt = "", tg}) {
   const choose = async (selector, value) =>
     b.evaluate(`(() => {
       const field = document.querySelector(${JSON.stringify(selector)});
@@ -70,6 +70,7 @@ export async function addBotAndPair(b, api, profile, {guests = "nobody", tg}) {
   await b.click("#channel-more");
   await b.waitFor("the address field", async () => b.exists("#channel-api-root"));
   await b.fill("#channel-api-root", api);
+  if (appAt) await b.fill("#channel-app-at", appAt);
   await b.click("#channel-add");
   await b.waitFor("the bot is running", async () => b.exists('.channel-row[data-running="true"]'), 150);
   const row = await b.evaluate(`document.querySelector('.channel-row')?.innerText ?? ""`);

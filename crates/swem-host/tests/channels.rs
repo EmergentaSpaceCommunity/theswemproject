@@ -163,6 +163,7 @@ async fn the_owner_pairs_with_a_code_talks_to_their_agent_and_a_stranger_gets_on
             agent: Some("coder".into()),
             guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings::default(),
+            app_at: None,
             key: Some("not-a-real-token".into()),
         })
         .await
@@ -327,6 +328,7 @@ async fn a_program_that_is_not_a_channel_is_refused_in_words() {
             agent: Some("coder".into()),
             guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings::default(),
+            app_at: None,
             key: None,
         })
         .await
@@ -429,6 +431,7 @@ async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
                 api_root: Some(address.clone()),
                 door: None,
             },
+            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -460,7 +463,7 @@ async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
         &address,
         "POST",
         "/_fixture/updates",
-        Some(&telegram_update((7, "Ada"), 7, "/status and then look")),
+        Some(&telegram_update((7, "Ada"), 7, "look at this and say")),
     );
     let answered = until("the agent's answer on Telegram", || {
         let calls = sent(&address);
@@ -487,7 +490,7 @@ async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
         .await
         .expect("the page");
     assert_eq!(page.messages[0].channel, format!("channel:{channel_id}"));
-    assert_eq!(page.messages[0].text, "/status and then look");
+    assert_eq!(page.messages[0].text, "look at this and say");
 
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();
@@ -540,6 +543,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
                 api_root: Some(address.clone()),
                 door: None,
             },
+            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -565,7 +569,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
         &address,
         "POST",
         "/_fixture/updates",
-        Some(&telegram_update((7, "Ada"), 7, "/status please")),
+        Some(&telegram_update((7, "Ada"), 7, "say something please")),
     );
     until("the agent's answer to the owner", || {
         sent(&address).into_iter().find(|call| {
@@ -628,7 +632,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
         &address,
         "POST",
         "/_fixture/updates",
-        Some(&telegram_update((9, "Bob"), 9, "/status for the guest")),
+        Some(&telegram_update((9, "Bob"), 9, "a word for the guest")),
     );
     let owner_saw = until("the owner sees the guest's words", || {
         sent(&address).into_iter().find(|call| {
@@ -670,7 +674,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
     assert!(
         page.messages
             .iter()
-            .any(|message| message.sender_id == guest && message.text == "/status for the guest"),
+            .any(|message| message.sender_id == guest && message.text == "a word for the guest"),
         "the guest's words are not in the chat as theirs"
     );
 
@@ -752,6 +756,7 @@ async fn a_message_through_a_channel_has_what_was_due_said() {
                 api_root: Some(address.clone()),
                 door: None,
             },
+            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await

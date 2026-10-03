@@ -2651,6 +2651,12 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
             .expect("a line")
     };
 
+    // The page as it is hosted anywhere: the committed copy, served from
+    // an origin of its own, as a static host would.
+    let hosted = serve_one_file_as(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/mini-app/dist/index.html"),
+        "text/html;charset=utf-8",
+    );
     let (product, address, word) = start_product_at_an_address(&data_root);
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_app_driver.mjs");
     let output = Command::new(&node)
@@ -2659,6 +2665,7 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
         .arg(&word)
         .arg(&api_address)
         .arg(&big)
+        .arg(&hosted)
         .env("SWEM_BROWSER", &browser)
         .env("SWEM_BROWSER_NO_SANDBOX", "1")
         .output()

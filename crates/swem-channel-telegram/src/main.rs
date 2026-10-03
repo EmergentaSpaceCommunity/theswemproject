@@ -120,6 +120,8 @@ struct Stream {
     how: StreamHow,
     last_sent: Option<Instant>,
     last_text: String,
+    /// The message being answered, which wears a reaction while it is.
+    answering: Option<i64>,
 }
 
 enum StreamHow {
@@ -134,9 +136,12 @@ struct Channel {
     bot: Mutex<Option<Bot>>,
     /// What arrived and was not pulled yet.
     arrived: Arc<Mutex<VecDeque<Inbound>>>,
-    streams: Mutex<BTreeMap<String, Stream>>,
+    streams: Arc<Mutex<BTreeMap<String, Stream>>>,
     /// A question's options by the short token a button carries.
     buttons: Mutex<BTreeMap<String, (String, String)>>,
+    /// The messenger's message id behind each update reference pulled, so
+    /// a turn can be seen to answer it (a reaction, a reply).
+    messages: Mutex<BTreeMap<String, i64>>,
     drafts: Mutex<u32>,
     /// How what the messenger has gets here: pulled, or delivered to the
     /// door the harness gave; and the secret a delivery must carry.
@@ -227,6 +232,16 @@ impl Channel {
                 person: person_of(Some(left)),
                 reference: reference.to_owned(),
             });
+        }
+        if let Some(message_id) = message.get("message_id").and_then(Value::as_i64) {
+            let mut messages = self.messages.lock().await;
+            messages.insert(reference.to_owned(), message_id);
+            while messages.len() > 512 {
+                let first = messages.keys().next().cloned();
+                if let Some(first) = first {
+                    messages.remove(&first);
+                }
+            }
         }
         let text = message
             .get("text")
@@ -627,11 +642,23 @@ impl Channel {
         Parameters(params): Parameters<StreamBeginParams>,
     ) -> Result<Json<channel::Sent>, String> {
         let (chat_id, thread) = api::chat_parts(&params.chat);
-        let mut body = json!({ "chat_id": chat_id, "action": "typing" });
-        if let Some(thread) = thread {
-            body["message_thread_id"] = json!(thread);
+        // The message being answered wears eyes while it is: a sign that
+        // outlives the typing status, which the messenger drops after a
+        // few seconds and sometimes never shows.
+        let answering = match params.reply_to.as_deref() {
+            Some(reference) => self.messages.lock().await.get(reference).copied(),
+            None => None,
+        };
+        if let Some(message_id) = answering {
+            let _ = self
+                .api
+                .call(
+                    "setMessageReaction",
+                    json!({ "chat_id": chat_id, "message_id": message_id,
+                            "reaction": [{ "type": "emoji", "emoji": "👀" }] }),
+                )
+                .await;
         }
-        let _ = self.api.call("sendChatAction", body).await;
         self.streams.lock().await.insert(
             params.stream.clone(),
             Stream {
@@ -639,9 +666,27 @@ impl Channel {
                 how: StreamHow::Undecided,
                 last_sent: None,
                 last_text: String::new(),
+                answering,
             },
         );
-        let _ = params.reply_to;
+        // Typing, kept up while the turn is being written: the messenger
+        // shows it for a few seconds at a time.
+        let api = self.api.clone();
+        let streams = Arc::clone(&self.streams);
+        let stream = params.stream;
+        tokio::spawn(async move {
+            loop {
+                if !streams.lock().await.contains_key(&stream) {
+                    break;
+                }
+                let mut body = json!({ "chat_id": chat_id, "action": "typing" });
+                if let Some(thread) = thread {
+                    body["message_thread_id"] = json!(thread);
+                }
+                let _ = api.call("sendChatAction", body).await;
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+        });
         Ok(Json(channel::Sent::default()))
     }
 
@@ -671,6 +716,16 @@ impl Channel {
         Parameters(params): Parameters<StreamParams>,
     ) -> Result<Json<channel::Sent>, String> {
         let stream = self.streams.lock().await.remove(&params.stream);
+        if let Some(message_id) = stream.as_ref().and_then(|s| s.answering) {
+            let (chat_id, _) = api::chat_parts(&params.chat);
+            let _ = self
+                .api
+                .call(
+                    "setMessageReaction",
+                    json!({ "chat_id": chat_id, "message_id": message_id, "reaction": [] }),
+                )
+                .await;
+        }
         let markdown = if params.stopped == Some(true) {
             format!("{}\n\n_(stopped)_", params.markdown)
         } else {
@@ -831,13 +886,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         home,
         bot: Mutex::new(None),
         arrived: Arc::new(Mutex::new(VecDeque::new())),
-        streams: Mutex::new(BTreeMap::new()),
+        streams: Arc::new(Mutex::new(BTreeMap::new())),
         buttons: Mutex::new(BTreeMap::new()),
+        messages: Mutex::new(BTreeMap::new()),
         drafts: Mutex::new(0),
         reach: Mutex::new("pull".to_owned()),
         door_secret,
         tool_router: Channel::tool_router(),
     });
+    // What the bot answers to, offered in the messenger's command menu.
+    let _ = channel
+        .api
+        .call(
+            "setMyCommands",
+            json!({ "commands": [
+                { "command": "status", "description": "How things stand" },
+                { "command": "stop", "description": "Stop the agent's turn" },
+                { "command": "app", "description": "The Workbench, here" },
+            ] }),
+        )
+        .await;
     // At a door the messenger delivers; otherwise the messenger is asked,
     // and a webhook left from before is taken down first, since Telegram
     // answers no `getUpdates` while one is set.

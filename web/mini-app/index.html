@@ -7,8 +7,10 @@
 <!-- A channel's Mini App: opened from a bot inside the messenger, it knows
      who opened it by the messenger's signature and does what the bot cannot
      carry: a file of any size to the agent, what the agent put out, the
-     chat as it stands. One static page; the palette and kit are inlined by
-     the host, as for the Workbench's own page. -->
+     chat as it stands. One static page: the Workbench serves it with the
+     palette and kit inlined and the channel written in; `scripts/mini-app.mjs`
+     writes the same page as `web/mini-app/dist/index.html`, to be hosted
+     anywhere (the bot's button then carries the Workbench's address). -->
 <style>__PALETTE_CSS__</style>
 <style>__KIT_CSS__</style>
 <style>
@@ -54,18 +56,23 @@
 </main>
 <script>
 (() => {
-  const channel = "__CHANNEL_ID__";
-  const api = `/api/channels/${encodeURIComponent(channel)}/app`;
+  // Served by the Workbench itself, the channel is written in; hosted
+  // anywhere else, the bot's button says where the Workbench is and which
+  // channel: ?at=https://workbench.example.org&channel=<id>.
+  const query = new URLSearchParams(location.search);
+  const channel = query.get("channel") || "__CHANNEL_ID__";
+  const at = (query.get("at") || "").replace(/\/+$/, "");
+  const api = `${at}/api/channels/${encodeURIComponent(channel)}/app`;
   const $ = (id) => document.getElementById(id);
-  // What the messenger signed: from its script when it is there, else from
-  // the fragment the messenger opens the page with.
+  // What the messenger signed, from the fragment it opens the page with.
+  // The page needs no script of the messenger's: the signed data is in the
+  // address, and the channel is what checks it.
   const fromHash = () => {
     const hash = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
     const found = new URLSearchParams(hash).get("tgWebAppData");
     return found ?? "";
   };
-  const initData = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || fromHash();
-  if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.ready();
+  const initData = fromHash();
   const headers = { "x-swem-app-data": initData };
   const when = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
   const show = (standing) => {
@@ -135,6 +142,16 @@
     }
     show(await response.json());
   };
+  const readOrSay = async () => {
+    try {
+      await read();
+    } catch {
+      $("why").textContent = at
+        ? `The Workbench at ${at} cannot be reached from here. It has to be served at an address the messenger can reach.`
+        : "The Workbench cannot be reached from here.";
+      $("why").dataset.unreachable = "";
+    }
+  };
   $("upload").addEventListener("click", async () => {
     const file = $("file").files[0];
     if (!file) return;
@@ -157,8 +174,8 @@
   // The messenger opens the page with its data in the fragment; opened
   // again with other data, the page starts over.
   window.addEventListener("hashchange", () => location.reload());
-  void read();
-  setInterval(() => void read(), 5000);
+  void readOrSay();
+  setInterval(() => void readOrSay(), 5000);
 })();
 </script>
 </body>

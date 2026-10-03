@@ -266,7 +266,7 @@ const PALETTE_CSS: &str = include_str!("../../../web/view-kit/palette.css");
 const WORKBENCH_CSS: &str = include_str!("workbench_shell/workbench.css");
 const WORKBENCH_JS: &str = include_str!("../web/apps-host/dist/workbench.js");
 /// A channel's Mini App: the page a bot opens inside the messenger.
-const MINI_APP_HTML: &str = include_str!("workbench_shell/mini_app.html");
+const MINI_APP_HTML: &str = include_str!("../../../web/mini-app/index.html");
 
 /// Connection-local launch material for a profile resolved to a direct
 /// process. The CLI resolves through agent discovery; tests resolve to fixture

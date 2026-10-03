@@ -365,8 +365,14 @@ pub fn find_file(root: &Path, name: &str, through: &str) -> Option<PathBuf> {
 /// in the walk - the bytes really are pulled over HTTP and really are
 /// digested - while the address is one this machine can answer.
 pub fn serve_one_file(path: &Path) -> String {
+    serve_one_file_as(path, "application/gzip")
+}
+
+/// The same, as the given media type: a page hosted elsewhere, say.
+pub fn serve_one_file_as(path: &Path, content_type: &str) -> String {
     use std::io::{BufRead, BufReader, Write};
 
+    let content_type = content_type.to_owned();
     let bytes = std::fs::read(path).expect("read the file to serve");
     let name = path
         .file_name()
@@ -394,7 +400,7 @@ pub fn serve_one_file(path: &Path) -> String {
                 }
             }
             let head = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/gzip\r\n\
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\n\
                  content-length: {}\r\nconnection: close\r\n\r\n",
                 bytes.len()
             );

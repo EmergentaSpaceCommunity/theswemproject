@@ -101,3 +101,25 @@ fn the_committed_workbench_bundle_matches_its_source() {
         &package.join("dist/workbench.js"),
     );
 }
+
+/// The page a bot opens inside the messenger is committed as one file to
+/// host anywhere (`web/mini-app/dist/index.html`), written by
+/// `scripts/mini-app.mjs` from the source page with the palette and kit
+/// inlined. The same composition is done here, so a stale copy fails without
+/// Node.
+#[test]
+fn the_committed_mini_app_matches_its_source() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |path: &str| {
+        std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| panic!("read {path}"))
+    };
+    let expected = read("web/mini-app/index.html")
+        .replace("__PALETTE_CSS__", &read("web/view-kit/palette.css"))
+        .replace("__KIT_CSS__", &read("web/view-kit/kit.css"))
+        .replace("__CHANNEL_ID__", "");
+    let committed = read("web/mini-app/dist/index.html");
+    assert!(
+        committed == expected,
+        "web/mini-app/dist/index.html is stale: run `node scripts/mini-app.mjs` and commit the result"
+    );
+}

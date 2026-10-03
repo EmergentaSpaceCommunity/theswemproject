@@ -21,6 +21,7 @@ export interface ChannelShown {
   agent?: string;
   guests: GuestPolicy;
   settings: { api_root?: string; door?: string };
+  app_at?: string;
   pairing_code?: string;
   bot?: { id: string; username: string; name: string; reach?: string };
   running: boolean;
@@ -65,6 +66,7 @@ function AddBot({ packages, onAdded, onClose }: { packages: ChannelPackage[]; on
   const [agent, setAgent] = useState(profiles[0]?.profile_id ?? "");
   const [guests, setGuests] = useState<GuestPolicy>("nobody");
   const [apiRoot, setApiRoot] = useState("");
+  const [appAt, setAppAt] = useState("");
   const [more, setMore] = useState(false);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
@@ -81,6 +83,7 @@ function AddBot({ packages, onAdded, onClose }: { packages: ChannelPackage[]; on
           agent: agent || null,
           guests,
           settings: apiRoot.trim() ? { api_root: apiRoot.trim() } : {},
+          app_at: appAt.trim() || null,
         }),
       );
       onAdded(shown);
@@ -146,10 +149,16 @@ function AddBot({ packages, onAdded, onClose }: { packages: ChannelPackage[]; on
               </select>
             </label>
             {more ? (
-              <label className="k-stack w-close">
-                <span className="k-caption">Bot API address, when not the messenger's own (a local Bot API server)</span>
-                <input id="channel-api-root" className="k-field k-mono" value={apiRoot} onChange={(event) => setApiRoot(event.target.value)} placeholder="http://127.0.0.1:8081" spellCheck={false} />
-              </label>
+              <>
+                <label className="k-stack w-close">
+                  <span className="k-caption">Bot API address, when not the messenger's own (a local Bot API server)</span>
+                  <input id="channel-api-root" className="k-field k-mono" value={apiRoot} onChange={(event) => setApiRoot(event.target.value)} placeholder="http://127.0.0.1:8081" spellCheck={false} />
+                </label>
+                <label className="k-stack w-close">
+                  <span className="k-caption">Where the page the bot opens inside the messenger is hosted, when not here (a copy of web/mini-app with HTTPS)</span>
+                  <input id="channel-app-at" className="k-field k-mono" value={appAt} onChange={(event) => setAppAt(event.target.value)} placeholder="https://swem-app.example.pages.dev" spellCheck={false} />
+                </label>
+              </>
             ) : (
               <button type="button" className="k-btn k-quiet w-self-start" id="channel-more" onClick={() => setMore(true)}>
                 More
@@ -274,6 +283,7 @@ export function Channels() {
               </span>
             ) : null}
             {channel.said ? <span className="k-caption k-is-danger">{channel.said}</span> : null}
+            {channel.app_at ? <span className="k-caption">The page inside the messenger is hosted at {channel.app_at}.</span> : null}
             <span className="k-inline w-tight" data-reach={channel.reach}>
               <span className="k-caption">
                 {channel.reach === "door"

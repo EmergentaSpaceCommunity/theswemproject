@@ -133,9 +133,13 @@ impl Fixture {
                     "text": body.get("text")
                 }))
             }
-            "sendChatAction" | "answerCallbackQuery" | "setWebhook" | "deleteWebhook" => {
-                ok(Value::Bool(true))
-            }
+            "sendChatAction"
+            | "answerCallbackQuery"
+            | "setWebhook"
+            | "deleteWebhook"
+            | "setMessageReaction"
+            | "setMyCommands"
+            | "setChatMenuButton" => ok(Value::Bool(true)),
             "getFile" => {
                 let file_id = body
                     .get("file_id")

@@ -71,6 +71,11 @@ pub struct ChannelDocument {
     /// a door of this Workbench, which needs it served at an address.
     #[serde(default)]
     pub reach: Reach,
+    /// Where the page the bot opens inside the messenger is hosted, when
+    /// not by this Workbench: a static copy of `web/mini-app` anywhere
+    /// with HTTPS. The bot's button then carries this Workbench's address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_at: Option<String>,
     #[serde(default)]
     pub settings: channel::Settings,
     /// The code the owner says to the bot once, to be known there.
@@ -131,6 +136,9 @@ pub struct ChannelShown {
 pub struct ChangeChannelBody {
     #[serde(default)]
     pub reach: Option<Reach>,
+    /// Where the page inside the messenger is hosted; empty for here.
+    #[serde(default)]
+    pub app_at: Option<String>,
     #[serde(default)]
     pub guests: Option<GuestPolicy>,
     #[serde(default)]
@@ -187,6 +195,9 @@ pub struct AddChannelBody {
     pub guests: GuestPolicy,
     #[serde(default)]
     pub settings: channel::Settings,
+    /// Where the page inside the messenger is hosted, when not here.
+    #[serde(default)]
+    pub app_at: Option<String>,
     /// The bot's secret; kept with the keys, never in the document.
     #[serde(default)]
     pub key: Option<String>,
@@ -410,6 +421,10 @@ impl WorkbenchShellState {
         }
         if let Some(guests) = body.guests {
             document.guests = guests;
+        }
+        if let Some(app_at) = body.app_at {
+            let app_at = app_at.trim().trim_end_matches('/').to_owned();
+            document.app_at = (!app_at.is_empty()).then_some(app_at);
         }
         if let Some(agent) = body.agent {
             document.agent = (!agent.trim().is_empty()).then(|| agent.trim().to_owned());
@@ -688,8 +703,10 @@ impl WorkbenchShellState {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let stem = name.strip_suffix(".exe").unwrap_or(&name).to_owned();
+                // A program, not what a build leaves beside one (`.d`, `.pdb`).
                 if let Some(package) = stem.strip_prefix("swem-channel-")
                     && !package.is_empty()
+                    && !package.contains('.')
                     && package != "fixture"
                     && entry.path().is_file()
                     && !packages.iter().any(|known| known.id == package)
@@ -746,6 +763,10 @@ impl WorkbenchShellState {
             agent: body.agent,
             guests: body.guests,
             reach: Reach::Pull,
+            app_at: body
+                .app_at
+                .map(|at| at.trim().trim_end_matches('/').to_owned())
+                .filter(|at| !at.is_empty()),
             settings: body.settings,
             pairing_code: Some(pairing_code()?),
             bot: None,
@@ -1091,6 +1112,10 @@ impl Runner {
                 } else if name == "app" {
                     self.offer_the_app(&chat.id).await;
                     Ok(())
+                } else if name == "status" {
+                    let words = self.status_words(&chat).await;
+                    self.tell(&chat.id, &words).await;
+                    Ok(())
                 } else {
                     // A command the harness does not know is words.
                     let text = format!("/{name} {args}").trim().to_owned();
@@ -1132,7 +1157,18 @@ impl Runner {
     async fn offer_the_app(&self, external_chat: &str) {
         match self.state.served_origin() {
             Some(origin) => {
-                let url = format!("{origin}/channels/{}/app", self.id);
+                let hosted = self
+                    .state
+                    .channels()
+                    .and_then(|channels| channels.read(&self.id))
+                    .ok()
+                    .and_then(|document| document.app_at);
+                let url = match hosted {
+                    // Hosted elsewhere: the page is told where this
+                    // Workbench is and which channel.
+                    Some(at) => format!("{at}/?at={origin}&channel={}", self.id),
+                    None => format!("{origin}/channels/{}/app", self.id),
+                };
                 let _ = self
                     .call(
                         channel::SEND,
@@ -1219,8 +1255,11 @@ impl Runner {
         text: &str,
     ) -> Result<Option<(crate::Participant, bool)>, WorkbenchShellError> {
         let known = self.participant_of(person).await?;
-        // The pairing code, said once, binds the owner.
-        if known.is_none()
+        // The pairing code, said once, binds the owner - also somebody who
+        // wrote before saying it and was taken for a guest meanwhile.
+        if !known
+            .as_ref()
+            .is_some_and(|participant| participant.kind == ParticipantKind::Person)
             && let Some(code) = &document.pairing_code
             && text.trim() == code
         {
@@ -1638,13 +1677,17 @@ impl Runner {
                     return;
                 };
                 // A turn begins: from now on what the agent puts in its
-                // outbox is the turn's.
+                // outbox is the turn's, and the messenger's side sees it
+                // begin - typing, and a mark on the message being answered
+                // when it came from there.
                 if state == Some("running") {
+                    self.turn_begins(chat_id, agent_id, &event.payload, external_chats)
+                        .await;
                     streams.insert(
                         (chat_id.to_owned(), agent_id.to_owned()),
                         Turn {
                             said: String::new(),
-                            begun: false,
+                            begun: true,
                             began_ms: event
                                 .at_ms
                                 .and_then(|at| i64::try_from(at).ok())
@@ -1790,6 +1833,109 @@ impl Runner {
                 }
             }
         }
+    }
+
+    /// A turn begins on the messenger's side: typing, and a mark on the
+    /// message being answered when it came from there.
+    async fn turn_begins(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        payload: &Value,
+        external_chats: &[String],
+    ) {
+        let answering = match payload.get("message_id").and_then(Value::as_str) {
+            Some(message_id) => self.reference_of(message_id).await,
+            None => None,
+        };
+        for external_chat in external_chats {
+            let stream = format!("{chat_id}:{agent_id}:{external_chat}");
+            let _ = self
+                .call(
+                    channel::STREAM_BEGIN,
+                    json!({ "chat": external_chat, "stream": stream, "reply_to": answering }),
+                )
+                .await;
+        }
+    }
+
+    /// The messenger's reference of a message, when it came through this
+    /// channel.
+    async fn reference_of(&self, message_id: &str) -> Option<String> {
+        let id = message_id.to_owned();
+        let message = self
+            .state
+            .with_ledger(move |ledger| ledger.message(&id))
+            .await
+            .ok()?;
+        (message.channel == channel_of(&self.id))
+            .then_some(message.channel_ref)
+            .flatten()
+    }
+
+    /// `/status`: how things stand here, in a few lines.
+    async fn status_words(&self, chat: &channel::ChatRef) -> String {
+        let document = match self
+            .state
+            .channels()
+            .and_then(|channels| channels.read(&self.id))
+        {
+            Ok(document) => document,
+            Err(error) => return format!("Nothing is known: {error}"),
+        };
+        let agent = document
+            .agent
+            .clone()
+            .unwrap_or_else(|| "nobody".to_owned());
+        let reach = match document.bot.as_ref().map(|bot| bot.reach.as_str()) {
+            Some("door") => "delivered to the Workbench's door".to_owned(),
+            Some(other) if !other.is_empty() && other != "pull" => other.to_owned(),
+            _ => "asked from the messenger".to_owned(),
+        };
+        let Ok(Some(chat_id)) = self.bound_chat(&chat.id).await else {
+            return format!(
+                "**{agent}** answers here. No chat yet: say something.\nUpdates are {reach}."
+            );
+        };
+        let Ok(page) = self.state.chat_page(&chat_id, None, 20).await else {
+            return format!("**{agent}** answers here.");
+        };
+        let working = page
+            .deliveries
+            .iter()
+            .filter(|delivery| delivery.state == crate::DeliveryState::Running)
+            .count();
+        let waiting = page
+            .deliveries
+            .iter()
+            .filter(|delivery| delivery.state == crate::DeliveryState::Queued)
+            .count();
+        let asking = page
+            .questions
+            .iter()
+            .filter(|question| question.state == crate::QuestionState::Waiting)
+            .count();
+        let doing = if asking > 0 {
+            "waiting for an answer to its question".to_owned()
+        } else if working > 0 {
+            "working now".to_owned()
+        } else if waiting > 0 {
+            format!("{waiting} message(s) in line")
+        } else {
+            "idle".to_owned()
+        };
+        let members = page
+            .chat
+            .members
+            .iter()
+            .map(|member| member.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "**{agent}**: {doing}.\nChat **{}** with {members}; {} messages.\nUpdates are {reach}.",
+            page.chat.title,
+            page.messages.len()
+        )
     }
 
     async fn workspace_of_agent(&self, agent_id: &str) -> Option<PathBuf> {

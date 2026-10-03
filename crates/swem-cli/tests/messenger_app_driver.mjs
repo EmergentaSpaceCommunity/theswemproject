@@ -14,10 +14,10 @@ import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/
 import {OWNER, TOKEN, addBotAndPair, messenger} from "./messenger_common.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
-const [url, word, api, bigFile] = process.argv.slice(2);
+const [url, word, api, bigFile, hosted] = process.argv.slice(2);
 const browser = browserPath();
-if (!url || !word || !api || !bigFile) {
-  console.error("usage: messenger_app_driver.mjs <address> <word> <bot-api-address> <a-big-file>");
+if (!url || !word || !api || !bigFile || !hosted) {
+  console.error("usage: messenger_app_driver.mjs <address> <word> <bot-api-address> <a-big-file> <where-the-page-is-hosted>");
   process.exit(2);
 }
 
@@ -69,7 +69,8 @@ const profile = await b.makeAgent("hands");
 // You are who you are on the Workbench, not what the messenger calls you.
 const owner = (await b.ask("/api/people")).body?.owner?.name ?? "";
 if (!owner) cleanup(1, "the Workbench has no owner");
-await addBotAndPair(b, api, profile, {guests: "nobody", tg});
+// The page is hosted elsewhere, as a copy of web/mini-app on any static host.
+await addBotAndPair(b, api, profile, {guests: "nobody", appAt: hosted, tg});
 await written(OWNER, "hello from my phone");
 await b.waitFor("the agent answers", async () => sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes(USAGE)), 200, 200);
 step("signed in, the bot added, a first word said to it");
@@ -80,8 +81,12 @@ await b.waitFor("the bot offers its page", async () =>
   sentTo(await sent(), OWNER.id).some((call) => call.body.reply_markup?.inline_keyboard?.flat().some((one) => one.web_app?.url)), 100);
 const offered = sentTo(await sent(), OWNER.id).flatMap((call) => call.body.reply_markup?.inline_keyboard?.flat() ?? []).find((one) => one.web_app?.url);
 const appUrl = offered.web_app.url;
-if (!appUrl.startsWith(url.replace(/\/$/, "")) || !appUrl.includes("/channels/")) cleanup(1, `the page is somewhere strange: ${appUrl}`);
-step(`the bot offers its page: ${offered.text}`);
+const hostedAt = new URL(hosted);
+if (!appUrl.startsWith(`${hostedAt.origin}${hostedAt.pathname}`)) cleanup(1, `the button does not open the hosted page: ${appUrl}`);
+const opened = new URL(appUrl);
+if (opened.searchParams.get("at") !== url.replace(/\/$/, "") || !opened.searchParams.get("channel")) cleanup(1, `the button does not say where the Workbench is: ${appUrl}`);
+const channelId = opened.searchParams.get("channel");
+step(`the bot offers its page, hosted elsewhere, pointing at this Workbench: ${offered.text}`);
 
 // --- Opened by nobody, it says so ---------------------------------------------
 await open(appUrl);
@@ -117,7 +122,8 @@ await b.waitFor("what the agent put out is listed", async () => b.exists('[data-
 const fetched = await b.evaluate(`(async () => {
   const hash = location.hash.slice(1);
   const data = new URLSearchParams(hash).get("tgWebAppData");
-  const response = await fetch(location.pathname.replace(/^\\/channels\\//, "/api/channels/") + "/files/report.txt", {headers: {"x-swem-app-data": data}});
+  const query = new URLSearchParams(location.search);
+  const response = await fetch(query.get("at") + "/api/channels/" + query.get("channel") + "/app/files/report.txt", {headers: {"x-swem-app-data": data}});
   return response.ok ? await response.text() : "status " + response.status;
 })()`);
 if (fetched !== "the report, for the phone") cleanup(1, `the file was not served to the page: ${JSON.stringify(fetched)}`);
@@ -127,6 +133,12 @@ step("what the agent put out is taken through the page");
 await open(`${appUrl}#tgWebAppData=${encodeURIComponent(signed(OWNER, "000000:not-the-bots-token"))}`);
 await b.waitFor("the page is refused", async () => b.exists('#why[data-refused="403"]'), 100);
 step("a signature that is not the messenger's is refused");
+
+// --- The Workbench serves the same page itself, for a bot with no host ------
+await open(`${url.replace(/\/$/, "")}/channels/${encodeURIComponent(channelId)}/app#tgWebAppData=${encodeURIComponent(signed(OWNER))}`);
+await b.waitFor("the Workbench's own copy knows who opened it", async () =>
+  (await b.evaluate(`document.getElementById("you")?.innerText ?? ""`)).includes(`You are ${owner} here`), 100);
+step("the Workbench serves the page itself as well");
 
 console.log("messenger app OK");
 await sleep(200);
