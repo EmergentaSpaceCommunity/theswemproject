@@ -165,7 +165,10 @@ fn a_header_in_a_file_is_read_once_and_removed() {
 
 #[test]
 fn the_machine_is_looked_at_from_inside() {
-    let workspace = std::env::temp_dir();
+    // A directory of this test's own: the system's temporary directory is
+    // root's on some machines, and the look reports who owns the workspace.
+    let workspace = std::env::temp_dir().join(format!("swem-runner-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&workspace).expect("a workspace");
     let mut runner = Command::new(RUNNER)
         .arg("probe")
         .stdin(Stdio::piped())
@@ -178,7 +181,7 @@ fn the_machine_is_looked_at_from_inside() {
         .expect("its input")
         .write_all(
             &serde_json::to_vec(&ProbeRequest {
-                workspace: Some(workspace),
+                workspace: Some(workspace.clone()),
                 programs: vec!["sh".into(), "no-such-program-here".into(), "../sh".into()],
             })
             .expect("a request"),
@@ -195,6 +198,7 @@ fn the_machine_is_looked_at_from_inside() {
     assert!(found.programs[0].path.is_some());
     assert_eq!(found.programs[1].path, None);
     assert_eq!(found.programs[2].path, None, "a path is not a name");
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 #[test]

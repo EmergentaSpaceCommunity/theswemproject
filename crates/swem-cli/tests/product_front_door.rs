@@ -2354,6 +2354,22 @@ fn a_person_installs_a_server_with_a_home_app_and_opens_its_space() {
     );
 }
 
+/// Every file under a data root but the keys, which are the one place a
+/// secret belongs.
+fn files_outside_the_keys(dir: &Path, into: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "keys") {
+                continue;
+            }
+            files_outside_the_keys(&path, into);
+        } else {
+            into.push(path);
+        }
+    }
+}
+
 /// A person reaches their agent from a messenger: they add a bot on
 /// Providers → Channels with the token the messenger gave them, say the
 /// code shown there to the bot once, and from then on what they write to
@@ -2424,21 +2440,8 @@ fn a_person_reaches_their_agent_from_a_messenger() {
 
     // The bot's token went to the keys and nowhere else: not into the
     // channel's document, the ledger, a log or the chat.
-    fn files_under(dir: &Path, into: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|name| name == "keys") {
-                    continue;
-                }
-                files_under(&path, into);
-            } else {
-                into.push(path);
-            }
-        }
-    }
     let mut files = Vec::new();
-    files_under(&data_root, &mut files);
+    files_outside_the_keys(&data_root, &mut files);
     assert!(
         !files.is_empty(),
         "the product wrote nothing under its root"
