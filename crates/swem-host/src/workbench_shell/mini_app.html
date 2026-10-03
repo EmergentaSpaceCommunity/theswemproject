@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SWEM</title>
+<!-- A channel's Mini App: opened from a bot inside the messenger, it knows
+     who opened it by the messenger's signature and does what the bot cannot
+     carry: a file of any size to the agent, what the agent put out, the
+     chat as it stands. One static page; the palette and kit are inlined by
+     the host, as for the Workbench's own page. -->
+<style>__PALETTE_CSS__</style>
+<style>__KIT_CSS__</style>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; font:var(--font-weight-normal) var(--font-text-md-size)/var(--font-text-md-line-height) var(--font-sans);
+    color:var(--color-text-primary); background:var(--color-background-primary); }
+  main { display:grid; gap:16px; max-width:640px; margin:0 auto; }
+  h1 { margin:0; font-size:var(--font-text-lg-size); }
+  .k-card { display:grid; gap:10px; }
+  .messages { display:grid; gap:8px; max-height:40vh; overflow:auto; }
+  .message { display:grid; gap:2px; }
+  .message .k-caption { opacity:.7; }
+  .files a, .files button { cursor:pointer; }
+  input[type=file] { max-width:100%; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main id="app">
+  <section class="k-card" id="who" hidden>
+    <h1 id="title"></h1>
+    <span class="k-caption" id="you"></span>
+  </section>
+  <section class="k-card" id="nobody">
+    <h1>SWEM</h1>
+    <span class="k-caption" id="why">This page is opened from a bot in your messenger, which says who you are.</span>
+  </section>
+  <section class="k-card" id="send" hidden>
+    <span class="k-eyebrow">A file to the agent, of any size</span>
+    <input type="file" id="file">
+    <input class="k-field" id="words" placeholder="What to say with it (optional)">
+    <button class="k-btn k-primary" id="upload" type="button">Send</button>
+    <span class="k-caption" id="sending"></span>
+  </section>
+  <section class="k-card" id="handed" hidden>
+    <span class="k-eyebrow">What the agent put out</span>
+    <div class="files" id="files"></div>
+  </section>
+  <section class="k-card" id="chat" hidden>
+    <span class="k-eyebrow">The chat</span>
+    <div class="messages" id="messages"></div>
+  </section>
+</main>
+<script>
+(() => {
+  const channel = "__CHANNEL_ID__";
+  const api = `/api/channels/${encodeURIComponent(channel)}/app`;
+  const $ = (id) => document.getElementById(id);
+  // What the messenger signed: from its script when it is there, else from
+  // the fragment the messenger opens the page with.
+  const fromHash = () => {
+    const hash = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
+    const found = new URLSearchParams(hash).get("tgWebAppData");
+    return found ?? "";
+  };
+  const initData = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || fromHash();
+  if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.ready();
+  const headers = { "x-swem-app-data": initData };
+  const when = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+  const show = (standing) => {
+    $("nobody").hidden = true;
+    for (const id of ["who", "send", "handed", "chat"]) $(id).hidden = false;
+    $("title").textContent = standing.bot && standing.bot.name ? standing.bot.name : standing.chat.title;
+    $("you").textContent = `You are ${standing.you.name} here; ${standing.agent} answers.`;
+    const files = $("files");
+    files.replaceChildren();
+    if (standing.files.length === 0) {
+      const none = document.createElement("span");
+      none.className = "k-caption";
+      none.textContent = "Nothing yet.";
+      files.append(none);
+    }
+    for (const file of standing.files) {
+      const row = document.createElement("div");
+      row.className = "k-row";
+      row.dataset.file = file.name;
+      const name = document.createElement("span");
+      name.className = "k-name k-grow";
+      name.textContent = file.name;
+      const size = document.createElement("span");
+      size.className = "k-caption";
+      size.textContent = `${Math.max(1, Math.round(file.byte_length / 1024))} KB`;
+      const get = document.createElement("button");
+      get.className = "k-btn k-quiet";
+      get.type = "button";
+      get.textContent = "Save";
+      get.addEventListener("click", async () => {
+        const response = await fetch(`${api}/files/${encodeURIComponent(file.name)}`, { headers });
+        if (!response.ok) return;
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = file.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+      row.append(name, size, get);
+      files.append(row);
+    }
+    const messages = $("messages");
+    messages.replaceChildren();
+    for (const message of standing.messages) {
+      const one = document.createElement("div");
+      one.className = "message";
+      one.dataset.message = "";
+      const by = document.createElement("span");
+      by.className = "k-caption";
+      by.textContent = `${message.by} · ${when(message.at_ms)}`;
+      const text = document.createElement("span");
+      text.textContent = message.text;
+      one.append(by, text);
+      messages.append(one);
+    }
+    messages.scrollTop = messages.scrollHeight;
+  };
+  const read = async () => {
+    if (!initData) return;
+    const response = await fetch(api, { headers });
+    if (!response.ok) {
+      const said = await response.json().catch(() => ({}));
+      $("why").textContent = said.error || `The Workbench did not let this page in (${response.status}).`;
+      $("why").dataset.refused = String(response.status);
+      return;
+    }
+    show(await response.json());
+  };
+  $("upload").addEventListener("click", async () => {
+    const file = $("file").files[0];
+    if (!file) return;
+    $("sending").textContent = `Sending ${file.name}…`;
+    $("upload").disabled = true;
+    try {
+      const response = await fetch(`${api}/files?name=${encodeURIComponent(file.name)}&words=${encodeURIComponent($("words").value)}`, {
+        method: "POST",
+        headers: { ...headers, "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      const said = await response.json().catch(() => ({}));
+      $("sending").textContent = response.ok ? `Sent ${said.name} to the agent.` : said.error || `Not sent (${response.status}).`;
+      if (response.ok) $("sending").dataset.sent = said.name;
+      await read();
+    } finally {
+      $("upload").disabled = false;
+    }
+  });
+  // The messenger opens the page with its data in the fragment; opened
+  // again with other data, the page starts over.
+  window.addEventListener("hashchange", () => location.reload());
+  void read();
+  setInterval(() => void read(), 5000);
+})();
+</script>
+</body>
+</html>

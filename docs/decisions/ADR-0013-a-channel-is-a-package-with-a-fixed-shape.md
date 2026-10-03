@@ -53,3 +53,12 @@ secret token, chosen by the channel and never seen by the harness or the page) a
 does not carry it. The person chooses on the page whether the bot is asked or delivered to; the
 channel is started again with the door in its settings and tells the messenger. A channel
 without `receive` is asked, wherever the Workbench is.
+
+**The page inside the messenger** (added 2026-10-03). A channel that answers `verify_app
+{init_data}` with the person the messenger signed lets the Workbench serve a page of its own
+inside the messenger: `/channels/<id>/app`, with `/api/channels/<id>/app*` open to any origin
+while served, each request carrying the messenger's signed data in a header and nothing of a
+session. The harness maps the person to the identity bound through the channel and to the chat
+they have through the bot; the channel alone checks the signature, with the token only it
+holds. The bot offers the page with a `web_app` button, which the channel's `send` takes as an
+optional `app` beyond the shape.

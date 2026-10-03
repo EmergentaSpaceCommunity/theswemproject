@@ -70,13 +70,26 @@ at an address the row says why there is no door. Telegram delivers over HTTPS on
 address needs a certificate; with the Workbench served over plain HTTP behind your own proxy, the
 proxy's address is what the messenger sees.
 
+## The Workbench inside the messenger
+
+A bot of a Workbench served at an address offers a page of the Workbench's inside the messenger
+(a Mini App): `/app` to the bot, or whenever a file is too big for the bot to carry. Opened from
+the bot, the page knows who you are by the messenger's signature, which the channel checks
+against the bot's token - the Workbench never sees the token and verifies nothing itself - and
+shows the chat you have with the bot, takes a file of any size to the agent (it lands in the
+agent's inbox with your words, as a file handed over on the Workbench's page does), and lists
+what the agent put out, to save. Opened by nobody, it says what it is; a signature that is not
+the messenger's is refused. The page is one static file the Workbench serves at
+`/channels/<id>/app`; it can be hosted anywhere else just as well, since the Workbench answers
+it from any origin with the signature alone. Telegram opens a Mini App over HTTPS only.
+
 ## Where the bot lives
 
 A bot belongs to one Workbench: the one that runs its channel and holds its key. A messenger
 allows one consumer of a bot's updates at a time, and so does SWEM. To move a bot, remove it
 here and add it there with its token; nothing else travels (ADR-0014).
 
-A Mini App for files beyond the limits is on the roadmap. What is walked by the product's gate:
-direct messages, pairing, a stranger kept out, a group, a topic, a guest let in, a question
-answered with a button, a file each way, a delivery at the door of a served Workbench and why
-there is none otherwise. A real messenger is tried by hand.
+What is walked by the product's gate: direct messages, pairing, a stranger kept out, a group, a
+topic, a guest let in, a question answered with a button, a file each way, a delivery at the
+door of a served Workbench and why there is none otherwise, the page inside the messenger with a
+60 MB file through it. A real messenger is tried by hand.

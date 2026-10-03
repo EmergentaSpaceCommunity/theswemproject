@@ -28,6 +28,7 @@ use base64::Engine as _;
 use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt as _, Full, StreamBody};
 use hyper::body::{Bytes, Frame};
+use hyper::header::HeaderValue;
 use hyper::{Method, Request, Response, StatusCode};
 use rmcp::model::{ElicitationAction, JsonObject};
 use serde::{Deserialize, Serialize};
@@ -264,6 +265,8 @@ const PALETTE_CSS: &str = include_str!("../../../web/view-kit/palette.css");
 /// How the Workbench's own page lays the kit's shapes out.
 const WORKBENCH_CSS: &str = include_str!("workbench_shell/workbench.css");
 const WORKBENCH_JS: &str = include_str!("../web/apps-host/dist/workbench.js");
+/// A channel's Mini App: the page a bot opens inside the messenger.
+const MINI_APP_HTML: &str = include_str!("workbench_shell/mini_app.html");
 
 /// Connection-local launch material for a profile resolved to a direct
 /// process. The CLI resolves through agent discovery; tests resolve to fixture
@@ -3643,6 +3646,33 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     })
 }
 
+/// What a Mini App sends to be known: the messenger's signed data, in a
+/// header of its own.
+fn app_data_of(request: &Request<AskedBody>) -> String {
+    request
+        .headers()
+        .get("x-swem-app-data")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// An answer to a Mini App, which may be hosted anywhere: any origin may
+/// ask, carrying the messenger's signature and nothing of a session.
+fn for_an_app(mut response: Response<ShellBody>) -> Response<ShellBody> {
+    let headers = response.headers_mut();
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    headers.insert(
+        "access-control-allow-headers",
+        HeaderValue::from_static("x-swem-app-data, content-type"),
+    );
+    headers.insert(
+        "access-control-allow-methods",
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    response
+}
+
 /// A request's body as text, for what is handed on as it came.
 async fn body_text_of(request: Request<AskedBody>) -> Result<String, WorkbenchShellError> {
     let body = request
@@ -4076,6 +4106,29 @@ pub(crate) async fn route_shell(
         Err(request) => request,
     };
     match (&method, segments.as_slice()) {
+        // A channel's Mini App: one static page, served here so a bot has
+        // somewhere to point by default; hosted anywhere else just as well.
+        (&Method::GET, ["channels", channel_id, "app"]) => {
+            if !state.is_served_at_an_address() {
+                return respond(
+                    StatusCode::NOT_FOUND,
+                    "text/plain;charset=utf-8",
+                    "A channel's app is served where the Workbench has an address.\n".to_owned(),
+                );
+            }
+            let safe: String = channel_id
+                .chars()
+                .filter(|letter| letter.is_ascii_alphanumeric() || *letter == '_' || *letter == '-')
+                .collect();
+            respond(
+                StatusCode::OK,
+                "text/html;charset=utf-8",
+                MINI_APP_HTML
+                    .replace("__PALETTE_CSS__", PALETTE_CSS)
+                    .replace("__KIT_CSS__", KIT_CSS)
+                    .replace("__CHANNEL_ID__", &safe),
+            )
+        }
         (&Method::GET, []) => {
             // Opening the address the product printed is how a person hands
             // the page the run's secret: the address carries it once, the
@@ -4463,6 +4516,37 @@ pub(crate) async fn route_shell(
                 Ok(()) => json_result(Ok(json!({ "received": true }))),
                 Err(error) => error_response(&error),
             }
+        }
+        // The channel's Mini App, from inside the messenger: who opened it
+        // is said by the messenger's signature, which the channel checks.
+        (&Method::OPTIONS, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]) => {
+            for_an_app(respond(StatusCode::NO_CONTENT, "text/plain", String::new()))
+        }
+        (&Method::GET, ["api", "channels", channel_id, "app"]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            for_an_app(json_result(
+                state.app_standing(&channel_id, &init_data).await,
+            ))
+        }
+        (&Method::POST, ["api", "channels", channel_id, "app", "files"]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            let words = query_param(query.as_deref(), "words")
+                .map(|value| percent_decode(&value))
+                .unwrap_or_default();
+            let ingest = upload_content(state, request, query.as_deref());
+            for_an_app(json_result(
+                state
+                    .app_upload(&channel_id, &init_data, &words, ingest)
+                    .await,
+            ))
+        }
+        (&Method::GET, ["api", "channels", channel_id, "app", "files", name]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            let name = percent_decode(name);
+            for_an_app(match state.app_file(&channel_id, &init_data, &name).await {
+                Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
+                Err(error) => error_response(&error),
+            })
         }
         // A guest who wrote to the bot is let into the chat the owner has
         // with it.

@@ -42,8 +42,10 @@ A library plus test fixtures. It owns:
   names no messenger. The Telegram channel ships as `swem-channel-telegram` beside the binary
   (`crates/swem-channel-telegram`: the Bot API over long-polling, drafts while a turn is
   written, Markdown to the HTML Telegram shows, a door with a secret when the Workbench is served
-  at an address). A bot belongs to one harness and its token is one more key. ADR-0013,
-  ADR-0014.
+  at an address, the messenger's signature of who opened the Workbench's page inside it). The
+  page inside the messenger is one static file (`workbench_shell/mini_app.html`) served at
+  `/channels/<id>/app`, answered from any origin by the signature alone. A bot belongs to one
+  harness and its token is one more key. ADR-0013, ADR-0014.
 - **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and

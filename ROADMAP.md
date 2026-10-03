@@ -34,8 +34,11 @@ phone's width, and the checks on Linux and on a phone that are marked unverified
 An agent is reached from Telegram today: a bot added on Providers → Channels, the owner known by
 a code, a stranger kept out, the bot in a group and a forum topic, a guest let into a chat, the
 agent's questions answered with a button, files each way within the messenger's limits, and
-deliveries to the door of a Workbench served at an address (`docs/channels.md`). Next: a Mini
-App for files beyond the limits; another messenger as a package of the same kind.
+deliveries to the door of a Workbench served at an address, a page of the Workbench inside the
+messenger for files of any size (`docs/channels.md`). Next: the bot run from a served
+Workbench with the laptop closed, tried by hand; another messenger as a package of the same
+kind; the page inside the messenger hosted apart from the Workbench, with a Workbench that is
+not served reached through a door opened on request.
 
 ## Teams of agents
 

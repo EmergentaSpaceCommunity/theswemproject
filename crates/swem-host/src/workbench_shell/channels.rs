@@ -13,6 +13,7 @@
 //! the timekeeper is one loop.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -524,33 +525,26 @@ impl WorkbenchShellState {
     }
 
     /// A file of any size, from the Mini App into the chat: kept as content
-    /// and said in the chat with the person's words, so it reaches the
-    /// agent's inbox as a file handed over on the page does.
+    /// once the person is known, and said in the chat with their words, so
+    /// it reaches the agent's inbox as a file handed over on the page does.
     ///
     /// # Errors
     ///
     /// As [`Self::app_person`]; or the file cannot be kept.
-    pub async fn app_upload(
+    pub async fn app_upload<F>(
         self: &Arc<Self>,
         id: &str,
         init_data: &str,
-        name: &str,
-        media_type: &str,
-        bytes: &[u8],
         words: &str,
-    ) -> Result<Value, WorkbenchShellError> {
+        ingest: F,
+    ) -> Result<Value, WorkbenchShellError>
+    where
+        F: Future<Output = Result<crate::WorkbenchContentDescriptor, WorkbenchShellError>>,
+    {
+        // Who asks is known before a byte is kept.
         let who = self.app_person(id, init_data).await?;
-        let name = crate::workbench_files::safe_name(name)?;
-        let descriptor = self
-            .content
-            .ingest_bytes(
-                bytes,
-                name.clone(),
-                media_type.to_owned(),
-                crate::WorkbenchContentSource::UserUpload,
-                channel_of(id),
-            )
-            .await?;
+        let descriptor = ingest.await?;
+        let name = descriptor.name.clone();
         let said = self
             .say_in_chat_as(
                 &who.chat_id,
@@ -569,9 +563,11 @@ impl WorkbenchShellState {
                 },
             )
             .await?;
-        Ok(
-            json!({ "message_id": said.message.message_id, "name": name, "byte_length": bytes.len() }),
-        )
+        Ok(json!({
+            "message_id": said.message.message_id,
+            "name": name,
+            "byte_length": descriptor.byte_length,
+        }))
     }
 
     /// One file the agent put out, for the Mini App to show or save.
@@ -1092,6 +1088,9 @@ impl Runner {
                 if name == "start" {
                     self.greet(&chat.id).await;
                     Ok(())
+                } else if name == "app" {
+                    self.offer_the_app(&chat.id).await;
+                    Ok(())
                 } else {
                     // A command the harness does not know is words.
                     let text = format!("/{name} {args}").trim().to_owned();
@@ -1125,6 +1124,33 @@ impl Runner {
                 }
             }
             Inbound::Joined { .. } | Inbound::Left { .. } => Ok(()),
+        }
+    }
+
+    /// The Workbench's page inside the messenger, offered as a button when
+    /// the Workbench has an address; said to need one otherwise.
+    async fn offer_the_app(&self, external_chat: &str) {
+        match self.state.served_origin() {
+            Some(origin) => {
+                let url = format!("{origin}/channels/{}/app", self.id);
+                let _ = self
+                    .call(
+                        channel::SEND,
+                        json!({
+                            "chat": external_chat,
+                            "markdown": "The Workbench, here: a file of any size to the agent, what it put out, the chat.",
+                            "app": { "label": "Open", "url": url },
+                        }),
+                    )
+                    .await;
+            }
+            None => {
+                self.tell(
+                    external_chat,
+                    "The Workbench's page opens here once the Workbench is served at an address.",
+                )
+                .await;
+            }
         }
     }
 
@@ -1758,6 +1784,9 @@ impl Runner {
                         &format!("_{} could not be sent here: {error}_", file.name),
                     )
                     .await;
+                    if error.contains("too_large") {
+                        self.offer_the_app(external_chat).await;
+                    }
                 }
             }
         }

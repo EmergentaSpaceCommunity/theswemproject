@@ -704,3 +704,144 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
     let _ = api.kill();
     let _ = api.wait();
 }
+
+/// A wake is a look at the clock: a Workbench with nobody keeping time
+/// (a server woken by a message) says what was due as soon as something
+/// arrives through a channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk: a bot paired, something due, nobody keeping time, a message, the due said"
+)]
+async fn a_message_through_a_channel_has_what_was_due_said() {
+    let Some(program) = telegram_channel() else {
+        eprintln!(
+            "skipped: build the Telegram channel first: cargo build -p swem-channel-telegram"
+        );
+        return;
+    };
+    let root = fixture_root("telegram-wake");
+    let mut api = std::process::Command::new(env!("CARGO_BIN_EXE_swem-telegram-api-fixture"))
+        .arg("--files")
+        .arg(root.join("files"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let address = {
+        use std::io::BufRead as _;
+        let stdout = api.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        lines
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+    let state = shell_with_one_agent(&root);
+    state
+        .enable_keepers(&root.join("time"))
+        .expect("keep who keeps time");
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "Telegram".into(),
+            package: None,
+            program: Some(program.display().to_string()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Nobody,
+            settings: swem_sdk::channel::Settings {
+                api_root: Some(address.clone()),
+                door: None,
+            },
+            key: Some("123456:fixture".into()),
+        })
+        .await
+        .expect("the channel is added");
+    let code = shown.document.pairing_code.clone().expect("a code");
+    let channel_id = shown.document.id.clone();
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, &code)),
+    );
+    until("the welcome", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "7")
+    })
+    .await;
+
+    // Something due in a moment, with nobody running to say it.
+    let people = state.chat_people().await.expect("people");
+    let agent = people["participants"]
+        .as_array()
+        .expect("participants")
+        .iter()
+        .find(|one| one["profile_id"] == "coder")
+        .expect("the agent")["participant_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let due_at = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis(),
+    )
+    .unwrap_or_default()
+        + 1_000;
+    state
+        .make_schedule(swem_host::workbench_shell::NewScheduleBody {
+            agent_id: agent,
+            chat_id: None,
+            say: "the morning summary, please".into(),
+            when: swem_host::When::Once { at_ms: due_at },
+        })
+        .await
+        .expect("make a schedule");
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let said_so_far = |state: &Arc<WorkbenchShellState>| {
+        let state = Arc::clone(state);
+        async move {
+            let mut found = false;
+            for chat in state.chats().await.unwrap_or_default() {
+                let page = state
+                    .chat_page(&chat.chat_id, None, 100)
+                    .await
+                    .expect("page");
+                found |= page
+                    .messages
+                    .iter()
+                    .any(|message| message.text.contains("the morning summary"));
+            }
+            found
+        }
+    };
+    assert!(
+        !said_so_far(&state).await,
+        "nobody keeps time here, yet what was due was said before anything arrived"
+    );
+
+    // A message arrives: the Workbench looks at the clock on the way.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, "good morning")),
+    );
+    let began = std::time::Instant::now();
+    loop {
+        if said_so_far(&state).await {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "what was due was not said when a message arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    state.remove_channel(&channel_id).await.expect("removed");
+    let _ = api.kill();
+    let _ = api.wait();
+}

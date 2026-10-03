@@ -2604,3 +2604,80 @@ fn a_messenger_delivers_to_the_door_of_a_served_workbench() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// The Workbench's page inside the messenger: the bot of a served Workbench
+/// offers it with one button; opened from the bot, it knows who you are by
+/// the messenger's signature, takes a file bigger than the messenger does
+/// to the agent, shows what the agent put out and the chat as it stands.
+/// Opened by nobody it says so; a signature that is not the messenger's is
+/// refused.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_opens_the_workbench_inside_the_messenger() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("messenger-app");
+    declare_the_fixture_agent(&data_root);
+    // A file bigger than the messenger carries: 60 MB, where Telegram's bots
+    // take 20 in and give 50 out.
+    let big = data_root.join("from-the-phone").join("notes-big.bin");
+    std::fs::create_dir_all(big.parent().expect("a parent")).expect("the phone's directory");
+    let bytes: Vec<u8> = (0..60u32 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&big, &bytes).expect("the big file");
+
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join(if cfg!(windows) {
+            "swem-telegram-api-fixture.exe"
+        } else {
+            "swem-telegram-api-fixture"
+        });
+    let mut api = Command::new(&fixture)
+        .arg("--files")
+        .arg(data_root.join("messenger-files"))
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let api_address = {
+        let stdout = api.stdout.take().expect("the fixture's stdout");
+        BufReader::new(stdout)
+            .lines()
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+
+    let (product, address, word) = start_product_at_an_address(&data_root);
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_app_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&address)
+        .arg(&word)
+        .arg(&api_address)
+        .arg(&big)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the messenger app driver");
+    product.stop();
+    let _ = api.kill();
+    let _ = api.wait();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("messenger app OK"),
+        "the messenger app walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The big file reached the agent's inbox whole.
+    let workspaces = find_directory(&data_root, "workspaces").expect("the product made workspaces");
+    let arrived = std::fs::read(workspaces.join("hands").join("inbox").join("notes-big.bin"))
+        .expect("the big file reached the agent's inbox");
+    assert_eq!(arrived.len(), bytes.len());
+    assert_eq!(arrived, bytes, "the file arrived changed");
+}
