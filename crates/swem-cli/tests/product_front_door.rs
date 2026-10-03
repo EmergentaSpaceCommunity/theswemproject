@@ -2455,3 +2455,152 @@ fn a_person_reaches_their_agent_from_a_messenger() {
         );
     }
 }
+
+/// The messenger beyond direct messages: the bot in a group is a chat of
+/// several, and whoever writes in it is in it; a forum topic is a chat of
+/// its own, answered in the topic; somebody alone with the bot waits until
+/// the person lets them into a chat from the page, and is then reached
+/// where they wrote from; the agent's question arrives as buttons and the
+/// answer pressed there lets the agent go on; a file that came with a
+/// message is read by the agent, and what the agent puts in its outbox
+/// goes back through the bot.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_messenger_carries_a_group_a_guest_a_question_and_files() {
+    const SECRET: &str = "what-was-in-the-file-2b9c";
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("messenger-more");
+    declare_the_fixture_agent(&data_root);
+
+    // The messenger holds a file somebody sent the bot, under its id.
+    let files = data_root.join("messenger-files");
+    std::fs::create_dir_all(&files).expect("the messenger's files");
+    std::fs::write(files.join("doc1"), SECRET).expect("the file somebody sent");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join(if cfg!(windows) {
+            "swem-telegram-api-fixture.exe"
+        } else {
+            "swem-telegram-api-fixture"
+        });
+    let mut api = Command::new(&fixture)
+        .arg("--files")
+        .arg(&files)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let api_address = {
+        let stdout = api.stdout.take().expect("the fixture's stdout");
+        BufReader::new(stdout)
+            .lines()
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+
+    let (product, url) = start_product(&data_root);
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_more_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&url)
+        .arg(&api_address)
+        .arg(SECRET)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the messenger driver");
+    product.stop();
+    let _ = api.kill();
+    let _ = api.wait();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("messenger more OK"),
+        "the messenger walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The file that came with the message is in the agent's inbox, and what
+    // the agent handed back is in its outbox - the same two places the page
+    // shows.
+    let workspaces = find_directory(&data_root, "workspaces").expect("the product made workspaces");
+    let inbox = std::fs::read_to_string(workspaces.join("hands").join("inbox").join("notes.txt"))
+        .expect("the file reached the agent's inbox");
+    assert_eq!(inbox, SECRET);
+    assert!(
+        workspaces
+            .join("hands")
+            .join("outbox")
+            .join("reply.txt")
+            .is_file(),
+        "what the agent wrote is not in its outbox"
+    );
+}
+
+/// A Workbench served at an address has a door the messenger delivers to,
+/// instead of being asked. The person switches the bot to it on the
+/// Channels page; the messenger is told the door and a secret; a delivery
+/// at the door reaches the chat, one without the secret is refused, and
+/// nothing is asked for meanwhile; the bot is switched back. On a Workbench
+/// not served at an address the page says why there is no door (the first
+/// messenger walk checks that).
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_messenger_delivers_to_the_door_of_a_served_workbench() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("messenger-door");
+    declare_the_fixture_agent(&data_root);
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .join(if cfg!(windows) {
+            "swem-telegram-api-fixture.exe"
+        } else {
+            "swem-telegram-api-fixture"
+        });
+    let mut api = Command::new(&fixture)
+        .arg("--files")
+        .arg(data_root.join("messenger-files"))
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let api_address = {
+        let stdout = api.stdout.take().expect("the fixture's stdout");
+        BufReader::new(stdout)
+            .lines()
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+
+    let (product, address, word) = start_product_at_an_address(&data_root);
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_door_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&address)
+        .arg(&word)
+        .arg(&api_address)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the messenger door driver");
+    product.stop();
+    let _ = api.kill();
+    let _ = api.wait();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("messenger door OK"),
+        "the messenger door walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

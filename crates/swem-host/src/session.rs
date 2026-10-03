@@ -2444,7 +2444,9 @@ fn terminal_callback_error(
 ) -> agent_client_protocol::Error {
     use crate::workbench_shell::WorkbenchShellError;
     let (base, reason) = match error {
-        WorkbenchShellError::Invalid(reason) | WorkbenchShellError::NotFound(reason) => {
+        WorkbenchShellError::Invalid(reason)
+        | WorkbenchShellError::NotFound(reason)
+        | WorkbenchShellError::Forbidden(reason) => {
             (agent_client_protocol::Error::invalid_params(), reason)
         }
         WorkbenchShellError::Conflict(reason) | WorkbenchShellError::Failed(reason) => {

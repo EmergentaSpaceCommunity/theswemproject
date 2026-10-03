@@ -3171,12 +3171,14 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "swem-channel-telegram"
 version = "0.1.0-dev"
 dependencies = [
+ "getrandom 0.3.4",
  "pulldown-cmark",
  "reqwest",
  "rmcp",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "sha2",
  "swem-sdk",
  "tokio",
 ]

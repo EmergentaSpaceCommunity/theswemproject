@@ -2,7 +2,7 @@
 // an agent in and taking one out, and the chat's two rules.
 
 import { Dialog } from "@base-ui/react/dialog";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { Plus } from "./icons.tsx";
@@ -27,7 +27,7 @@ function Member({ chat, member, owner }: { chat: Chat; member: Participant; owne
         {member.kind === "agent" ? <StateWord what={what} /> : null}
         {problem ? <span className="k-caption k-is-danger">{problem}</span> : null}
       </span>
-      {member.kind === "agent" && !began ? (
+      {(member.kind === "agent" || member.kind === "guest") && !began ? (
         <button
           type="button"
           className="k-btn k-quiet"
@@ -48,14 +48,29 @@ function Member({ chat, member, owner }: { chat: Chat; member: Participant; owne
 export function AddSomeone({ chat, open, onClose }: { chat: Chat; open: boolean; onClose: () => void }) {
   const participants = useStore(world, (state) => state.participants);
   const [problem, setProblem] = useState("");
+  // A guest who wrote to a bot a minute ago is not known to the page yet.
+  useEffect(() => {
+    if (open) void act.people().catch(() => undefined);
+  }, [open]);
   const inIt = new Set(chat.members.map((member) => member.participant_id));
   const others = Object.values(participants)
     .filter((one) => one.kind === "agent" && !one.retired && one.profile_id && !inIt.has(one.participant_id))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  // Guests: people who wrote to a bot of yours and were told to wait.
+  const guests = Object.values(participants)
+    .filter((one) => one.kind === "guest" && !one.retired && !inIt.has(one.participant_id))
     .sort((left, right) => left.name.localeCompare(right.name));
   const bring = (agent: Participant) => {
     setProblem("");
     act
       .bring(chat.chat_id, agent.profile_id ?? "")
+      .then(onClose)
+      .catch((error: Error) => setProblem(error.message));
+  };
+  const letIn = (guest: Participant) => {
+    setProblem("");
+    act
+      .letIn(chat.chat_id, guest.participant_id)
       .then(onClose)
       .catch((error: Error) => setProblem(error.message));
   };
@@ -78,6 +93,20 @@ export function AddSomeone({ chat, open, onClose }: { chat: Chat; open: boolean;
             ))}
             {others.length === 0 ? <span className="k-caption">Every agent you have is in this chat.</span> : null}
           </div>
+          {guests.length > 0 ? (
+            <div className="k-rail-group">
+              <span className="k-eyebrow">Guests, from a messenger</span>
+              {guests.map((guest) => (
+                <button type="button" className="k-rail-item" data-guest={guest.participant_id} key={guest.participant_id} onClick={() => letIn(guest)}>
+                  <Avatar who={guest} size="small" />
+                  <span className="k-two">
+                    <span className="k-name">{guest.name}</span>
+                    <span className="k-caption">Let in: what they write to the bot is said here, and what is said here reaches them.</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
           {problem ? <div className="k-notice k-danger">{problem}</div> : null}
           <div className="k-inline w-end">
             <Dialog.Close className="k-btn k-quiet">Not now</Dialog.Close>

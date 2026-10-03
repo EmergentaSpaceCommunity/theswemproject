@@ -34,6 +34,15 @@ struct Fixture {
     files: PathBuf,
 }
 
+/// One text field of a multipart body, by its name.
+fn multipart_field(text: &str, name: &str) -> Option<String> {
+    let marker = format!("name=\"{name}\"");
+    let (_, rest) = text.split_once(&marker)?;
+    let (_, rest) = rest.split_once("\r\n\r\n")?;
+    let (value, _) = rest.split_once("\r\n")?;
+    Some(value.to_owned())
+}
+
 fn reply(status: StatusCode, body: &Value) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -225,8 +234,21 @@ impl Fixture {
             return refused("no method");
         };
         let body: Value = if content_type.starts_with("multipart/") {
-            // A document upload: what matters to a test is that it was sent.
-            json!({ "multipart": true, "bytes": bytes.len() })
+            // A document upload: what matters to a test is that it was sent,
+            // where, and under what name.
+            let text = String::from_utf8_lossy(&bytes);
+            let mut body = json!({ "multipart": true, "bytes": bytes.len() });
+            for field in ["chat_id", "message_thread_id", "caption"] {
+                if let Some(value) = multipart_field(&text, field) {
+                    body[field] = json!(value);
+                }
+            }
+            if let Some(rest) = text.split_once("filename=\"").map(|(_, rest)| rest)
+                && let Some((name, _)) = rest.split_once('"')
+            {
+                body["file_name"] = json!(name);
+            }
+            body
         } else if bytes.is_empty() {
             json!({})
         } else {

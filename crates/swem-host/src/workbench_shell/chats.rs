@@ -266,6 +266,41 @@ impl WorkbenchShellState {
         .map_err(ledger_refusal)
     }
 
+    /// Let a guest into a chat: somebody who wrote to a bot of yours and
+    /// was told to wait. From then on what they write to the bot alone is
+    /// said in this chat, and what is said there reaches them.
+    ///
+    /// # Errors
+    ///
+    /// Not found for a chat there is not; invalid for somebody who is not a
+    /// guest.
+    pub async fn let_guest_into_chat(
+        &self,
+        chat_id: &str,
+        participant_id: &str,
+    ) -> Result<Chat, WorkbenchShellError> {
+        let (chat_id, guest_id) = (chat_id.to_owned(), participant_id.to_owned());
+        self.with_ledger(move |ledger| {
+            ledger.chat(&chat_id)?;
+            let guest = ledger.participant(&guest_id)?;
+            if guest.kind != crate::ParticipantKind::Guest {
+                return Err(crate::RoutingError::InvalidBinding(format!(
+                    "{} is not a guest",
+                    guest.name
+                )));
+            }
+            let chat = ledger.join_chat(&chat_id, &guest_id)?;
+            for identity in ledger.identities_of(&guest_id)? {
+                if let Some(direct) = identity.direct_chat {
+                    ledger.bind_channel_chat(&identity.channel_id, &direct, &chat_id)?;
+                }
+            }
+            Ok(chat)
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
     /// Take somebody out of a chat. A session the agent had open for the
     /// chat is let go of.
     ///
@@ -279,7 +314,21 @@ impl WorkbenchShellState {
     ) -> Result<Chat, WorkbenchShellError> {
         let (chat, participant) = (chat_id.to_owned(), participant_id.to_owned());
         let left = self
-            .with_ledger(move |ledger| ledger.leave_chat(&chat, &participant))
+            .with_ledger(move |ledger| {
+                let left = ledger.leave_chat(&chat, &participant)?;
+                // A guest taken out is not reached from here any more.
+                for identity in ledger.identities_of(&participant)? {
+                    if let Some(direct) = identity.direct_chat
+                        && ledger
+                            .chat_of_channel_chat(&identity.channel_id, &direct)?
+                            .as_deref()
+                            == Some(chat.as_str())
+                    {
+                        ledger.unbind_channel_chat(&identity.channel_id, &direct)?;
+                    }
+                }
+                Ok(left)
+            })
             .await
             .map_err(ledger_refusal)?;
         self.let_go_of_in(chat_id, participant_id).await;

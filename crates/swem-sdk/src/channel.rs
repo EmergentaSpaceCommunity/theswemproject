@@ -46,7 +46,9 @@ pub const ASK: &str = "ask";
 /// A file out: `send_file`; a file in: `fetch_file`.
 pub const SEND_FILE: &str = "send_file";
 pub const FETCH_FILE: &str = "fetch_file";
-/// A delivery the harness's door forwarded: `receive`.
+/// A delivery the harness's door forwarded: `receive`. Not in the shape: a
+/// channel that answers it can be reached at a door, one that does not
+/// pulls.
 pub const RECEIVE: &str = "receive";
 
 /// The shape every channel answers to, as a document.
@@ -102,6 +104,11 @@ pub struct Bot {
     /// What the bot is called.
     #[serde(default)]
     pub name: String,
+    /// How the channel receives what the messenger has: `pull` when it asks
+    /// the messenger, `door` when the messenger delivers to the door it was
+    /// given in [`Settings::door`], or why the door could not be used.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reach: String,
 }
 
 /// Somebody on the messenger's side.
@@ -279,7 +286,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_root: Option<String>,
     /// Where deliveries may be pushed to (a webhook), when the harness has
-    /// an address; absent, the channel pulls.
+    /// an address; absent, the channel pulls. What arrives at the door is
+    /// handed to the channel's [`RECEIVE`] tool as it came, headers and
+    /// body, for the channel to verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub door: Option<String>,
 }

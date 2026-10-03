@@ -32,10 +32,10 @@ phone's width, and the checks on Linux and on a phone that are marked unverified
 ## Channels
 
 An agent is reached from Telegram today: a bot added on Providers → Channels, the owner known by
-a code, a stranger kept out (`docs/channels.md`). Next, in order: the bot in a group and a forum
-topic, a guest the owner invites to a chat, the agent's questions answered with a button, files
-each way within the messenger's limits; webhooks when the Workbench is served at an address; a
-Mini App for files beyond the limits; another messenger as a package of the same kind.
+a code, a stranger kept out, the bot in a group and a forum topic, a guest let into a chat, the
+agent's questions answered with a button, files each way within the messenger's limits, and
+deliveries to the door of a Workbench served at an address (`docs/channels.md`). Next: a Mini
+App for files beyond the limits; another messenger as a package of the same kind.
 
 ## Teams of agents
 

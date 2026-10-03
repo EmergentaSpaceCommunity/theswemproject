@@ -40,12 +40,39 @@ struct PullParams {
     wait_s: u64,
 }
 
+/// A delivery the harness's door took in, as it came.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct ReceiveParams {
+    /// The request's headers, names in lower case.
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    /// The request's body, as text.
+    #[serde(default)]
+    body: String,
+}
+
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 struct SendParams {
     chat: String,
     markdown: String,
     #[serde(default)]
     reply_to: Option<String>,
+    /// A button under the message that opens a page of the Workbench's
+    /// inside the messenger (a Mini App), with the person's signed identity.
+    #[serde(default)]
+    app: Option<AppButton>,
+}
+
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct AppButton {
+    label: String,
+    url: String,
+}
+
+/// What a Mini App sends to be known: the messenger's signed `initData`.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct VerifyAppParams {
+    init_data: String,
 }
 
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
@@ -111,6 +138,10 @@ struct Channel {
     /// A question's options by the short token a button carries.
     buttons: Mutex<BTreeMap<String, (String, String)>>,
     drafts: Mutex<u32>,
+    /// How what the messenger has gets here: pulled, or delivered to the
+    /// door the harness gave; and the secret a delivery must carry.
+    reach: Mutex<String>,
+    door_secret: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -509,9 +540,37 @@ impl Channel {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            reach: self.reach.lock().await.clone(),
         };
         *self.bot.lock().await = Some(bot.clone());
         Ok(Json(bot))
+    }
+
+    #[tool(description = "A delivery the harness's door took in: verified here, then pulled")]
+    async fn receive(
+        &self,
+        Parameters(params): Parameters<ReceiveParams>,
+    ) -> Result<Json<channel::Sent>, String> {
+        let Some(secret) = &self.door_secret else {
+            return Err("this bot is not reached at a door".to_owned());
+        };
+        let carried = params
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-telegram-bot-api-secret-token"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default();
+        if carried != secret {
+            return Err(
+                "not from the messenger: the secret is not the one the door was given".to_owned(),
+            );
+        }
+        let update: Value = serde_json::from_str(&params.body)
+            .map_err(|error| format!("not an update: {error}"))?;
+        if let Some(inbound) = self.inbound_of(&update).await {
+            self.arrived.lock().await.push_back(inbound);
+        }
+        Ok(Json(channel::Sent::default()))
     }
 
     #[tool(description = "The next inbound events, waiting up to wait_s for one")]
@@ -534,12 +593,15 @@ impl Channel {
         &self,
         Parameters(params): Parameters<SendParams>,
     ) -> Result<Json<channel::Sent>, String> {
+        let markup = params.app.as_ref().map(|app| {
+            json!({ "inline_keyboard": [[{ "text": app.label, "web_app": { "url": app.url } }]] })
+        });
         let sent = self
             .send_html(
                 &params.chat,
                 &text::html(&params.markdown),
                 params.reply_to.as_deref(),
-                None,
+                markup,
             )
             .await?;
         Ok(Json(channel::Sent {
@@ -548,6 +610,15 @@ impl Channel {
                 .map(Value::to_string)
                 .unwrap_or_default(),
         }))
+    }
+
+    #[tool(description = "Who opened a Mini App: the person behind signed initData, or a refusal")]
+    async fn verify_app(
+        &self,
+        Parameters(params): Parameters<VerifyAppParams>,
+    ) -> Result<Json<Person>, String> {
+        let user = self.api.verify_init_data(&params.init_data)?;
+        Ok(Json(person_of(Some(&user))))
     }
 
     #[tool(description = "A turn begins to be written")]
@@ -745,6 +816,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .api_root
         .filter(|root| !root.trim().is_empty())
         .unwrap_or_else(|| api::PUBLIC_API_ROOT.to_owned());
+    let door = settings.door.filter(|door| !door.trim().is_empty());
+    let door_secret = door.as_ref().map(|_| {
+        use std::fmt::Write as _;
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes).expect("the system gives random bytes");
+        bytes.iter().fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+    });
     let channel = Arc::new(Channel {
         api: Api::new(&root, &token)?,
         home,
@@ -753,9 +834,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         streams: Mutex::new(BTreeMap::new()),
         buttons: Mutex::new(BTreeMap::new()),
         drafts: Mutex::new(0),
+        reach: Mutex::new("pull".to_owned()),
+        door_secret,
         tool_router: Channel::tool_router(),
     });
-    tokio::spawn(Arc::clone(&channel).poll_forever());
+    // At a door the messenger delivers; otherwise the messenger is asked,
+    // and a webhook left from before is taken down first, since Telegram
+    // answers no `getUpdates` while one is set.
+    let delivered = match (&door, &channel.door_secret) {
+        (Some(door), Some(secret)) => channel
+            .api
+            .call(
+                "setWebhook",
+                json!({
+                    "url": door,
+                    "secret_token": secret,
+                    "allowed_updates": ["message", "channel_post", "callback_query"],
+                }),
+            )
+            .await
+            .map(|_| ()),
+        _ => Err(String::new()),
+    };
+    match delivered {
+        Ok(()) => "door".clone_into(&mut *channel.reach.lock().await),
+        Err(refusal) => {
+            if door.is_some() {
+                eprintln!("swem-channel-telegram: the door could not be given: {refusal}");
+                *channel.reach.lock().await =
+                    format!("pull: the messenger refused the door: {refusal}");
+            }
+            let _ = channel.api.call("deleteWebhook", json!({})).await;
+            tokio::spawn(Arc::clone(&channel).poll_forever());
+        }
+    }
     channel
         .serve(rmcp::transport::stdio())
         .await?

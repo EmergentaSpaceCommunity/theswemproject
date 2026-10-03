@@ -217,7 +217,9 @@ impl ServedAt {
     }
 }
 
-/// What anybody may ask: whether there is a door, and to be let through it.
+/// What anybody may ask: whether there is a door, and to be let through it;
+/// and a messenger's delivery to a channel's door, which the channel
+/// verifies itself.
 fn open_to_anybody(method: &Method, segments: &[&str]) -> bool {
     matches!(
         (method, segments),
@@ -226,7 +228,20 @@ fn open_to_anybody(method: &Method, segments: &[&str]) -> bool {
                 &Method::POST,
                 ["api", "access", "register" | "sign-in", "begin" | "finish"]
                     | ["api", "access", "come-back" | "sign-out"]
+                    | ["api", "channels", _, "receive"]
             )
+    )
+}
+
+/// What a channel's Mini App asks, from wherever it is hosted: its page,
+/// and what it does on behalf of whoever the messenger says opened it.
+pub(super) fn open_to_an_app(method: &Method, segments: &[&str]) -> bool {
+    matches!(
+        (method, segments),
+        (
+            &Method::GET | &Method::POST | &Method::OPTIONS,
+            ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]
+        )
     )
 }
 
@@ -312,6 +327,12 @@ impl WorkbenchShellState {
                 Some(who) if from_the_workbenchs_own_page(headers) => Ok(Some(who)),
                 _ => Err(forbidden()),
             };
+        }
+        // A Mini App of a channel's, hosted anywhere, says who opened it
+        // with the messenger's signature; which page asks is not the
+        // question there, and nobody is let in by this alone.
+        if self.served_at.get().is_some() && open_to_an_app(method, segments) {
+            return Ok(None);
         }
         let Some(served) = self.served_at.get() else {
             if !from_the_workbenchs_own_page(headers)
@@ -477,6 +498,14 @@ impl WorkbenchShellState {
     /// sign-in and not by the secret of a run.
     pub(super) fn is_served_at_an_address(&self) -> bool {
         self.served_at.get().is_some()
+    }
+
+    /// The origin this Workbench is served at, when it is: what a door for
+    /// a messenger's deliveries is made of.
+    pub(super) fn served_origin(&self) -> Option<String> {
+        self.served_at
+            .get()
+            .map(|served| served.access.address().origin().ascii_serialization())
     }
 
     /// Whether what is answered goes over TLS, so that a browser is told

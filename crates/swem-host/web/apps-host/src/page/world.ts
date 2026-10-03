@@ -243,6 +243,11 @@ export const act = {
     const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}/members`, json({ agent: profile }));
     world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
   },
+  /// Let a guest into a chat: somebody who wrote to a bot of yours.
+  async letIn(chatId: string, guest: string): Promise<void> {
+    const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}/members`, json({ guest }));
+    world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));
+  },
   async takeOut(chatId: string, participant: string): Promise<void> {
     const chat = await fetchJson<Chat>(`/api/chats/${encodeURIComponent(chatId)}/members/${encodeURIComponent(participant)}`, { method: "DELETE" });
     world.setState((state) => ({ chats: { ...state.chats, [chat.chat_id]: chat } }));

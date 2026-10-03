@@ -43,5 +43,13 @@ no notifications from a server it hosts, so a server cannot push to the harness.
 The harness grows one module (`workbench_shell/channels.rs`), two ledger tables (`identities`,
 `channel_chats`) and a taker; it grows no knowledge of Telegram. A channel package's key is
 kept as every key is (`channel-<id>`). A channel that needs an address from outside - a webhook,
-a Mini App - asks the harness for a door, which the harness has only when served at an address;
-that door is the next decision, not this one.
+a Mini App - asks the harness for a door, which the harness has only when served at an address.
+
+**The door** (added 2026-10-02). A channel that answers `receive` beyond the shape can be reached
+at `POST /api/channels/<id>/receive`, open to anybody while the Workbench is served at an
+address, as the knock for time is. The harness hands what arrived to the channel as it came -
+headers and body - and verifies nothing: the channel knows its messenger's secret (Telegram's
+secret token, chosen by the channel and never seen by the harness or the page) and refuses what
+does not carry it. The person chooses on the page whether the bot is asked or delivered to; the
+channel is started again with the door in its settings and tells the messenger. A channel
+without `receive` is asked, wherever the Workbench is.

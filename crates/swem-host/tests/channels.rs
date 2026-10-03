@@ -493,3 +493,214 @@ async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
     let _ = api.kill();
     let _ = api.wait();
 }
+
+/// A guest by invitation: somebody who writes to the bot is told to wait;
+/// once the owner lets them into a chat from the page, what they write to
+/// the bot is said in that chat, the owner sees it on their own side with
+/// the guest's name, and the agent's answer reaches both; taken out, the
+/// guest is told to wait again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over one guest: told to wait, let in, reached, taken out"
+)]
+async fn a_guest_is_let_into_a_chat_and_reached_there() {
+    let Some(program) = telegram_channel() else {
+        eprintln!(
+            "skipped: build the Telegram channel first: cargo build -p swem-channel-telegram"
+        );
+        return;
+    };
+    let root = fixture_root("telegram-guest");
+    let mut api = std::process::Command::new(env!("CARGO_BIN_EXE_swem-telegram-api-fixture"))
+        .arg("--files")
+        .arg(root.join("files"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let address = {
+        use std::io::BufRead as _;
+        let stdout = api.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        lines
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+    let state = shell_with_one_agent(&root);
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "Telegram".into(),
+            package: None,
+            program: Some(program.display().to_string()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::ByInvitation,
+            settings: swem_sdk::channel::Settings {
+                api_root: Some(address.clone()),
+                door: None,
+            },
+            key: Some("123456:fixture".into()),
+        })
+        .await
+        .expect("the channel is added");
+    assert!(shown.running, "{}", shown.said);
+    let code = shown.document.pairing_code.clone().expect("a code");
+    let channel_id = shown.document.id.clone();
+
+    // The owner pairs and opens the bot's chat with a first message.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, &code)),
+    );
+    until("the welcome", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "7")
+    })
+    .await;
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, "/status please")),
+    );
+    until("the agent's answer to the owner", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "7"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("session_id"))
+        })
+    })
+    .await;
+
+    // A stranger writes: told to wait, nothing opened.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((9, "Bob"), 9, "hello?")),
+    );
+    let told = until("the guest is told to wait", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "9")
+    })
+    .await;
+    assert!(
+        told["body"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("let you into a chat")),
+        "{told}"
+    );
+    let chats = state.chats().await.expect("chats");
+    assert_eq!(chats.len(), 1, "the guest opened a chat");
+    let chat_id = chats[0].chat_id.clone();
+
+    // The owner lets the guest in, from the page's "Add someone".
+    let people = state.chat_people().await.expect("people");
+    let guest = people["participants"]
+        .as_array()
+        .expect("participants")
+        .iter()
+        .find(|one| one["name"] == "Bob")
+        .expect("the guest is known")["participant_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let chat = state
+        .let_guest_into_chat(&chat_id, &guest)
+        .await
+        .expect("the guest is let in");
+    assert!(
+        chat.members
+            .iter()
+            .any(|member| member.participant_id == guest)
+    );
+
+    // What the guest writes to the bot is said in the chat, the owner sees
+    // it on their side with the guest's name, and the agent answers both.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((9, "Bob"), 9, "/status for the guest")),
+    );
+    let owner_saw = until("the owner sees the guest's words", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "7"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Bob") && text.contains("for the guest"))
+        })
+    })
+    .await;
+    assert_eq!(owner_saw["body"]["parse_mode"], "HTML");
+    until("the agent's answer reaches the guest", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "9"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("session_id"))
+        })
+    })
+    .await;
+    // And the guest's own words were not sent back to the guest with
+    // their name on them, as they were to the owner.
+    assert!(
+        !sent(&address).into_iter().any(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "9"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("<b>Bob:</b>"))
+        }),
+        "the guest's words came back to them"
+    );
+    let page = state
+        .chat_page(&chat_id, None, 100)
+        .await
+        .expect("the page");
+    assert!(
+        page.messages
+            .iter()
+            .any(|message| message.sender_id == guest && message.text == "/status for the guest"),
+        "the guest's words are not in the chat as theirs"
+    );
+
+    // Taken out, the guest is told to wait again.
+    state
+        .take_out_of_chat(&chat_id, &guest)
+        .await
+        .expect("the guest is taken out");
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((9, "Bob"), 9, "still there?")),
+    );
+    until("the guest is told to wait again", || {
+        let waits = sent(&address)
+            .into_iter()
+            .filter(|call| {
+                call["method"] == "sendMessage"
+                    && call["body"]["chat_id"] == "9"
+                    && call["body"]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("let you into a chat"))
+            })
+            .count();
+        (waits >= 2).then_some(())
+    })
+    .await;
+
+    state.remove_channel(&channel_id).await.expect("removed");
+    let _ = api.kill();
+    let _ = api.wait();
+}

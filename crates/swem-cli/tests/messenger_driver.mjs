@@ -12,6 +12,7 @@
 // fixture's side door the way a phone would talk to Telegram.
 
 import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
+import {OWNER, STRANGER, addBotAndPair, messenger} from "./messenger_common.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
 const [url, api] = process.argv.slice(2);
@@ -22,77 +23,17 @@ if (!url || !api) {
 }
 
 const b = await launchBrowser({browser, url, label: "messenger"});
-/// What the walk gives the channel as the bot's token. Not a token of anything.
-const TOKEN = "123456:walk-not-a-token-of-anything";
-const OWNER = {id: 7, is_bot: false, first_name: "Ada", username: "ada"};
-const STRANGER = {id: 9, is_bot: false, first_name: "Bob", username: "bob"};
-let messageId = 0;
-
-/// What the messenger's side does: somebody writes to the bot.
-const written = async (from, text) => {
-  messageId += 1;
-  const response = await fetch(`${api}/_fixture/updates`, {
-    method: "POST",
-    headers: {"content-type": "application/json"},
-    body: JSON.stringify({
-      message: {
-        message_id: messageId,
-        from,
-        chat: {id: from.id, type: "private", first_name: from.first_name},
-        date: 0,
-        text,
-      },
-    }),
-  });
-  if (!response.ok) cleanup(1, `the fixture refused an update: ${response.status}`);
-};
-/// What the bot sent, as the messenger recorded it: `{method, body}` in order.
-const sent = async () => (await (await fetch(`${api}/_fixture/sent`)).json()).result ?? [];
-const sentTo = (calls, chat, method = "sendMessage") =>
-  calls.filter((call) => call.method === method && String(call.body?.chat_id) === String(chat));
-
-const choose = async (selector, value) =>
-  b.evaluate(`(() => {
-    const field = document.querySelector(${JSON.stringify(selector)});
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(field, ${JSON.stringify(value)});
-    field.dispatchEvent(new Event('change', {bubbles: true}));
-  })()`);
-const options = (selector) => b.evaluate(`[...(document.querySelector(${JSON.stringify(selector)})?.options ?? [])].map((o) => o.value)`);
+const tg = messenger(api);
+const {written, sent, sentTo} = tg;
 
 step("the product opens");
 const profile = await b.makeAgent("hands");
 step("the agent is theirs");
 
-// --- Providers → Channels: a bot, with the token the messenger gave -------
-await b.goTo("#/providers/channels");
-await b.waitFor("the channels page offers a bot", async () => b.exists("#channel-add-bot"), 100);
-await b.click("#channel-add-bot");
-await b.waitFor("the form for a bot", async () => b.exists("#channel-name"));
-if (!(await options("#channel-package")).includes("telegram")) cleanup(1, `the product came with no Telegram channel: ${JSON.stringify(await options("#channel-package"))}`);
-await b.fill("#channel-name", "My bot");
-await choose("#channel-package", "telegram");
-await b.fill("#channel-key", TOKEN);
-if (!(await options("#channel-agent")).includes(profile)) cleanup(1, `the agent cannot be chosen to answer: ${JSON.stringify(await options("#channel-agent"))}`);
-await choose("#channel-agent", profile);
-await choose("#channel-guests", "nobody");
-await b.click("#channel-more");
-await b.waitFor("the address field", async () => b.exists("#channel-api-root"));
-await b.fill("#channel-api-root", api);
-await b.click("#channel-add");
-await b.waitFor("the bot is running", async () => b.exists('.channel-row[data-running="true"]'), 150);
-const row = () => b.evaluate(`document.querySelector('.channel-row')?.innerText ?? ""`);
-if (!(await row()).includes("@swem_fixture_bot")) cleanup(1, `the bot was not looked at: ${await row()}`);
-if ((await b.evaluate("document.body.innerText")).includes(TOKEN)) cleanup(1, "the page shows the token back");
-const code = (await b.evaluate(`document.querySelector('.channel-code')?.textContent ?? ""`)).trim();
-if (!/^\d{6}$/.test(code)) cleanup(1, `no code to say to the bot: ${JSON.stringify(code)}`);
-step("the bot is added, looked at, and a code is shown");
-
-// --- The person says the code to the bot, once ---------------------------
-await written(OWNER, code);
-await b.waitFor("the page shows the person paired", async () => b.exists('.channel-row[data-paired="true"]'), 150);
-const welcome = sentTo(await sent(), OWNER.id);
-if (!welcome.some((call) => String(call.body.text).includes("known here"))) cleanup(1, `the bot did not say the person is known: ${JSON.stringify(welcome)}`);
-step("the person is known to the bot");
+// --- Providers → Channels: a bot, with the token the messenger gave; the
+// person says the code to the bot, once ----------------------------------
+const code = await addBotAndPair(b, api, profile, {guests: "nobody", tg});
+step("the bot is added, looked at, the code shown and said: the person is known to the bot");
 
 // --- A message to the bot is a chat with the agent -----------------------
 const chatsBefore = ((await b.ask("/api/chats")).body ?? []).length;
@@ -127,9 +68,15 @@ const chatsAfter = ((await b.ask("/api/chats")).body ?? []).length;
 if (chatsAfter !== chatsBefore + 1) cleanup(1, `chats: ${chatsBefore} before, ${chatsAfter} after; the stranger should have opened none`);
 step("a stranger got one line and opened nothing");
 
-// --- The bot is removed from the page -------------------------------------
+// --- Not served at an address: no door, and the page says why ------------
 await b.goTo("#/providers/channels");
 await b.waitFor("the bot listed", async () => b.exists(".channel-remove"), 100);
+const reach = await b.evaluate(`document.querySelector('.channel-row [data-reach="pull"]')?.innerText ?? ""`);
+if (!reach.includes("served at an address")) cleanup(1, `the row does not say why the messenger cannot deliver here: ${JSON.stringify(reach)}`);
+if (await b.evaluate(`[...document.querySelectorAll('.channel-row [data-reach] button')].some((one) => one.innerText.includes("Have it delivered"))`)) cleanup(1, "a door is offered on a Workbench not served at an address");
+step("not served at an address, the bot asks the messenger, and the page says why there is no door");
+
+// --- The bot is removed from the page -------------------------------------
 await b.click(".channel-remove");
 await b.waitFor("the bot gone", async () => !(await b.exists(".channel-row")), 100);
 step("the bot is removed");

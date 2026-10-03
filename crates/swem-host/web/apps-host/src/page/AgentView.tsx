@@ -138,6 +138,10 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
   }, [agent.profile_id]);
   const alone = chats.find((one) => one.members.filter((member) => member.kind === "agent").length === 1);
   const chosen = chat === "new" ? null : ((chat && known[chat]) || alone || chats[0] || null);
+  // A chat with somebody besides you and the agent - a guest from a
+  // messenger - shows who is in it, so they can be taken out.
+  const withGuests = chosen?.members.some((member) => member.kind === "guest" && !member.retired) ?? false;
+  const [adding, setAdding] = useState(false);
   return (
     <main className="w-main">
       <Header agent={agent} tab={tab} />
@@ -151,8 +155,10 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
               <FirstWords agent={agent} key={agent.participant_id} onBegun={(begun) => go({ at: "agent", agent: agent.participant_id, tab: "chat", chat: begun.chat_id })} />
             )}
           </Guard>
+          {chosen && withGuests ? <Members chat={chosen} onAdd={() => setAdding(true)} /> : null}
         </div>
       ) : null}
+      {chosen ? <AddSomeone chat={chosen} open={adding} onClose={() => setAdding(false)} /> : null}
       <div className="w-panel" hidden={tab === "chat"}>
         <Guard what="The agent's files">
           <Files agent={agent} hidden={tab !== "files"} key={agent.profile_id ?? agent.participant_id} />

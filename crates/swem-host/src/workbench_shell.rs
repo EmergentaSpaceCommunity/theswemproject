@@ -80,8 +80,8 @@ pub use removal::AgentRemoved;
 mod keepers;
 mod store;
 pub use channels::{
-    AddChannelBody, CHANNEL_SCHEMA, ChannelDocument, ChannelPackage, ChannelShown,
-    ChannelsStanding, GuestPolicy,
+    AddChannelBody, CHANNEL_SCHEMA, ChangeChannelBody, ChannelDocument, ChannelPackage,
+    ChannelShown, ChannelsStanding, GuestPolicy, GuestWaiting, Reach,
 };
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
 #[path = "workbench_shell/timekeeper.rs"]
@@ -325,6 +325,10 @@ pub enum WorkbenchShellError {
     /// Malformed input.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// Whoever asks is not who may: a signature that is not the
+    /// messenger's, a person not known here.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     /// The underlying session/ledger failed.
     #[error("{0}")]
     Failed(String),
@@ -336,6 +340,7 @@ impl WorkbenchShellError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Invalid(_) => StatusCode::BAD_REQUEST,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Failed(_) => StatusCode::BAD_GATEWAY,
         }
     }
@@ -542,7 +547,8 @@ impl WorkbenchArtifactProjector {
                         .map_err(|error| {
                             let reason = match error {
                                 WorkbenchShellError::Invalid(_)
-                                | WorkbenchShellError::NotFound(_) => "resource_link_unavailable",
+                                | WorkbenchShellError::NotFound(_)
+                                | WorkbenchShellError::Forbidden(_) => "resource_link_unavailable",
                                 WorkbenchShellError::Conflict(_)
                                 | WorkbenchShellError::Failed(_) => "artifact_store_failed",
                             };
@@ -3637,6 +3643,18 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     })
 }
 
+/// A request's body as text, for what is handed on as it came.
+async fn body_text_of(request: Request<AskedBody>) -> Result<String, WorkbenchShellError> {
+    let body = request
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?
+        .to_bytes();
+    String::from_utf8(body.to_vec())
+        .map_err(|error| WorkbenchShellError::Invalid(format!("not text: {error}")))
+}
+
 async fn read_json(request: Request<AskedBody>) -> Result<Value, WorkbenchShellError> {
     let body = request
         .into_body()
@@ -4409,6 +4427,49 @@ pub(crate) async fn route_shell(
             let channel_id = (*channel_id).to_owned();
             match state.start_channel(&channel_id).await {
                 Ok(()) => json_result(state.channels_standing().await),
+                Err(error) => error_response(&error),
+            }
+        }
+        (&Method::PATCH, ["api", "channels", channel_id]) => {
+            let channel_id = (*channel_id).to_owned();
+            let body = match read_json(request).await.and_then(|value| {
+                serde_json::from_value::<ChangeChannelBody>(value)
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
+            }) {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            json_result(state.change_channel(&channel_id, body).await)
+        }
+        // A messenger delivers at a channel's door; the channel verifies
+        // it. Open to anybody when served at an address, as the door is.
+        (&Method::POST, ["api", "channels", channel_id, "receive"]) => {
+            let channel_id = (*channel_id).to_owned();
+            let headers: BTreeMap<String, String> = request
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
+                })
+                .collect();
+            let body = match body_text_of(request).await {
+                Ok(body) => body,
+                Err(error) => return error_response(&error),
+            };
+            match state.receive_at_door(&channel_id, headers, body).await {
+                Ok(()) => json_result(Ok(json!({ "received": true }))),
+                Err(error) => error_response(&error),
+            }
+        }
+        // A guest who wrote to the bot is let into the chat the owner has
+        // with it.
+        (&Method::POST, ["api", "channels", channel_id, "guests", guest, "let-in"]) => {
+            let (channel_id, guest) = ((*channel_id).to_owned(), (*guest).to_owned());
+            match state.let_guest_in_at(&channel_id, &guest).await {
+                Ok(_) => json_result(state.channels_standing().await),
                 Err(error) => error_response(&error),
             }
         }

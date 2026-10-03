@@ -55,7 +55,11 @@ struct ChangeChatBody {
 #[derive(Deserialize)]
 struct BringBody {
     /// The profile of the agent that is brought in.
-    agent: String,
+    #[serde(default)]
+    agent: Option<String>,
+    /// Or the guest that is let in.
+    #[serde(default)]
+    guest: Option<String>,
 }
 
 /// What somebody is called from now on; what is left out stays.
@@ -284,6 +288,25 @@ impl WorkbenchShellState {
 
 /// Answer what a page asks about chats, or hand the request back when it
 /// asks about something else.
+/// Somebody brought into a chat: an agent by its profile, or a guest.
+async fn bring_in(
+    state: &Arc<WorkbenchShellState>,
+    chat_id: &str,
+    body: BringBody,
+) -> Result<crate::Chat, WorkbenchShellError> {
+    match body {
+        BringBody {
+            agent: Some(agent), ..
+        } => state.bring_into_chat(chat_id, &agent).await,
+        BringBody {
+            guest: Some(guest), ..
+        } => state.let_guest_into_chat(chat_id, &guest).await,
+        BringBody { .. } => Err(WorkbenchShellError::Invalid(
+            "name the agent or the guest to bring in".into(),
+        )),
+    }
+}
+
 pub(super) async fn route_chats(
     state: &Arc<WorkbenchShellState>,
     method: &Method,
@@ -343,7 +366,7 @@ pub(super) async fn route_chats(
         (&Method::POST, ["api", "chats", chat_id, "members"]) => {
             let chat_id = (*chat_id).to_owned();
             match body_of::<BringBody>(request).await {
-                Ok(body) => json_result(state.bring_into_chat(&chat_id, &body.agent).await),
+                Ok(body) => json_result(bring_in(state, &chat_id, body).await),
                 Err(error) => error_response(&error),
             }
         }

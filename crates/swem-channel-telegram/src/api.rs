@@ -212,3 +212,155 @@ pub fn chat_parts(spelled: &str) -> (String, Option<i64>) {
         None => (spelled.to_owned(), None),
     }
 }
+
+/// HMAC-SHA256, as Telegram signs a Mini App's `initData`: the key is
+/// `HMAC_SHA256(key = "WebAppData", message = bot token)`, the signed text
+/// every field but `hash`, sorted, one per line as `name=value`.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+    const BLOCK: usize = 64;
+    let mut key_block = [0_u8; BLOCK];
+    if key.len() > BLOCK {
+        key_block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let inner: Vec<u8> = key_block.iter().map(|byte| byte ^ 0x36).collect();
+    let outer: Vec<u8> = key_block.iter().map(|byte| byte ^ 0x5c).collect();
+    let mut hasher = Sha256::new();
+    hasher.update(&inner);
+    hasher.update(message);
+    let inner_hash = hasher.finalize();
+    let mut hasher = Sha256::new();
+    hasher.update(&outer);
+    hasher.update(inner_hash);
+    hasher.finalize().into()
+}
+
+/// Bytes as lower-case hex.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
+}
+
+/// One field of a query string, decoded.
+fn decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'+' => out.push(b' '),
+            b'%' if at + 2 < bytes.len() => {
+                let hex = &text[at + 1..at + 3];
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    at += 2;
+                } else {
+                    out.push(b'%');
+                }
+            }
+            byte => out.push(byte),
+        }
+        at += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+impl Api {
+    /// The user behind a Mini App's `initData`, when the messenger signed
+    /// it for this bot and not longer than a day ago.
+    ///
+    /// # Errors
+    ///
+    /// The data is not signed for this bot, is too old, or names no user.
+    pub fn verify_init_data(&self, init_data: &str) -> Result<Value, String> {
+        let mut fields: Vec<(String, String)> = init_data
+            .split('&')
+            .filter(|pair| !pair.is_empty())
+            .map(|pair| {
+                let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                (decoded(name), decoded(value))
+            })
+            .collect();
+        let hash = fields
+            .iter()
+            .find(|(name, _)| name == "hash")
+            .map(|(_, value)| value.clone())
+            .ok_or("initData carries no hash")?;
+        fields.retain(|(name, _)| name != "hash");
+        fields.sort();
+        let signed = fields
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let secret = hmac_sha256(b"WebAppData", self.token.as_bytes());
+        let expected = hex(&hmac_sha256(&secret, signed.as_bytes()));
+        if expected != hash.to_ascii_lowercase() {
+            return Err("initData is not signed for this bot".to_owned());
+        }
+        let auth_date: u64 = fields
+            .iter()
+            .find(|(name, _)| name == "auth_date")
+            .and_then(|(_, value)| value.parse().ok())
+            .ok_or("initData carries no auth_date")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or_default();
+        if now.saturating_sub(auth_date) > 24 * 60 * 60 {
+            return Err("initData is older than a day".to_owned());
+        }
+        let user = fields
+            .iter()
+            .find(|(name, _)| name == "user")
+            .and_then(|(_, value)| serde_json::from_str::<Value>(value).ok())
+            .ok_or("initData names no user")?;
+        Ok(user)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_data_is_verified_the_way_telegram_signs_it() {
+        let api = Api::new("http://127.0.0.1:1", "123456:token").unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let user = r#"{"id":7,"first_name":"Ada","username":"ada"}"#;
+        let signed = format!("auth_date={now}\nuser={user}");
+        let secret = hmac_sha256(b"WebAppData", b"123456:token");
+        let hash = hex(&hmac_sha256(&secret, signed.as_bytes()));
+        let encoded_user = user
+            .replace('{', "%7B")
+            .replace('}', "%7D")
+            .replace('"', "%22")
+            .replace(':', "%3A")
+            .replace(',', "%2C");
+        let init_data = format!("user={encoded_user}&auth_date={now}&hash={hash}");
+        let found = api.verify_init_data(&init_data).unwrap();
+        assert_eq!(found["id"], 7);
+        assert!(
+            api.verify_init_data(&init_data.replace(&hash, "00"))
+                .is_err()
+        );
+        assert!(
+            api.verify_init_data(&format!("user={encoded_user}&auth_date=1&hash={hash}"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_query_value_is_decoded() {
+        assert_eq!(decoded("a%20b+c%7B"), "a b c{");
+        assert_eq!(decoded("%zz"), "%zz");
+    }
+}

@@ -22,11 +22,15 @@ export interface ChannelShown {
   guests: GuestPolicy;
   settings: { api_root?: string; door?: string };
   pairing_code?: string;
-  bot?: { id: string; username: string; name: string };
+  bot?: { id: string; username: string; name: string; reach?: string };
   running: boolean;
   keyed: boolean;
   paired: boolean;
   said?: string;
+  waiting?: { participant_id: string; name: string }[];
+  reach: "pull" | "door";
+  door_offered: boolean;
+  door?: string;
 }
 
 export interface ChannelPackage {
@@ -210,6 +214,21 @@ export function Channels() {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
   };
+  const reach = async (channel: ChannelShown, reach: "pull" | "door") => {
+    try {
+      await fetchJson<ChannelShown>(`/api/channels/${encodeURIComponent(channel.id)}`, send("PATCH", { reach }));
+      await read();
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+  const letIn = async (channel: ChannelShown, guest: string) => {
+    try {
+      setStanding(await fetchJson<ChannelsStanding>(`/api/channels/${encodeURIComponent(channel.id)}/guests/${encodeURIComponent(guest)}/let-in`, send("POST")));
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
   const packages = standing?.packages ?? [];
   return (
     <section className="k-card k-stack">
@@ -255,6 +274,34 @@ export function Channels() {
               </span>
             ) : null}
             {channel.said ? <span className="k-caption k-is-danger">{channel.said}</span> : null}
+            <span className="k-inline w-tight" data-reach={channel.reach}>
+              <span className="k-caption">
+                {channel.reach === "door"
+                  ? channel.bot?.reach && channel.bot.reach !== "door"
+                    ? `Delivered to a door of this Workbench; ${channel.bot.reach}`
+                    : `Delivered to a door of this Workbench: ${channel.door ?? ""}`
+                  : channel.door_offered
+                    ? "Asks the messenger for what is new. Served at an address, the messenger can deliver here instead."
+                    : "Asks the messenger for what is new. The messenger could deliver here instead if this Workbench were served at an address."}
+              </span>
+              {channel.reach === "door" ? (
+                <button type="button" className="k-btn k-quiet" onClick={() => void reach(channel, "pull")}>
+                  Ask instead
+                </button>
+              ) : channel.door_offered ? (
+                <button type="button" className="k-btn k-quiet" onClick={() => void reach(channel, "door")}>
+                  Have it delivered
+                </button>
+              ) : null}
+            </span>
+            {(channel.waiting ?? []).map((guest) => (
+              <span className="k-inline w-tight" key={guest.participant_id} data-waiting={guest.participant_id}>
+                <span className="k-caption">{guest.name} wrote to the bot and waits to be let in.</span>
+                <button type="button" className="k-btn k-quiet" onClick={() => void letIn(channel, guest.participant_id)}>
+                  Let in
+                </button>
+              </span>
+            ))}
           </span>
           <span className="k-inline w-tight w-nowrap">
             {channel.running ? null : (

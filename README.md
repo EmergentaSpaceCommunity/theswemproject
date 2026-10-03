@@ -33,7 +33,7 @@ your keys. It is one binary, `swem`, and a page.
 | Put the Workbench on a server of your own and come to it from a laptop with a passkey | works; a phone and Linux are unverified |
 | Run an agent sealed in a container with its key inside | in progress (Podman) |
 | Run an agent on a machine over SSH, or on a cloud machine that sleeps between messages | not yet |
-| Reach an agent from Telegram: a bot of your own, your agent answering, a stranger kept out | works in direct messages; groups, files and webhooks are next |
+| Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group, questions as buttons, files each way, guests let in by you | works; asked for, or delivered to a served Workbench; a Mini App for big files is next |
 | Build SWEM into a product of your own, with your people, your name and your servers | works |
 
 `ROADMAP.md` is the order of what comes next.

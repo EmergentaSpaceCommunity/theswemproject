@@ -66,6 +66,10 @@ pub struct ChannelDocument {
     pub agent: Option<String>,
     #[serde(default)]
     pub guests: GuestPolicy,
+    /// How what the messenger has gets here: asked for, or delivered to
+    /// a door of this Workbench, which needs it served at an address.
+    #[serde(default)]
+    pub reach: Reach,
     #[serde(default)]
     pub settings: channel::Settings,
     /// The code the owner says to the bot once, to be known there.
@@ -77,12 +81,28 @@ pub struct ChannelDocument {
     pub added_ms: i64,
 }
 
+/// How a channel receives what its messenger has.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// The channel asks the messenger; works anywhere.
+    #[default]
+    Pull,
+    /// The messenger delivers to `/api/channels/<id>/receive`, when this
+    /// Workbench is served at an address.
+    Door,
+}
+
 fn channel_schema() -> String {
     CHANNEL_SCHEMA.to_owned()
 }
 
 /// A channel as the page shows it: the document, and how it is doing.
 #[derive(Clone, Debug, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four standings the page shows as four words; no two are one state"
+)]
 pub struct ChannelShown {
     #[serde(flatten)]
     pub document: ChannelDocument,
@@ -95,6 +115,41 @@ pub struct ChannelShown {
     /// What is wrong with it, in words; empty when nothing is.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub said: String,
+    /// Guests who wrote to the bot alone and wait to be let into a chat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<GuestWaiting>,
+    /// Whether a door can be offered: this Workbench is served at an address.
+    pub door_offered: bool,
+    /// The door the messenger was given, when the channel is reached at one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub door: Option<String>,
+}
+
+/// What the page may change about a channel once it is added.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ChangeChannelBody {
+    #[serde(default)]
+    pub reach: Option<Reach>,
+    #[serde(default)]
+    pub guests: Option<GuestPolicy>,
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+/// Who opened a channel's Mini App, and what is theirs here.
+struct AppPerson {
+    participant: crate::Participant,
+    chat_id: String,
+    /// The bot's agent, by profile.
+    agent: String,
+    bot: Bot,
+}
+
+/// Somebody who wrote to a bot and waits at its door.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GuestWaiting {
+    pub participant_id: String,
+    pub name: String,
 }
 
 /// What can run a channel here: a package the Store installed, or one that
@@ -290,23 +345,320 @@ impl WorkbenchShellState {
             .and_then(|keys| keys.held(&key_name_of(&document.id)).ok().flatten())
             .is_some();
         let id = document.id.clone();
-        let paired = self
+        let (paired, waiting) = self
             .with_ledger(move |ledger| {
                 let owner = ledger.owner()?;
-                Ok(ledger
+                let paired = ledger
                     .identities_of(&owner.participant_id)?
                     .iter()
-                    .any(|identity| identity.channel_id == id))
+                    .any(|identity| identity.channel_id == id);
+                let waiting = ledger
+                    .guests_waiting_at(&id)?
+                    .into_iter()
+                    .map(|guest| GuestWaiting {
+                        participant_id: guest.participant_id,
+                        name: guest.name,
+                    })
+                    .collect();
+                Ok((paired, waiting))
             })
             .await
-            .unwrap_or(false);
+            .unwrap_or((false, Vec::new()));
+        let door = (document.reach == Reach::Door)
+            .then(|| self.door_of(&document.id))
+            .flatten();
         Ok(ChannelShown {
             document,
             running,
             keyed,
             paired,
             said,
+            waiting,
+            door_offered: self.served_origin().is_some(),
+            door,
         })
+    }
+
+    /// Where a messenger delivers for a channel, when this Workbench is
+    /// served at an address.
+    fn door_of(&self, id: &str) -> Option<String> {
+        self.served_origin()
+            .map(|origin| format!("{origin}/api/channels/{id}/receive"))
+    }
+
+    /// Change how a channel is reached, who may write to it or who answers;
+    /// the channel is started again with the change.
+    ///
+    /// # Errors
+    ///
+    /// No such channel; a door asked for where none can be offered.
+    pub async fn change_channel(
+        self: &Arc<Self>,
+        id: &str,
+        body: ChangeChannelBody,
+    ) -> Result<ChannelShown, WorkbenchShellError> {
+        let channels = self.channels()?;
+        let mut document = channels.read(id)?;
+        if let Some(reach) = body.reach {
+            if reach == Reach::Door && self.served_origin().is_none() {
+                return Err(WorkbenchShellError::Invalid(
+                    "a door needs this Workbench served at an address: see docs/serving.md".into(),
+                ));
+            }
+            document.reach = reach;
+        }
+        if let Some(guests) = body.guests {
+            document.guests = guests;
+        }
+        if let Some(agent) = body.agent {
+            document.agent = (!agent.trim().is_empty()).then(|| agent.trim().to_owned());
+        }
+        channels.write(&document)?;
+        let started = self.start_channel(id).await;
+        let mut shown = self.channel_shown(channels.read(id)?).await?;
+        if let Err(error) = started {
+            shown.said = error.to_string();
+        }
+        Ok(shown)
+    }
+
+    /// Who opened a channel's Mini App, by the messenger's signature, and
+    /// the chat they have through the bot.
+    ///
+    /// # Errors
+    ///
+    /// The channel does not run or cannot verify; the data is not the
+    /// messenger's; the person is not known here or has no chat yet.
+    async fn app_person(
+        self: &Arc<Self>,
+        id: &str,
+        init_data: &str,
+    ) -> Result<AppPerson, WorkbenchShellError> {
+        let channels = self.channels()?;
+        let document = channels.read(id)?;
+        let entry = channels
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|run| Arc::clone(&run.entry))
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("no channel {id} runs")))?;
+        let person: Person = call_tool_of(&entry, "verify_app", json!({ "init_data": init_data }))
+            .await
+            .and_then(|answer| serde_json::from_value(answer).map_err(|error| error.to_string()))
+            .map_err(WorkbenchShellError::Forbidden)?;
+        let (channel, external) = (id.to_owned(), person.id.clone());
+        let found = self
+            .with_ledger(move |ledger| {
+                let Some(participant) = ledger.participant_of_identity(&channel, &external)? else {
+                    return Ok(None);
+                };
+                let Some(direct) = ledger.direct_chat_of(&channel, &participant.participant_id)?
+                else {
+                    return Ok(None);
+                };
+                Ok(ledger
+                    .chat_of_channel_chat(&channel, &direct)?
+                    .map(|chat_id| (participant, chat_id)))
+            })
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let Some((participant, chat_id)) = found else {
+            return Err(WorkbenchShellError::Forbidden(
+                "write to the bot first; then this page knows you".into(),
+            ));
+        };
+        let agent = document
+            .agent
+            .clone()
+            .ok_or_else(|| WorkbenchShellError::Invalid("no agent answers here yet".into()))?;
+        Ok(AppPerson {
+            participant,
+            chat_id,
+            agent,
+            bot: document.bot.clone().unwrap_or_default(),
+        })
+    }
+
+    /// What a channel's Mini App shows: who you are here, the chat's last
+    /// words, and what the agent put out.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::app_person`].
+    pub async fn app_standing(
+        self: &Arc<Self>,
+        id: &str,
+        init_data: &str,
+    ) -> Result<Value, WorkbenchShellError> {
+        let who = self.app_person(id, init_data).await?;
+        let page = self.chat_page(&who.chat_id, None, 50).await?;
+        let workspace = self
+            .inventory
+            .select(&who.agent)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?
+            .workspace;
+        let files: Vec<crate::HandedFile> = crate::workbench_files::list(&workspace)
+            .await?
+            .into_iter()
+            .filter(|file| file.area == crate::workbench_files::OUTBOX)
+            .collect();
+        let names: BTreeMap<String, String> = page
+            .chat
+            .members
+            .iter()
+            .map(|member| (member.participant_id.clone(), member.name.clone()))
+            .collect();
+        Ok(json!({
+            "you": { "participant_id": who.participant.participant_id, "name": who.participant.name },
+            "bot": who.bot,
+            "agent": who.agent,
+            "chat": { "chat_id": who.chat_id, "title": page.chat.title },
+            "messages": page.messages.iter().map(|message| json!({
+                "by": names.get(&message.sender_id).cloned().unwrap_or_default(),
+                "text": message.text,
+                "at_ms": message.created_ms,
+            })).collect::<Vec<_>>(),
+            "files": files,
+        }))
+    }
+
+    /// A file of any size, from the Mini App into the chat: kept as content
+    /// and said in the chat with the person's words, so it reaches the
+    /// agent's inbox as a file handed over on the page does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::app_person`]; or the file cannot be kept.
+    pub async fn app_upload(
+        self: &Arc<Self>,
+        id: &str,
+        init_data: &str,
+        name: &str,
+        media_type: &str,
+        bytes: &[u8],
+        words: &str,
+    ) -> Result<Value, WorkbenchShellError> {
+        let who = self.app_person(id, init_data).await?;
+        let name = crate::workbench_files::safe_name(name)?;
+        let descriptor = self
+            .content
+            .ingest_bytes(
+                bytes,
+                name.clone(),
+                media_type.to_owned(),
+                crate::WorkbenchContentSource::UserUpload,
+                channel_of(id),
+            )
+            .await?;
+        let said = self
+            .say_in_chat_as(
+                &who.chat_id,
+                Some(who.participant.participant_id),
+                &channel_of(id),
+                Saying {
+                    text: if words.trim().is_empty() {
+                        format!("Sent {name} through the app.")
+                    } else {
+                        words.to_owned()
+                    },
+                    blocks: Vec::new(),
+                    content_refs: vec![descriptor.descriptor_id.clone()],
+                    context: None,
+                    client_ref: None,
+                },
+            )
+            .await?;
+        Ok(
+            json!({ "message_id": said.message.message_id, "name": name, "byte_length": bytes.len() }),
+        )
+    }
+
+    /// One file the agent put out, for the Mini App to show or save.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::app_person`]; or no such file.
+    pub async fn app_file(
+        self: &Arc<Self>,
+        id: &str,
+        init_data: &str,
+        name: &str,
+    ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
+        let who = self.app_person(id, init_data).await?;
+        let workspace = self
+            .inventory
+            .select(&who.agent)
+            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?
+            .workspace;
+        crate::workbench_files::read(&workspace, crate::workbench_files::OUTBOX, name).await
+    }
+
+    /// A delivery at a channel's door, handed to the channel as it came.
+    ///
+    /// # Errors
+    ///
+    /// No such channel or one not running; or the channel refused it.
+    pub async fn receive_at_door(
+        self: &Arc<Self>,
+        id: &str,
+        headers: BTreeMap<String, String>,
+        body: String,
+    ) -> Result<(), WorkbenchShellError> {
+        let channels = self.channels()?;
+        let entry = channels
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|run| Arc::clone(&run.entry))
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("no channel {id} runs")))?;
+        call_tool_of(
+            &entry,
+            channel::RECEIVE,
+            json!({ "headers": headers, "body": body }),
+        )
+        .await
+        .map(|_| ())
+        .map_err(WorkbenchShellError::Invalid)
+    }
+
+    /// Let a guest who wrote to a channel's bot into the bot's own chat:
+    /// the one the owner has with it. From then on what the guest writes to
+    /// the bot is said there, and what is said there reaches them.
+    ///
+    /// # Errors
+    ///
+    /// No such channel or guest; or the owner has not written to the bot
+    /// yet, so there is no chat of the bot's to let anybody into.
+    pub async fn let_guest_in_at(
+        self: &Arc<Self>,
+        id: &str,
+        guest: &str,
+    ) -> Result<crate::Chat, WorkbenchShellError> {
+        self.channels()?.read(id)?;
+        let channel = id.to_owned();
+        let bots_chat = self
+            .with_ledger(move |ledger| {
+                let owner = ledger.owner()?;
+                let direct = ledger
+                    .identities_of(&owner.participant_id)?
+                    .into_iter()
+                    .find(|identity| identity.channel_id == channel)
+                    .and_then(|identity| identity.direct_chat);
+                match direct {
+                    Some(direct) => ledger.chat_of_channel_chat(&channel, &direct),
+                    None => Ok(None),
+                }
+            })
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let Some(bots_chat) = bots_chat else {
+            return Err(WorkbenchShellError::Invalid(
+                "write to the bot once first: a guest is let into the chat you have with it".into(),
+            ));
+        };
+        self.let_guest_into_chat(&bots_chat, guest).await
     }
 
     /// Channels as the page shows them: each one, and what can run one.
@@ -397,6 +749,7 @@ impl WorkbenchShellState {
             args: body.args,
             agent: body.agent,
             guests: body.guests,
+            reach: Reach::Pull,
             settings: body.settings,
             pairing_code: Some(pairing_code()?),
             bot: None,
@@ -507,11 +860,19 @@ impl WorkbenchShellState {
         std::fs::create_dir_all(&home).map_err(|error| {
             WorkbenchShellError::Failed(format!("make {}: {error}", home.display()))
         })?;
+        // The door is this Workbench's, made of where it is served; the
+        // document keeps only that a door is wanted.
+        let settings = channel::Settings {
+            door: (document.reach == Reach::Door)
+                .then(|| self.door_of(&document.id))
+                .flatten(),
+            ..document.settings.clone()
+        };
         let mut env = vec![
             EnvVariable::new(channel::HOME_VARIABLE, home.display().to_string()),
             EnvVariable::new(
                 channel::SETTINGS_VARIABLE,
-                serde_json::to_string(&document.settings).unwrap_or_else(|_| "{}".into()),
+                serde_json::to_string(&settings).unwrap_or_else(|_| "{}".into()),
             ),
         ];
         if let Some(key) = self
@@ -584,6 +945,7 @@ impl WorkbenchShellState {
             id: id.to_owned(),
             entry,
             said,
+            origins: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let pulled = runner.clone();
         let stopped = Arc::clone(&stop);
@@ -619,7 +981,7 @@ impl WorkbenchShellState {
         let (id, external_id, name) = (id.to_owned(), external_id.to_owned(), name.to_owned());
         self.with_ledger(move |ledger| {
             let owner = ledger.owner()?;
-            ledger.bind_identity(&id, &external_id, &owner.participant_id, &name)?;
+            ledger.bind_identity(&id, &external_id, &owner.participant_id, &name, None)?;
             Ok(())
         })
         .await
@@ -634,6 +996,10 @@ struct Runner {
     id: String,
     entry: Arc<AppAttachmentEntry>,
     said: Arc<Mutex<String>>,
+    /// Where the last messages that came through this channel were said,
+    /// by their reference: so a message is not carried back to the chat it
+    /// was said in.
+    origins: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 /// How long a `pull` may wait before answering with nothing.
@@ -643,8 +1009,20 @@ const CARRY_EVERY: Duration = Duration::from_millis(200);
 /// How many events are read at once.
 const AT_ONCE: usize = 256;
 
-/// What an agent has said so far in a turn, by (chat, agent).
-type Streams = BTreeMap<(String, String), String>;
+/// An agent's turn as it is written, by (chat, agent).
+struct Turn {
+    /// What it has said so far.
+    said: String,
+    /// Whether a stream was begun on the messenger's side for it.
+    begun: bool,
+    /// When it began, so what it put in its outbox meanwhile is known.
+    began_ms: i64,
+}
+
+type Streams = BTreeMap<(String, String), Turn>;
+
+/// How many origins are remembered.
+const ORIGINS_KEPT: usize = 512;
 
 impl Runner {
     fn say(&self, words: impl Into<String>) {
@@ -786,10 +1164,20 @@ impl Runner {
             .await;
     }
 
-    async fn guest_for(&self, person: &Person) -> Result<crate::Participant, WorkbenchShellError> {
+    /// The guest somebody is here. Where they write to the bot alone is
+    /// kept, so they can be reached there once the owner lets them into a
+    /// chat.
+    async fn guest_for(
+        &self,
+        person: &Person,
+        chat: &channel::ChatRef,
+    ) -> Result<crate::Participant, WorkbenchShellError> {
         let (id, external, name) = (self.id.clone(), person.id.clone(), person.name.clone());
+        let direct = (chat.kind == ChatKind::Direct).then(|| chat.id.clone());
         self.state
-            .with_ledger(move |ledger| ledger.guest_of_identity(&id, &external, &name))
+            .with_ledger(move |ledger| {
+                ledger.guest_of_identity(&id, &external, &name, direct.as_deref())
+            })
             .await
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
     }
@@ -811,10 +1199,17 @@ impl Runner {
             && text.trim() == code
         {
             let (id, external, name) = (self.id.clone(), person.id.clone(), person.name.clone());
+            let direct = (chat.kind == ChatKind::Direct).then(|| chat.id.clone());
             self.state
                 .with_ledger(move |ledger| {
                     let owner = ledger.owner()?;
-                    ledger.bind_identity(&id, &external, &owner.participant_id, &name)?;
+                    ledger.bind_identity(
+                        &id,
+                        &external,
+                        &owner.participant_id,
+                        &name,
+                        direct.as_deref(),
+                    )?;
                     Ok(owner)
                 })
                 .await
@@ -825,6 +1220,27 @@ impl Runner {
         }
         if let Some(participant) = known {
             let is_owner = participant.kind == ParticipantKind::Person;
+            // A guest known from before is still held to the policy of now;
+            // where they write to the bot alone is kept as it is learnt.
+            if !is_owner {
+                self.guest_for(person, chat).await?;
+                match document.guests {
+                    GuestPolicy::Nobody => {
+                        self.tell(&chat.id, "This bot answers its owner only.")
+                            .await;
+                        return Ok(None);
+                    }
+                    GuestPolicy::ByInvitation if self.bound_chat(&chat.id).await?.is_none() => {
+                        self.tell(
+                            &chat.id,
+                            "Hello. The owner of this bot has to let you into a chat first.",
+                        )
+                        .await;
+                        return Ok(None);
+                    }
+                    GuestPolicy::ByInvitation | GuestPolicy::Anyone => {}
+                }
+            }
             return Ok(Some((participant, is_owner)));
         }
         match document.guests {
@@ -834,17 +1250,20 @@ impl Runner {
                 Ok(None)
             }
             GuestPolicy::ByInvitation => {
-                // Known only once the owner joins them to a chat; until then
+                // Known only once the owner lets them into a chat; until then
                 // a guest with nothing to say into.
-                let guest = self.guest_for(person).await?;
+                let guest = self.guest_for(person, chat).await?;
                 if self.bound_chat(&chat.id).await?.is_none() {
-                    self.tell(&chat.id, "Somebody has to invite you to a chat first.")
-                        .await;
+                    self.tell(
+                        &chat.id,
+                        "Hello. The owner of this bot has to let you into a chat first.",
+                    )
+                    .await;
                     return Ok(None);
                 }
                 Ok(Some((guest, false)))
             }
-            GuestPolicy::Anyone => Ok(Some((self.guest_for(person).await?, false))),
+            GuestPolicy::Anyone => Ok(Some((self.guest_for(person, chat).await?, false))),
         }
     }
 
@@ -917,6 +1336,16 @@ impl Runner {
             return Ok(());
         };
         let chat_id = if let Some(chat_id) = self.bound_chat(&chat.id).await? {
+            // Whoever writes in a group the bot is in is in the chat, so the
+            // page shows them among its members and the agent is told who
+            // they are.
+            if !is_owner {
+                let (chat_id, speaker_id) = (chat_id.clone(), speaker.participant_id.clone());
+                self.state
+                    .with_ledger(move |ledger| ledger.join_chat(&chat_id, &speaker_id))
+                    .await
+                    .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+            }
             chat_id
         } else {
             let Some(agent) = document.agent.clone() else {
@@ -931,6 +1360,19 @@ impl Runner {
                 .await?
         };
         let content_refs = self.kept_files(files).await;
+        {
+            let mut origins = self
+                .origins
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            origins.insert(reference.clone(), chat.id.clone());
+            while origins.len() > ORIGINS_KEPT {
+                let first = origins.keys().next().cloned();
+                if let Some(first) = first {
+                    origins.remove(&first);
+                }
+            }
+        }
         self.state
             .say_in_chat_as(
                 &chat_id,
@@ -958,7 +1400,17 @@ impl Runner {
         agent_profile: &str,
         document: &ChannelDocument,
     ) -> Result<String, WorkbenchShellError> {
-        let title = if !chat.title.trim().is_empty() {
+        let title = if chat.kind == ChatKind::Topic {
+            // A forum topic: the group's name and the topic's number, which
+            // is what the messenger gives; the person renames it on the page.
+            let thread = chat.id.rsplit_once(':').map_or("", |(_, thread)| thread);
+            let group = if chat.title.trim().is_empty() {
+                document.name.as_str()
+            } else {
+                chat.title.trim()
+            };
+            format!("{group} · topic {thread}")
+        } else if !chat.title.trim().is_empty() {
             chat.title.trim().to_owned()
         } else if chat.kind == ChatKind::Direct {
             match &document.bot {
@@ -1015,19 +1467,25 @@ impl Runner {
                 let Some(chat_id) = event.chat_id.clone() else {
                     continue;
                 };
-                let Ok(Some(external_chat)) = self.external_chat_of(&chat_id).await else {
+                // A chat here may be reached from several places on the
+                // messenger's side: the group it is, and the direct chats of
+                // guests let into it.
+                let Ok(external_chats) = self.external_chats_of(&chat_id).await else {
                     continue;
                 };
+                if external_chats.is_empty() {
+                    continue;
+                }
                 match message {
                     // A message is placed on an event of its own kind: a
                     // person's on `chat/message`, an agent's on the event that
                     // ended its turn. Whatever the kind, a message is carried.
                     Some(message) => {
-                        self.carry_message(&chat_id, &external_chat, &message, &mut streams)
+                        self.carry_message(&chat_id, &external_chats, &message, &mut streams)
                             .await;
                     }
                     None => {
-                        self.carry_event(&chat_id, &external_chat, &event, &mut streams)
+                        self.carry_event(&chat_id, &external_chats, &event, &mut streams)
                             .await;
                     }
                 }
@@ -1038,42 +1496,63 @@ impl Runner {
     async fn carry_message(
         &self,
         chat_id: &str,
-        external_chat: &str,
+        external_chats: &[String],
         message: &crate::Message,
         streams: &mut Streams,
     ) {
-        if message.channel == channel_of(&self.id) {
-            // It came from this very messenger.
-            return;
-        }
         if message.channel == crate::CHANNEL_AGENT {
             let key = (chat_id.to_owned(), message.sender_id.clone());
-            let stream = format!("{chat_id}:{}", message.sender_id);
-            if streams.remove(&key).is_some() {
-                let _ = self
-                    .call(
-                        channel::STREAM_END,
-                        json!({ "chat": external_chat, "stream": stream, "markdown": message.text }),
-                    )
+            let turn = streams.remove(&key);
+            for external_chat in external_chats {
+                let stream = format!("{chat_id}:{}:{external_chat}", message.sender_id);
+                if turn.as_ref().is_some_and(|turn| turn.begun) {
+                    let _ = self
+                        .call(
+                            channel::STREAM_END,
+                            json!({ "chat": external_chat, "stream": stream, "markdown": message.text }),
+                        )
+                        .await;
+                } else {
+                    self.tell(external_chat, &message.text).await;
+                }
+            }
+            // What the agent put in its outbox during the turn goes along.
+            if let Some(turn) = turn {
+                self.send_what_was_put_out(&message.sender_id, turn.began_ms, external_chats)
                     .await;
-            } else {
-                self.tell(external_chat, &message.text).await;
             }
             return;
         }
-        // Somebody said it elsewhere - the page, the editor, a schedule:
-        // shown with their name.
+        // Somebody said it elsewhere - the page, the editor, a schedule, or
+        // another place on the messenger's side: shown with their name,
+        // everywhere but where it was said.
         let markdown = match self.name_of(&message.sender_id).await {
             Some(name) => format!("**{name}:** {}", message.text),
             None => message.text.clone(),
         };
-        self.tell(external_chat, &markdown).await;
+        let said_from = if message.channel == channel_of(&self.id) {
+            message.channel_ref.as_ref().and_then(|reference| {
+                self.origins
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(reference)
+                    .cloned()
+            })
+        } else {
+            None
+        };
+        for external_chat in external_chats {
+            if said_from.as_deref() == Some(external_chat.as_str()) {
+                continue;
+            }
+            self.tell(external_chat, &markdown).await;
+        }
     }
 
     async fn carry_event(
         &self,
         chat_id: &str,
-        external_chat: &str,
+        external_chats: &[String],
         event: &crate::ChatEvent,
         streams: &mut Streams,
     ) {
@@ -1098,77 +1577,217 @@ impl Runner {
                     return;
                 };
                 let key = (chat_id.to_owned(), agent_id.clone());
-                let stream = format!("{chat_id}:{agent_id}");
-                let begun = streams.contains_key(&key);
-                let said = streams.entry(key).or_default();
-                said.push_str(text);
-                let said = said.clone();
-                if !begun {
+                let turn = streams.entry(key).or_insert_with(|| Turn {
+                    said: String::new(),
+                    begun: false,
+                    began_ms: event
+                        .at_ms
+                        .and_then(|at| i64::try_from(at).ok())
+                        .unwrap_or_else(now_ms),
+                });
+                let begun = std::mem::replace(&mut turn.begun, true);
+                turn.said.push_str(text);
+                let said = turn.said.clone();
+                for external_chat in external_chats {
+                    let stream = format!("{chat_id}:{agent_id}:{external_chat}");
+                    if !begun {
+                        let _ = self
+                            .call(
+                                channel::STREAM_BEGIN,
+                                json!({ "chat": external_chat, "stream": stream }),
+                            )
+                            .await;
+                    }
                     let _ = self
                         .call(
-                            channel::STREAM_BEGIN,
-                            json!({ "chat": external_chat, "stream": stream }),
+                            channel::STREAM_UPDATE,
+                            json!({ "chat": external_chat, "stream": stream, "markdown": said }),
                         )
                         .await;
                 }
-                let _ = self
-                    .call(
-                        channel::STREAM_UPDATE,
-                        json!({ "chat": external_chat, "stream": stream, "markdown": said }),
-                    )
-                    .await;
             }
             "chat/delivery" => {
+                let state = event.payload.get("state").and_then(Value::as_str);
+                let Some(agent_id) = event.payload.get("agent_id").and_then(Value::as_str) else {
+                    return;
+                };
+                // A turn begins: from now on what the agent puts in its
+                // outbox is the turn's.
+                if state == Some("running") {
+                    streams.insert(
+                        (chat_id.to_owned(), agent_id.to_owned()),
+                        Turn {
+                            said: String::new(),
+                            begun: false,
+                            began_ms: event
+                                .at_ms
+                                .and_then(|at| i64::try_from(at).ok())
+                                .unwrap_or_else(now_ms),
+                        },
+                    );
+                    return;
+                }
                 // A turn that ended without words - stopped, failed - closes
                 // its stream with what there was.
-                let state = event.payload.get("state").and_then(Value::as_str);
                 if matches!(state, Some("stopped" | "failed" | "interrupted"))
-                    && let Some(agent_id) = event.payload.get("agent_id").and_then(Value::as_str)
-                    && let Some(said) = streams.remove(&(chat_id.to_owned(), agent_id.to_owned()))
+                    && let Some(turn) = streams.remove(&(chat_id.to_owned(), agent_id.to_owned()))
+                    && turn.begun
                 {
-                    let stream = format!("{chat_id}:{agent_id}");
-                    let _ = self
-                        .call(
-                            channel::STREAM_END,
-                            json!({ "chat": external_chat, "stream": stream, "markdown": said, "stopped": true }),
-                        )
-                        .await;
+                    for external_chat in external_chats {
+                        let stream = format!("{chat_id}:{agent_id}:{external_chat}");
+                        let _ = self
+                            .call(
+                                channel::STREAM_END,
+                                json!({ "chat": external_chat, "stream": stream, "markdown": turn.said, "stopped": true }),
+                            )
+                            .await;
+                    }
                 }
             }
-            "chat/question" => {
-                let Some(question_id) = event.payload.get("question_id").and_then(Value::as_str)
-                else {
-                    return;
-                };
-                let Some(options) = event.payload.get("options") else {
-                    return;
-                };
-                let title = event
-                    .payload
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("The agent asks")
-                    .to_owned();
-                let _ = self
-                    .call(
-                        channel::ASK,
-                        json!({ "chat": external_chat, "question": question_id, "title": title, "options": options }),
-                    )
-                    .await;
-            }
+            "chat/question" => self.carry_question(&event.payload, external_chats).await,
             _ => {}
         }
     }
 
-    async fn external_chat_of(&self, chat_id: &str) -> Result<Option<String>, WorkbenchShellError> {
+    /// A question the agent asks, as buttons where the messenger has them:
+    /// a permission's options. What only the page can answer - a form, a
+    /// link - is said to be so.
+    async fn carry_question(&self, payload: &Value, external_chats: &[String]) {
+        if payload.get("state").and_then(Value::as_str) != Some("waiting") {
+            return;
+        }
+        let Some(question_id) = payload.get("question_id").and_then(Value::as_str) else {
+            return;
+        };
+        let asked = payload.get("asked").cloned().unwrap_or(Value::Null);
+        let kind = payload.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind != "permission" {
+            for external_chat in external_chats {
+                self.tell(
+                    external_chat,
+                    "The agent asks something only the Workbench's page can answer.",
+                )
+                .await;
+            }
+            return;
+        }
+        let options: Vec<Value> = asked
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options
+                    .iter()
+                    .filter_map(|option| {
+                        let id = option.get("optionId").and_then(Value::as_str)?;
+                        let label = option.get("name").and_then(Value::as_str).unwrap_or(id);
+                        Some(json!({ "id": id, "label": label }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if options.is_empty() {
+            return;
+        }
+        let title = asked
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .map_or_else(
+                || "The agent asks: may it?".to_owned(),
+                |title| format!("The agent asks: may it?\n\n`{title}`"),
+            );
+        for external_chat in external_chats {
+            let _ = self
+                .call(
+                    channel::ASK,
+                    json!({
+                        "chat": external_chat,
+                        "question": question_id,
+                        "title": title,
+                        "options": options,
+                    }),
+                )
+                .await;
+        }
+    }
+
+    /// What the agent put in its outbox since its turn began, sent along.
+    /// A file the messenger cannot take is said to be too large.
+    async fn send_what_was_put_out(
+        &self,
+        agent_id: &str,
+        since_ms: i64,
+        external_chats: &[String],
+    ) {
+        let Some(workspace) = self.workspace_of_agent(agent_id).await else {
+            return;
+        };
+        let Ok(files) = crate::workbench_files::list(&workspace).await else {
+            return;
+        };
+        for file in files {
+            if file.area != crate::workbench_files::OUTBOX {
+                continue;
+            }
+            let path = workspace
+                .join(crate::workbench_files::OUTBOX)
+                .join(&file.name);
+            let changed_ms = tokio::fs::metadata(&path)
+                .await
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| {
+                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+                });
+            // A second's grace: a file system keeps seconds, a ledger
+            // keeps milliseconds.
+            if changed_ms + 1_000 < since_ms {
+                continue;
+            }
+            for external_chat in external_chats {
+                if let Err(error) = self
+                    .call(
+                        channel::SEND_FILE,
+                        json!({ "chat": external_chat, "path": path.display().to_string(), "name": file.name }),
+                    )
+                    .await
+                {
+                    self.tell(
+                        external_chat,
+                        &format!("_{} could not be sent here: {error}_", file.name),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    async fn workspace_of_agent(&self, agent_id: &str) -> Option<PathBuf> {
+        let id = agent_id.to_owned();
+        let profile = self
+            .state
+            .with_ledger(move |ledger| ledger.participant(&id))
+            .await
+            .ok()?
+            .profile_id?;
+        self.state
+            .inventory
+            .select(&profile)
+            .ok()
+            .map(|profile| profile.workspace)
+    }
+
+    async fn external_chats_of(&self, chat_id: &str) -> Result<Vec<String>, WorkbenchShellError> {
         let (id, chat) = (self.id.clone(), chat_id.to_owned());
         self.state
             .with_ledger(move |ledger| {
                 Ok(ledger
                     .channel_chats_of(&chat)?
                     .into_iter()
-                    .find(|bound| bound.channel_id == id)
-                    .map(|bound| bound.external_chat))
+                    .filter(|bound| bound.channel_id == id)
+                    .map(|bound| bound.external_chat)
+                    .collect())
             })
             .await
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
