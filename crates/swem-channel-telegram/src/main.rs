@@ -284,13 +284,11 @@ impl Channel {
                 reference: reference.to_owned(),
             });
         }
-        // In a group the bot is written to by name; the name is not words.
+        // In a group the bot is spoken to by name or by a reply to it; the
+        // name is not words. What is not spoken to the bot is still said in
+        // the chat for the record, marked as not addressed.
         let username = self.bot_username().await;
-        let text = if username.is_empty() {
-            text
-        } else {
-            text.replace(&format!("@{username}"), "").trim().to_owned()
-        };
+        let (addressed, text) = spoken_to(&username, message, &chat, text);
         if text.is_empty() && files.is_empty() {
             return None;
         }
@@ -300,6 +298,7 @@ impl Channel {
             text,
             files,
             reply_to,
+            addressed,
             reference: reference.to_owned(),
         })
     }
@@ -449,6 +448,40 @@ fn chat_of(chat: &Value) -> ChatRef {
         kind,
         title,
     }
+}
+
+/// Whether the bot was spoken to, and the words without its name: always in
+/// a direct chat; in a group, by naming it or replying to it.
+fn spoken_to(username: &str, message: &Value, chat: &ChatRef, text: String) -> (bool, String) {
+    let named = !username.is_empty()
+        && text
+            .to_ascii_lowercase()
+            .contains(&format!("@{}", username.to_ascii_lowercase()));
+    let replied_to_the_bot = message
+        .get("reply_to_message")
+        .and_then(|r| r.get("from"))
+        .is_some_and(|from| {
+            from.get("is_bot").and_then(Value::as_bool) == Some(true)
+                && from
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(username))
+        });
+    let addressed = chat.kind == ChatKind::Direct || named || replied_to_the_bot;
+    let text = if named {
+        let mention = format!("@{}", username.to_ascii_lowercase());
+        let mut cleaned = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(at) = rest.to_ascii_lowercase().find(&mention) {
+            cleaned.push_str(&rest[..at]);
+            rest = &rest[at + mention.len()..];
+        }
+        cleaned.push_str(rest);
+        cleaned.trim().to_owned()
+    } else {
+        text
+    };
+    (addressed, text)
 }
 
 fn person_of(from: Option<&Value>) -> Person {

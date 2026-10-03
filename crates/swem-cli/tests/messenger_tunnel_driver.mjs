@@ -67,6 +67,10 @@ await b.waitFor("the Store", async () => b.exists("#index-url"), 100);
 await setValue("index-url", catalogUrl);
 await b.click("#index-add");
 await b.waitFor("the tunnel listed", async () => b.exists('.store-entry[data-kind="swem/tunnel@1"][data-id="nowhere"]'), 300);
+// The Store still reads the catalog for a moment after listing it; the
+// button is pressed once it is pressable.
+await b.waitFor("the tunnel installable", async () =>
+  b.evaluate(`(() => { const one = document.querySelector('.store-install[data-kind="swem/tunnel@1"][data-id="nowhere"]'); return !!one && !one.disabled; })()`), 100);
 await b.click('.store-install[data-kind="swem/tunnel@1"][data-id="nowhere"]');
 const question = await b.consent();
 if (!/^Install /.test(question)) cleanup(1, `the consent question: ${JSON.stringify(question)}`);

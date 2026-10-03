@@ -397,6 +397,7 @@ pub async fn serve_editor_door(
                                 "{name}:{}:{editor}",
                                 prompting.said.fetch_add(1, Ordering::SeqCst)
                             )),
+                            for_the_record: false,
                         },
                     )
                     .await

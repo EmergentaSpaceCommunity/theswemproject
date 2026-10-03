@@ -577,6 +577,7 @@ impl WorkbenchShellState {
                     content_refs: vec![descriptor.descriptor_id.clone()],
                     context: None,
                     client_ref: None,
+                    for_the_record: false,
                 },
             )
             .await?;
@@ -1097,9 +1098,10 @@ impl Runner {
                 text,
                 files,
                 reply_to: _,
+                addressed,
                 reference,
             } => {
-                self.message_arrived(chat, person, text, files, reference)
+                self.message_arrived(chat, person, text, files, addressed, reference)
                     .await
             }
             Inbound::Command {
@@ -1122,7 +1124,7 @@ impl Runner {
                 } else {
                     // A command the harness does not know is words.
                     let text = format!("/{name} {args}").trim().to_owned();
-                    self.message_arrived(chat, person, text, Vec::new(), reference)
+                    self.message_arrived(chat, person, text, Vec::new(), true, reference)
                         .await
                 }
             }
@@ -1406,9 +1408,47 @@ impl Runner {
         person: Person,
         text: String,
         files: Vec<channel::FileRef>,
+        addressed: bool,
         reference: String,
     ) -> Result<(), WorkbenchShellError> {
         let document = self.state.channels()?.read(&self.id)?;
+        // In a group, what is not spoken to the bot is said in the chat for
+        // the record - by somebody already in it - and nobody answers; it
+        // is no reason to greet, refuse or let anybody in.
+        if !addressed && chat.kind != ChatKind::Direct {
+            let (Some(chat_id), Some(speaker)) = (
+                self.bound_chat(&chat.id).await?,
+                self.participant_of(&person).await?,
+            ) else {
+                return Ok(());
+            };
+            let in_it =
+                {
+                    let (chat_id, speaker_id) = (chat_id.clone(), speaker.participant_id.clone());
+                    self.state
+                        .with_ledger(move |ledger| {
+                            Ok(ledger.chat(&chat_id)?.members.iter().any(|member| {
+                                member.participant_id == speaker_id && !member.retired
+                            }))
+                        })
+                        .await
+                        .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+                };
+            if !in_it {
+                return Ok(());
+            }
+            return self
+                .say_through(
+                    &chat_id,
+                    &chat,
+                    speaker.participant_id,
+                    text,
+                    files,
+                    reference,
+                    true,
+                )
+                .await;
+        }
         let Some((speaker, is_owner)) = self.speaker_for(&document, &chat, &person, &text).await?
         else {
             return Ok(());
@@ -1437,6 +1477,34 @@ impl Runner {
             self.open_chat(&chat, &speaker, is_owner, &agent, &document)
                 .await?
         };
+        self.say_through(
+            &chat_id,
+            &chat,
+            speaker.participant_id,
+            text,
+            files,
+            reference,
+            false,
+        )
+        .await
+    }
+
+    /// What arrived, said in the chat here as the speaker's, with its files
+    /// kept and where it came from remembered.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one message, all of what came with it"
+    )]
+    async fn say_through(
+        &self,
+        chat_id: &str,
+        chat: &channel::ChatRef,
+        speaker_id: String,
+        text: String,
+        files: Vec<channel::FileRef>,
+        reference: String,
+        for_the_record: bool,
+    ) -> Result<(), WorkbenchShellError> {
         let content_refs = self.kept_files(files).await;
         {
             let mut origins = self
@@ -1453,8 +1521,8 @@ impl Runner {
         }
         self.state
             .say_in_chat_as(
-                &chat_id,
-                Some(speaker.participant_id),
+                chat_id,
+                Some(speaker_id),
                 &channel_of(&self.id),
                 Saying {
                     text,
@@ -1462,6 +1530,7 @@ impl Runner {
                     content_refs,
                     context: None,
                     client_ref: Some(reference),
+                    for_the_record,
                 },
             )
             .await

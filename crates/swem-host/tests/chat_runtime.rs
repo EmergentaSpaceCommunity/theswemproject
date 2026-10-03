@@ -264,6 +264,7 @@ async fn a_message_is_said_once_and_nothing_is_not_a_message() {
     // Said again with the same name of the sender's, it is the same message.
     let named = Saying {
         client_ref: Some("m-1".into()),
+        for_the_record: false,
         ..saying("once")
     };
     let first = state

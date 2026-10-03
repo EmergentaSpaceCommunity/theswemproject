@@ -850,3 +850,174 @@ async fn a_message_through_a_channel_has_what_was_due_said() {
     let _ = api.kill();
     let _ = api.wait();
 }
+
+/// In a group, the agent takes a turn only when the bot is spoken to - by
+/// name or by a reply to it. What else is said there is in the chat for
+/// the record, and nobody is greeted or refused over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over one group: named, not spoken to, a stranger, a reply"
+)]
+async fn in_a_group_the_agent_answers_only_when_spoken_to() {
+    let Some(program) = telegram_channel() else {
+        eprintln!(
+            "skipped: build the Telegram channel first: cargo build -p swem-channel-telegram"
+        );
+        return;
+    };
+    let root = fixture_root("telegram-group");
+    let mut api = std::process::Command::new(env!("CARGO_BIN_EXE_swem-telegram-api-fixture"))
+        .arg("--files")
+        .arg(root.join("files"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let address = {
+        use std::io::BufRead as _;
+        let stdout = api.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        lines
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+    let state = shell_with_one_agent(&root);
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "Telegram".into(),
+            package: None,
+            program: Some(program.display().to_string()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Nobody,
+            settings: swem_sdk::channel::Settings {
+                api_root: Some(address.clone()),
+                door: None,
+            },
+            app_at: None,
+            key: Some("123456:fixture".into()),
+        })
+        .await
+        .expect("the channel is added");
+    let code = shown.document.pairing_code.clone().expect("a code");
+    let channel_id = shown.document.id.clone();
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, &code)),
+    );
+    until("the welcome", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "7")
+    })
+    .await;
+
+    let in_group = |from: (i64, &str), text: &str, reply_to_bot: bool| {
+        let mut update = json!({
+            "message": {
+                "message_id": 1,
+                "from": { "id": from.0, "is_bot": false, "first_name": from.1, "username": from.1.to_lowercase() },
+                "chat": { "id": -100, "type": "supergroup", "title": "Studio" },
+                "date": 0,
+                "text": text
+            }
+        });
+        if reply_to_bot {
+            update["message"]["reply_to_message"] = json!({
+                "message_id": 0,
+                "from": { "id": 1000, "is_bot": true, "username": "swem_fixture_bot" }
+            });
+        }
+        update
+    };
+    let answers = |address: &str| {
+        sent(address)
+            .into_iter()
+            .filter(|call| {
+                call["method"] == "sendMessage"
+                    && call["body"]["chat_id"] == "-100"
+                    && call["body"]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("session_id"))
+            })
+            .count()
+    };
+
+    // Spoken to by name: a turn.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group(
+            (7, "Ada"),
+            "@swem_fixture_bot /status for the group",
+            false,
+        )),
+    );
+    until("the agent answers in the group", || {
+        (answers(&address) >= 1).then_some(())
+    })
+    .await;
+
+    // Not spoken to: for the record, no turn, nobody told anything.
+    let before = sent(&address).len();
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((7, "Ada"), "just talking among ourselves", false)),
+    );
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((9, "Bob"), "me too, not to the bot", false)),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let since: Vec<Value> = sent(&address).into_iter().skip(before).collect();
+    assert!(
+        since.iter().all(|call| call["method"] == "getUpdates"),
+        "the bot acted on what was not said to it: {since:?}"
+    );
+    let chats = state.chats().await.expect("chats");
+    let group = chats
+        .iter()
+        .find(|chat| chat.title == "Studio")
+        .expect("the group's chat");
+    let page = state
+        .chat_page(&group.chat_id, None, 100)
+        .await
+        .expect("the page");
+    assert!(
+        page.messages
+            .iter()
+            .any(|message| message.text == "just talking among ourselves"),
+        "what the owner said in the group is not in the chat"
+    );
+    assert!(
+        !page
+            .messages
+            .iter()
+            .any(|message| message.text == "me too, not to the bot"),
+        "a stranger's words are in the chat"
+    );
+
+    // A reply to the bot: a turn.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((7, "Ada"), "and this one too, by reply", true)),
+    );
+    until("the agent answers the reply", || {
+        (answers(&address) >= 2).then_some(())
+    })
+    .await;
+
+    state.remove_channel(&channel_id).await.expect("removed");
+    let _ = api.kill();
+    let _ = api.wait();
+}

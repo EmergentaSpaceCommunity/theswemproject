@@ -44,6 +44,10 @@ pub struct Saying {
     /// after a lost answer is not a second message.
     #[serde(default)]
     pub client_ref: Option<String>,
+    /// Said for the record, for nobody to answer: what was said in a group
+    /// on a messenger's side without speaking to the bot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub for_the_record: bool,
 }
 
 /// A stretch of a chat with what the chat owes and waits for.
@@ -509,10 +513,14 @@ impl WorkbenchShellState {
                     saying.client_ref.as_deref(),
                     &content,
                 )?;
-                let agents: Vec<String> = recipients(&chat, &sender, &message.named)
-                    .into_iter()
-                    .map(|recipient| recipient.agent_id)
-                    .collect();
+                let agents: Vec<String> = if saying.for_the_record {
+                    Vec::new()
+                } else {
+                    recipients(&chat, &sender, &message.named)
+                        .into_iter()
+                        .map(|recipient| recipient.agent_id)
+                        .collect()
+                };
                 let deliveries = ledger.deliver(&message.message_id, &agents)?;
                 Ok(SaidInChat {
                     message,

@@ -158,6 +158,12 @@ pub enum Inbound {
         files: Vec<FileRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to: Option<String>,
+        /// Whether the bot was spoken to: always in a direct chat; in a
+        /// group, by naming it or replying to it. What is not addressed to
+        /// the bot is said in the chat here for the record, and the agent
+        /// takes no turn on it. Absent, taken as addressed.
+        #[serde(default = "addressed_by_default")]
+        addressed: bool,
         reference: String,
     },
     /// Somebody gave the bot a command (`/start`, `/stop`, ...).
@@ -195,6 +201,10 @@ pub enum Inbound {
         person: Person,
         reference: String,
     },
+}
+
+fn addressed_by_default() -> bool {
+    true
 }
 
 impl Inbound {
@@ -332,6 +342,7 @@ mod tests {
             text: "hello".into(),
             files: vec![],
             reply_to: None,
+            addressed: true,
             reference: "u1".into(),
         };
         let json = serde_json::to_value(&event).unwrap();

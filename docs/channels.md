@@ -33,11 +33,14 @@ is told who is speaking and that they are a guest, not you.
 
 ## Groups and topics
 
-A group the bot is in is one chat of several here, named after the group; whoever writes to the
-bot in it is in the chat, and the page lists them beside it. Telegram decides what the bot sees
-in a group: with privacy mode on (the default for a bot), only what mentions it, replies to it or
-is a command. A forum topic is a chat of its own, named after the group and the topic's number;
-rename it on the page.
+A group the bot is in is one chat of several here, named after the group. The agent takes a
+turn only when the bot is spoken to: named (`@thebot`) or replied to; a command is always to
+the bot. What else is said in the group by somebody already in the chat is written there for
+the record, with no turn - so the agent knows the room when it is next spoken to - and what a
+stranger says without speaking to the bot is left alone. Telegram decides what the bot sees at
+all: with privacy mode on (the default for a bot) only what names it, replies to it or is a
+command; an admin bot, or one with privacy mode off, sees everything. A forum topic is a chat of
+its own, named after the group and the topic's number; rename it on the page.
 
 ## Questions
 

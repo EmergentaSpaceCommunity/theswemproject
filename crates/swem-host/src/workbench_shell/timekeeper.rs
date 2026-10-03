@@ -618,6 +618,7 @@ impl WorkbenchShellState {
                     // The moment it was due names the message, so what is
                     // said twice for one moment is said once.
                     client_ref: Some(format!("{}@{}", due.schedule.schedule_id, due.due_ms)),
+                    for_the_record: false,
                 },
             )
             .await?;
