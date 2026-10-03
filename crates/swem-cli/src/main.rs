@@ -689,15 +689,18 @@ fn product(
     // PATH. When there is one it is a server of this product like any other:
     // its home App is its space on the Workbench and an agent attaches it by
     // name. Without one the product is an agent harness alone.
-    if let Some(hub) = cycle_hub(&root) {
-        // The shipped catalog says what came with the product: the Cycle,
-        // and the kind of package it takes. Without a hub nothing came, and
-        // the Store says nothing rather than "came with SWEM" of something
-        // that did not.
-        let shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
-            .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
-        product = product.declare(hub).shipped_catalog(shipped);
+    // The shipped catalog says what came with the product and what it
+    // can fetch for itself: the tunnel beside the binary and the tool it
+    // drives; the Cycle and the kind of package it takes, when a hub is
+    // here - without one the Store says nothing of it rather than "came
+    // with SWEM" of something that did not.
+    let mut shipped = swem_host::Catalog::parse(include_bytes!("default-catalog.json"))
+        .map_err(|error| anyhow::anyhow!("the shipped catalog: {error}"))?;
+    match cycle_hub(&root) {
+        Some(hub) => product = product.declare(hub),
+        None => shipped.entries.retain(|entry| entry.id != "swem-cycle"),
     }
+    product = product.shipped_catalog(shipped);
     if let Some(inventory) = inventory {
         product = product.profiles_at(inventory);
     }

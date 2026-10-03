@@ -264,7 +264,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--home")
         .map(|pair| PathBuf::from(&pair[1]))
         .or_else(|| std::env::var_os("SWEM_CHANNEL_HOME").map(PathBuf::from))
-        .ok_or("usage: swem-channel-fixture --home <directory>, or SWEM_CHANNEL_HOME")?;
+        // Started by nobody in particular (a shape check), it lives in the
+        // temporary directory.
+        .unwrap_or_else(|| std::env::temp_dir().join("swem-channel-fixture"));
     let inbox = home.join("inbox");
     fs::create_dir_all(&inbox)?;
     fs::create_dir_all(home.join("outbox"))?;

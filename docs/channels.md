@@ -87,8 +87,26 @@ and give the address under **More** when adding the bot ("Where the page the bot
 the messenger is hosted"); the bot's button then carries this Workbench's address, and the
 Workbench answers the page from any origin with the signature alone. The page loads no script
 of the messenger's: it reads the signed data from the address it was opened with. Either way
-the Workbench has to be reachable from the messenger: served at an address. Telegram opens a
-Mini App over HTTPS only.
+the Workbench has to be reachable from the messenger: served at an address, or through a
+tunnel. Telegram opens a Mini App over HTTPS only.
+
+## A tunnel: an address from outside, for a while
+
+A Workbench on a laptop has no address the outside can reach. A **tunnel** is a package from
+the Store that stands at one for a while (ADR-0015). The one that came with the product drives
+Cloudflare's quick tunnel: no account, no key - install the `cloudflared` tool from the Store
+(it is fetched from Cloudflare's release, checked by digest) and that is all. Then `/app` to
+the bot, or **Open a tunnel** under Providers → Channels, opens one; the bot's button points the
+page at it. What the tunnel reaches is only the page and its API - never the Workbench itself,
+sign-in, or anything a stranger could use. It closes after thirty minutes unused, or with
+**Close** on the page; the page inside the messenger then says to send `/app` again. Cloudflare
+calls a quick tunnel a thing for testing and development: no uptime promise, a new address each
+time - which is what an address for a while is. Webhooks never go through a tunnel; on a laptop
+the bot asks the messenger for what is new, which works behind any network.
+
+Any program that answers the tunnel shape (`swem-sdk`, `tunnel`) is a tunnel package: a named
+tunnel, another vendor, a peer-to-peer endpoint. A tunnel is refused on a Workbench served at an
+address, which has one already.
 
 The bot answers `/status` with how things stand (what the agent is doing, the chat, how
 updates arrive), `/stop`, and `/app`; while the agent works, the message being answered wears

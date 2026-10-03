@@ -80,11 +80,13 @@ pub use removal::AgentRemoved;
 #[path = "workbench_shell/keepers.rs"]
 mod keepers;
 mod store;
+mod tunnel;
 pub use channels::{
     AddChannelBody, CHANNEL_SCHEMA, ChangeChannelBody, ChannelDocument, ChannelPackage,
     ChannelShown, ChannelsStanding, GuestPolicy, GuestWaiting, Reach,
 };
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
+pub use tunnel::{IDLE as TUNNEL_IDLE, ReachStanding, TunnelPackage, TunnelShown};
 #[path = "workbench_shell/timekeeper.rs"]
 mod timekeeper;
 pub use timekeeper::{KeeperStanding, NewScheduleBody, ScheduleShown, nothing_for_a_keeper_to_do};
@@ -847,6 +849,9 @@ pub struct WorkbenchShellState {
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
     channels: std::sync::OnceLock<channels::Channels>,
+    /// A tunnel that is open, and where tunnels keep their files.
+    tunnel: std::sync::Mutex<Option<tunnel::Tunnel>>,
+    tunnel_root: std::sync::OnceLock<PathBuf>,
     /// The command the system's scheduler starts to keep time once.
     keep_time_command: std::sync::OnceLock<(PathBuf, Vec<String>)>,
     /// The terminals open on this host. A terminal runs in the environment of
@@ -1071,6 +1076,8 @@ impl WorkbenchShellState {
             removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
             channels: std::sync::OnceLock::new(),
+            tunnel: std::sync::Mutex::new(None),
+            tunnel_root: std::sync::OnceLock::new(),
             keep_time_command: std::sync::OnceLock::new(),
             terminals: Arc::new(Terminals::default()),
             chat_runtime: runtime::ChatRuntime::default(),
@@ -3646,6 +3653,68 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     })
 }
 
+/// The page a bot opens inside the messenger, with the channel written in.
+fn mini_app_page(channel_id: &str) -> Response<ShellBody> {
+    let safe: String = channel_id
+        .chars()
+        .filter(|letter| letter.is_ascii_alphanumeric() || *letter == '_' || *letter == '-')
+        .collect();
+    respond(
+        StatusCode::OK,
+        "text/html;charset=utf-8",
+        MINI_APP_HTML
+            .replace("__PALETTE_CSS__", PALETTE_CSS)
+            .replace("__KIT_CSS__", KIT_CSS)
+            .replace("__CHANNEL_ID__", &safe),
+    )
+}
+
+/// The Mini App's API, answered the same from the main listener and from
+/// the gate a tunnel points at: who opened it is said by the messenger's
+/// signature, which the channel checks on every call. `Err` for a route
+/// that is not the app's.
+async fn route_the_app(
+    state: &Arc<WorkbenchShellState>,
+    method: &Method,
+    segments: &[&str],
+    query: Option<&str>,
+    request: Request<AskedBody>,
+) -> Result<Response<ShellBody>, Request<AskedBody>> {
+    let response = match (method, segments) {
+        (&Method::OPTIONS, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]) => {
+            for_an_app(respond(StatusCode::NO_CONTENT, "text/plain", String::new()))
+        }
+        (&Method::GET, ["api", "channels", channel_id, "app"]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            for_an_app(json_result(
+                state.app_standing(&channel_id, &init_data).await,
+            ))
+        }
+        (&Method::POST, ["api", "channels", channel_id, "app", "files"]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            let words = query_param(query, "words")
+                .map(|value| percent_decode(&value))
+                .unwrap_or_default();
+            let ingest = upload_content(state, request, query);
+            for_an_app(json_result(
+                state
+                    .app_upload(&channel_id, &init_data, &words, ingest)
+                    .await,
+            ))
+        }
+        (&Method::GET, ["api", "channels", channel_id, "app", "files", name]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            let name = percent_decode(name);
+            for_an_app(match state.app_file(&channel_id, &init_data, &name).await {
+                Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
+                Err(error) => error_response(&error),
+            })
+        }
+        _ => return Err(request),
+    };
+    Ok(response)
+}
+
 /// What a Mini App sends to be known: the messenger's signed data, in a
 /// header of its own.
 fn app_data_of(request: &Request<AskedBody>) -> String {
@@ -4116,18 +4185,7 @@ pub(crate) async fn route_shell(
                     "A channel's app is served where the Workbench has an address.\n".to_owned(),
                 );
             }
-            let safe: String = channel_id
-                .chars()
-                .filter(|letter| letter.is_ascii_alphanumeric() || *letter == '_' || *letter == '-')
-                .collect();
-            respond(
-                StatusCode::OK,
-                "text/html;charset=utf-8",
-                MINI_APP_HTML
-                    .replace("__PALETTE_CSS__", PALETTE_CSS)
-                    .replace("__KIT_CSS__", KIT_CSS)
-                    .replace("__CHANNEL_ID__", &safe),
-            )
+            mini_app_page(channel_id)
         }
         (&Method::GET, []) => {
             // Opening the address the product printed is how a person hands
@@ -4519,34 +4577,32 @@ pub(crate) async fn route_shell(
         }
         // The channel's Mini App, from inside the messenger: who opened it
         // is said by the messenger's signature, which the channel checks.
-        (&Method::OPTIONS, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]) => {
-            for_an_app(respond(StatusCode::NO_CONTENT, "text/plain", String::new()))
-        }
-        (&Method::GET, ["api", "channels", channel_id, "app"]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            for_an_app(json_result(
-                state.app_standing(&channel_id, &init_data).await,
-            ))
-        }
-        (&Method::POST, ["api", "channels", channel_id, "app", "files"]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            let words = query_param(query.as_deref(), "words")
-                .map(|value| percent_decode(&value))
-                .unwrap_or_default();
-            let ingest = upload_content(state, request, query.as_deref());
-            for_an_app(json_result(
-                state
-                    .app_upload(&channel_id, &init_data, &words, ingest)
-                    .await,
-            ))
-        }
-        (&Method::GET, ["api", "channels", channel_id, "app", "files", name]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            let name = percent_decode(name);
-            for_an_app(match state.app_file(&channel_id, &init_data, &name).await {
-                Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
+        (
+            &Method::OPTIONS | &Method::GET | &Method::POST,
+            ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..],
+        ) => match route_the_app(state, &method, &segments, query.as_deref(), request).await {
+            Ok(response) => response,
+            Err(_) => respond_json(StatusCode::NOT_FOUND, &json!({ "error": "not found" })),
+        },
+        // How this Workbench is reached from outside, and a tunnel opened
+        // or closed by hand.
+        (&Method::GET, ["api", "reach"]) => json_result(state.reach_standing()),
+        (&Method::POST, ["api", "reach", "tunnel"]) => {
+            let package = match read_json(request).await {
+                Ok(body) => body
+                    .get("package")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                Err(_) => None,
+            };
+            match state.open_tunnel(package.as_deref()).await {
+                Ok(_) => json_result(state.reach_standing()),
                 Err(error) => error_response(&error),
-            })
+            }
+        }
+        (&Method::DELETE, ["api", "reach", "tunnel"]) => {
+            state.close_tunnel().await;
+            json_result(state.reach_standing())
         }
         // A guest who wrote to the bot is let into the chat the owner has
         // with it.

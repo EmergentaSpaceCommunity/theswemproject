@@ -1,0 +1,24 @@
+[package]
+name = "swem-tunnel-cloudflare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A tunnel for the SWEM Workbench: an address from outside for a while, through Cloudflare's quick tunnel (cloudflared), answering the tunnel shape."
+publish = false
+
+[[bin]]
+name = "swem-tunnel-cloudflare"
+path = "src/main.rs"
+
+[dependencies]
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+swem-sdk = { path = "../swem-sdk" }
+tokio.workspace = true
+
+[lints]
+workspace = true

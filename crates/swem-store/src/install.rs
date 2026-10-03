@@ -492,8 +492,17 @@ fn fetch_archive(archive_url: &str, expected_sha256: &str, into: &Path) -> Resul
     Ok(())
 }
 
-/// Whether the archive's address ends like a zip, or like a gzipped tar.
-fn archive_format(archive_url: &str) -> Result<bool, SupplyError> {
+/// How a distribution's bytes are packed: a zip, a gzipped tar, or not at
+/// all - one bare executable, as some tools are published.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Packed {
+    Zip,
+    TarGz,
+    Bare,
+}
+
+/// What the archive's address ends like.
+fn archive_format(archive_url: &str) -> Packed {
     let url_path = Path::new(archive_url);
     let extension = url_path.extension().and_then(|value| value.to_str());
     let is_zip = extension.is_some_and(|value| value.eq_ignore_ascii_case("zip"));
@@ -505,13 +514,11 @@ fn archive_format(archive_url: &str) -> Result<bool, SupplyError> {
             .and_then(|value| value.to_str())
             .is_some_and(|value| value.eq_ignore_ascii_case("tar"));
     if is_zip {
-        Ok(true)
+        Packed::Zip
     } else if is_tar_gz || is_tgz {
-        Ok(false)
+        Packed::TarGz
     } else {
-        Err(SupplyError::UnsupportedDistribution(format!(
-            "unsupported archive format: {archive_url}"
-        )))
+        Packed::Bare
     }
 }
 /// A whole tree from an archive: what a skill is. The tree is unpacked under
@@ -528,10 +535,14 @@ fn install_archive(
     let tree = staging.join("tree");
     fs::create_dir_all(&tree)
         .map_err(|error| SupplyError::Protocol(format!("create tree directory: {error}")))?;
-    if archive_format(archive_url)? {
-        extract_zip_tree(&archive_path, &tree)?;
-    } else {
-        extract_tar_gz_tree(&archive_path, &tree)?;
+    match archive_format(archive_url) {
+        Packed::Zip => extract_zip_tree(&archive_path, &tree)?,
+        Packed::TarGz => extract_tar_gz_tree(&archive_path, &tree)?,
+        Packed::Bare => {
+            return Err(SupplyError::UnsupportedDistribution(format!(
+                "a tree comes as a zip or a tar.gz, not as one file: {archive_url}"
+            )));
+        }
     }
     fs::remove_file(&archive_path)
         .map_err(|error| SupplyError::Protocol(format!("remove staged archive: {error}")))?;
@@ -841,13 +852,19 @@ fn install_binary(
         fs::create_dir_all(parent)
             .map_err(|error| SupplyError::Protocol(format!("create command directory: {error}")))?;
     }
-    if archive_format(archive_url)? {
-        extract_zip_entry(&archive_path, &relative_command, &executable)?;
-    } else {
-        extract_tar_gz_entry(&archive_path, &relative_command, &executable)?;
+    let packed = archive_format(archive_url);
+    match packed {
+        Packed::Zip => extract_zip_entry(&archive_path, &relative_command, &executable)?,
+        Packed::TarGz => extract_tar_gz_entry(&archive_path, &relative_command, &executable)?,
+        // One bare executable, checked by its digest above: it lands as the
+        // command it is named.
+        Packed::Bare => fs::rename(&archive_path, &executable)
+            .map_err(|error| SupplyError::Protocol(format!("place the executable: {error}")))?,
     }
-    fs::remove_file(&archive_path)
-        .map_err(|error| SupplyError::Protocol(format!("remove staged archive: {error}")))?;
+    if packed != Packed::Bare {
+        fs::remove_file(&archive_path)
+            .map_err(|error| SupplyError::Protocol(format!("remove staged archive: {error}")))?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -871,7 +888,11 @@ fn install_binary(
         executable: Some(executable),
         file: None,
         args: args.to_vec(),
-        discovery_method: "registry-binary-sha256-exact-entry".into(),
+        discovery_method: if packed == Packed::Bare {
+            "registry-binary-sha256-bare".into()
+        } else {
+            "registry-binary-sha256-exact-entry".into()
+        },
         installed_at: now_seconds(),
     })
 }

@@ -184,6 +184,12 @@ impl DataRoot {
         self.root.join("channels")
     }
 
+    /// Where tunnels keep their files.
+    #[must_use]
+    pub fn tunnels(&self) -> PathBuf {
+        self.root.join("tunnels")
+    }
+
     /// Where the clock before the ledger's kept its schedules: they are
     /// brought into the ledger and the directory is set aside.
     #[must_use]
@@ -660,6 +666,9 @@ impl Assembled {
         // The channels a person added start with the product too.
         self.state
             .enable_channels(&self.root.channels())
+            .map_err(|error| error.to_string())?;
+        self.state
+            .enable_tunnels(&self.root.tunnels())
             .map_err(|error| error.to_string())?;
         self.state
             .keep_time(&self.root.schedules())

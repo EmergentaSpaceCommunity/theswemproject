@@ -47,6 +47,9 @@ impl Assembled {
             .enable_channels(&self.root.channels())
             .map_err(|error| error.to_string())?;
         self.state
+            .enable_tunnels(&self.root.tunnels())
+            .map_err(|error| error.to_string())?;
+        self.state
             .keep_time(&self.root.schedules())
             .await
             .map_err(failed)?;

@@ -305,24 +305,107 @@ impl Taker for Channels {
     /// Started once from where it was staged, its tools listed and compared
     /// with the channel shape; refused, nothing lands.
     fn check(&self, staged: &Path, plan: &swem_sdk::InstallPlan) -> Result<(), String> {
-        let Some(program) = program_in(staged) else {
-            // Nothing to start before the install finishes: an npm or Python
-            // package is checked when the channel is first started.
-            return Ok(());
-        };
-        let stdio = agent_client_protocol::schema::v1::McpServerStdio::new(
-            plan.registry_id.clone(),
-            program.display().to_string(),
-        );
-        let listed = crate::workbench_apps::tools_listed_by_blocking(&stdio)?;
-        swem_sdk::channel::shape()
-            .check(&listed)
-            .map_err(|short| format!("{} is not a channel: it {short}", plan.name))
+        answers_the_shape(staged, plan, &swem_sdk::channel::shape(), "a channel")
     }
 
     fn after_install(&self, _receipt: &InstallReceipt) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// Tunnels: a program that answers the tunnel shape, run by the harness to
+/// stand at an address from outside for a while (ADR-0015).
+struct Tunnels;
+
+impl Taker for Tunnels {
+    fn kind(&self) -> Kind {
+        Kind::parse(swem_sdk::tunnel::TUNNEL_KIND).expect("the tunnel kind is a kind")
+    }
+
+    fn words(&self) -> KindWords {
+        KindWords {
+            one: "a tunnel".into(),
+            many: "Tunnels".into(),
+            after_install: "Open it under Providers, Channels, or with /app to a bot.".into(),
+        }
+    }
+
+    fn accepts(&self, entry: &CatalogEntry) -> Result<(), String> {
+        let distribution = &entry.distribution;
+        if distribution.npx.is_none()
+            && distribution.uvx.is_none()
+            && distribution.binary.is_none()
+            && distribution.archive.is_none()
+        {
+            return Err(
+                "a tunnel is a program: an npm package, a Python package, a binary or an archive"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn check(&self, staged: &Path, plan: &swem_sdk::InstallPlan) -> Result<(), String> {
+        answers_the_shape(staged, plan, &swem_sdk::tunnel::shape(), "a tunnel")
+    }
+
+    fn after_install(&self, _receipt: &InstallReceipt) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Tools: a program another package `requires` and is handed the path of
+/// when it starts (`swem_sdk::tunnel::tool_variable`). Checked by its
+/// digest, as the Store checks everything, and by nothing else: a tool
+/// answers no shape of ours.
+struct Tools;
+
+impl Taker for Tools {
+    fn kind(&self) -> Kind {
+        Kind::TOOL
+    }
+
+    fn words(&self) -> KindWords {
+        KindWords {
+            one: "a tool".into(),
+            many: "Tools".into(),
+            after_install: "On hand for the packages that need it.".into(),
+        }
+    }
+
+    fn accepts(&self, entry: &CatalogEntry) -> Result<(), String> {
+        let distribution = &entry.distribution;
+        if distribution.binary.is_none() && distribution.archive.is_none() {
+            return Err("a tool is a binary or an archive".into());
+        }
+        Ok(())
+    }
+
+    fn after_install(&self, _receipt: &InstallReceipt) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A staged program started once, its tools listed and compared with a
+/// shape; refused in words when short. An npm or Python package has no
+/// program before the install finishes and is checked when first started.
+fn answers_the_shape(
+    staged: &Path,
+    plan: &swem_sdk::InstallPlan,
+    shape: &swem_sdk::Shape,
+    what: &str,
+) -> Result<(), String> {
+    let Some(program) = program_in(staged) else {
+        return Ok(());
+    };
+    let stdio = agent_client_protocol::schema::v1::McpServerStdio::new(
+        plan.registry_id.clone(),
+        program.display().to_string(),
+    );
+    let listed = crate::workbench_apps::tools_listed_by_blocking(&stdio)?;
+    shape
+        .check(&listed)
+        .map_err(|short| format!("{} is not {what}: it {short}", plan.name))
 }
 
 /// The one program a staged binary or archive tree holds, if it is one.
@@ -396,6 +479,8 @@ impl WorkbenchShellState {
         }));
         store.taken_by(Arc::new(Skills));
         store.taken_by(Arc::new(Channels));
+        store.taken_by(Arc::new(Tunnels));
+        store.taken_by(Arc::new(Tools));
         for taker in takers {
             store.taken_by(taker);
         }

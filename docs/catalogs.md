@@ -30,7 +30,11 @@ index is consumed, never served, and what you publish is yours, under any licenc
 ```
 
 A server is an npm package run through node, a Python package run through `uv`, or a native
-archive per platform, checked against its digest; a skill is an archive holding a `SKILL.md`; a
+archive per platform, checked against its digest; a `binary` whose `archive` is neither a zip
+nor a tarball is one bare executable, placed as its `cmd`; a skill is an archive holding a
+`SKILL.md`; a tool (`"kind": "tool"`) is a program other packages need and are handed the path
+of, checked by its digest alone; a channel (`swem/channel@1`) and a tunnel (`swem/tunnel@1`)
+are programs checked against their shape when installed (`docs/channels.md`); a
 package of another kind is an archive for whoever takes that kind - a server whose entry says
 `takes`, as the Cycle's hub takes `swem.cycle/package@1`, or the product the harness is built
 into. A kind nobody here takes is listed as such and cannot be installed. What an entry

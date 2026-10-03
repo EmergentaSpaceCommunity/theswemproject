@@ -56,9 +56,11 @@ from a messenger. Every control a walk presses is a control a person presses.
 
 Nothing in a test or a walk depends on a particular machine, account, bot or network. An outside
 service is a fixture the test starts: the agent registry, a catalog's file server, the Bot API
-(`swem-telegram-api-fixture`) are such. A real messenger, a real vendor agent or a real machine
-are tried by hand by whoever has them, and the pull request says what was tried and what was
-not. A token or a key is never in the tree or in a test; a fixture takes any string as one.
+(`swem-telegram-api-fixture`), a tunnel (`swem-tunnel-fixture`, which stands at the Workbench's
+own gate) are such. A real messenger, a real vendor agent, a real tunnel vendor or a real
+machine are tried by hand by whoever has them, and the pull request says what was tried and
+what was not; CI downloads no vendor's program. A token or a key is never in the tree or in a
+test; a fixture takes any string as one.
 
 ## What goes where
 

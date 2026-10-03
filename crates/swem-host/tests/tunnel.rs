@@ -1,0 +1,266 @@
+//! A tunnel: an address from outside, for a while - below any page. The
+//! tunnel fixture answers `open` with the URL it is handed, so what is
+//! reached "through the tunnel" is the harness's own gate on loopback, and
+//! what the gate answers and refuses is what a stranger at the public
+//! address would get.
+
+use std::io::{Read as _, Write as _};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use swem_host::{Kind, StoreInstallBody, StorePlanBody, WorkbenchShellState, registry_platform};
+
+fn fixture_root(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "swem-tunnel-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    root
+}
+
+fn sha256_of(path: &Path) -> String {
+    use sha2::Digest as _;
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(std::fs::read(path).expect("read the file"))
+    )
+}
+
+/// A Workbench with the Store enabled and the tunnel fixture installed from
+/// a file catalog, as one bare executable: the road a tool takes.
+fn shell_with_the_tunnel_fixture(root: &Path) -> Arc<WorkbenchShellState> {
+    let state = WorkbenchShellState::open(
+        &root.join("inventory"),
+        &root.join("routes.sqlite3"),
+        Duration::from_secs(20),
+        |_| panic!("no agent connection is resolved here"),
+    )
+    .expect("open shell state");
+    let state = Arc::new(state);
+    state
+        .enable_installs(root.join("installed"))
+        .expect("installs");
+    state
+        .enable_tunnels(&root.join("tunnels"))
+        .expect("tunnels");
+    state
+        .enable_channels(&root.join("channels"))
+        .expect("channels");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem-tunnel-fixture"));
+    let platform = registry_platform().expect("a platform this test runs on");
+    let catalog = swem_host::Catalog::parse(
+        format!(
+            r#"{{"schema":"swem:catalog@0.2","name":"Tunnels for the test","entries":[
+              {{"kind":"swem/tunnel@1","id":"nowhere","name":"A tunnel to nowhere","version":"0.1.0",
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./swem-tunnel-nowhere"}}}}}}}}]}}"#,
+            fixture.display(),
+            sha256_of(&fixture)
+        )
+        .as_bytes(),
+    )
+    .expect("a catalog");
+    state
+        .enable_store(&root.join("indexes"), vec![catalog])
+        .expect("the store");
+    state
+}
+
+fn install_the_fixture(state: &Arc<WorkbenchShellState>) {
+    let kind = Kind::parse("swem/tunnel@1").expect("a kind");
+    let planned = state
+        .store_plan(&StorePlanBody {
+            kind: kind.clone(),
+            id: "nowhere".into(),
+        })
+        .expect("a plan");
+    state
+        .store_install(&StoreInstallBody {
+            kind,
+            id: "nowhere".into(),
+            plan_id: planned.plan.plan_id,
+        })
+        .expect("installed");
+}
+
+/// One HTTP/1.1 request to the gate, by hand.
+fn ask_the_gate(origin: &str, method: &str, path: &str) -> (u16, String) {
+    let host = origin.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(host).expect("the gate listens");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write the request");
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).expect("read the answer");
+    let status: u16 = answer
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("a status");
+    let body = answer
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// Installed from the Store as one bare executable, a tunnel opens at the
+/// gate; the gate answers the app and nothing else; closed, it is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tunnel_opens_the_app_and_nothing_else() {
+    let root = fixture_root("gate");
+    let state = shell_with_the_tunnel_fixture(&root);
+    let before = state.reach_standing().expect("standing");
+    assert!(before.packages.is_empty() && before.tunnel.is_none() && before.served_at.is_none());
+    let nothing = state.open_tunnel(None).await.unwrap_err();
+    assert!(nothing.to_string().contains("install one"), "{nothing}");
+
+    install_the_fixture(&state);
+    let standing = state.reach_standing().expect("standing");
+    assert_eq!(standing.packages.len(), 1);
+    assert_eq!(standing.packages[0].id, "nowhere");
+    assert!(!standing.packages[0].bundled);
+
+    let opened = state.open_tunnel(None).await.expect("the tunnel opens");
+    assert_eq!(opened.package, "nowhere");
+    assert!(
+        opened.origin.starts_with("http://127.0.0.1:"),
+        "{}",
+        opened.origin
+    );
+    // Opened again, it is the same one.
+    let again = state.open_tunnel(None).await.expect("still open");
+    assert_eq!(again.origin, opened.origin);
+
+    // The gate answers the app's page and its API, by the signature it
+    // carries - here none, so the API refuses - and nothing else.
+    let (status, page) = ask_the_gate(&opened.origin, "GET", "/channels/some-bot/app");
+    assert_eq!(status, 200);
+    assert!(page.contains("<title>SWEM</title>"));
+    // No such bot, and no signature either way: not found, nothing more.
+    let (status, _) = ask_the_gate(&opened.origin, "GET", "/api/channels/some-bot/app");
+    assert_eq!(status, 404, "the API with no signature");
+    let (status, _) = ask_the_gate(
+        &opened.origin,
+        "OPTIONS",
+        "/api/channels/some-bot/app/files",
+    );
+    assert_eq!(status, 204);
+    for (method, path) in [
+        ("GET", "/"),
+        ("GET", "/workbench.js"),
+        ("GET", "/api/chats"),
+        ("GET", "/api/access"),
+        ("POST", "/api/time/due"),
+        ("GET", "/api/stream"),
+        ("GET", "/api/profiles"),
+        ("POST", "/api/channels/some-bot/receive"),
+        ("GET", "/api/reach"),
+    ] {
+        let (status, body) = ask_the_gate(&opened.origin, method, path);
+        assert_eq!(status, 404, "{method} {path} through the gate: {body}");
+        assert!(
+            !body.contains("sign"),
+            "{method} {path} says something: {body}"
+        );
+    }
+
+    state.close_tunnel().await;
+    assert!(state.reach_standing().expect("standing").tunnel.is_none());
+    assert!(
+        std::net::TcpStream::connect(opened.origin.trim_start_matches("http://")).is_err(),
+        "the gate still listens after the tunnel closed"
+    );
+    let calls = std::fs::read_to_string(root.join("tunnels").join("nowhere").join("calls.jsonl"))
+        .expect("the fixture wrote its calls");
+    assert!(
+        calls.contains("\"tool\":\"open\"") && calls.contains("\"tool\":\"close\""),
+        "{calls}"
+    );
+}
+
+/// Unused for a while, a tunnel closes by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tunnel_nobody_uses_closes_by_itself() {
+    let root = fixture_root("idle");
+    let state = shell_with_the_tunnel_fixture(&root);
+    install_the_fixture(&state);
+    let opened = state
+        .open_tunnel_for(Some("nowhere"), Duration::from_millis(1_500))
+        .await
+        .expect("the tunnel opens");
+    assert!(state.reach_standing().expect("standing").tunnel.is_some());
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    assert!(
+        state.reach_standing().expect("standing").tunnel.is_none(),
+        "the tunnel stayed open with nobody using it"
+    );
+    assert!(std::net::TcpStream::connect(opened.origin.trim_start_matches("http://")).is_err());
+}
+
+/// A program that is not a tunnel is refused in words, and nothing stays
+/// open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_program_that_is_not_a_tunnel_is_refused_in_words() {
+    let root = fixture_root("refused");
+    let state = WorkbenchShellState::open(
+        &root.join("inventory"),
+        &root.join("routes.sqlite3"),
+        Duration::from_secs(20),
+        |_| panic!("no agent connection is resolved here"),
+    )
+    .expect("open shell state");
+    let state = Arc::new(state);
+    state
+        .enable_installs(root.join("installed"))
+        .expect("installs");
+    state
+        .enable_tunnels(&root.join("tunnels"))
+        .expect("tunnels");
+    // The channel fixture is an MCP server, but not a tunnel.
+    let not_a_tunnel = PathBuf::from(env!("CARGO_BIN_EXE_swem-channel-fixture"));
+    let platform = registry_platform().expect("a platform this test runs on");
+    let catalog = swem_host::Catalog::parse(
+        format!(
+            r#"{{"schema":"swem:catalog@0.2","name":"Not tunnels","entries":[
+              {{"kind":"swem/tunnel@1","id":"channel","name":"A channel, not a tunnel","version":"0.1.0",
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./swem-tunnel-channel"}}}}}}}}]}}"#,
+            not_a_tunnel.display(),
+            sha256_of(&not_a_tunnel)
+        )
+        .as_bytes(),
+    )
+    .expect("a catalog");
+    state
+        .enable_store(&root.join("indexes"), vec![catalog])
+        .expect("the store");
+    let kind = Kind::parse("swem/tunnel@1").expect("a kind");
+    let planned = state
+        .store_plan(&StorePlanBody {
+            kind: kind.clone(),
+            id: "channel".into(),
+        })
+        .expect("a plan");
+    let refused = state
+        .store_install(&StoreInstallBody {
+            kind,
+            id: "channel".into(),
+            plan_id: planned.plan.plan_id,
+        })
+        .unwrap_err();
+    assert!(refused.to_string().contains("is not a tunnel"), "{refused}");
+    assert!(
+        state
+            .reach_standing()
+            .expect("standing")
+            .packages
+            .is_empty()
+    );
+}

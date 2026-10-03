@@ -4,6 +4,7 @@ members = [
   "crates/swem-cli",
   "crates/swem-runner",
   "crates/swem-channel-telegram",
+  "crates/swem-tunnel-cloudflare",
   "crates/swem-sdk",
   "crates/swem-store",
 ]

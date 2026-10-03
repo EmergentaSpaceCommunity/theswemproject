@@ -508,6 +508,7 @@ impl WorkbenchShellState {
         init_data: &str,
     ) -> Result<Value, WorkbenchShellError> {
         let who = self.app_person(id, init_data).await?;
+        self.touch_tunnel();
         let page = self.chat_page(&who.chat_id, None, 50).await?;
         let workspace = self
             .inventory
@@ -558,6 +559,7 @@ impl WorkbenchShellState {
     {
         // Who asks is known before a byte is kept.
         let who = self.app_person(id, init_data).await?;
+        self.touch_tunnel();
         let descriptor = ingest.await?;
         let name = descriptor.name.clone();
         let said = self
@@ -597,6 +599,7 @@ impl WorkbenchShellState {
         name: &str,
     ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
         let who = self.app_person(id, init_data).await?;
+        self.touch_tunnel();
         let workspace = self
             .inventory
             .select(&who.agent)
@@ -1154,40 +1157,50 @@ impl Runner {
 
     /// The Workbench's page inside the messenger, offered as a button when
     /// the Workbench has an address; said to need one otherwise.
+    /// The Workbench's page inside the messenger, offered as a button: at
+    /// the served address, else through a tunnel - opened here if a package
+    /// can - else said to need one.
     async fn offer_the_app(&self, external_chat: &str) {
-        match self.state.served_origin() {
-            Some(origin) => {
-                let hosted = self
-                    .state
-                    .channels()
-                    .and_then(|channels| channels.read(&self.id))
-                    .ok()
-                    .and_then(|document| document.app_at);
-                let url = match hosted {
-                    // Hosted elsewhere: the page is told where this
-                    // Workbench is and which channel.
-                    Some(at) => format!("{at}/?at={origin}&channel={}", self.id),
-                    None => format!("{origin}/channels/{}/app", self.id),
-                };
-                let _ = self
-                    .call(
-                        channel::SEND,
-                        json!({
-                            "chat": external_chat,
-                            "markdown": "The Workbench, here: a file of any size to the agent, what it put out, the chat.",
-                            "app": { "label": "Open", "url": url },
-                        }),
+        let origin = match self.state.app_origin() {
+            Some(origin) => origin,
+            None => match self.state.open_tunnel(None).await {
+                Ok(tunnel) => tunnel.origin,
+                Err(error) => {
+                    self.tell(
+                        external_chat,
+                        &format!(
+                            "The Workbench's page opens here once the Workbench has an address \
+                             from outside: served at one, or through a tunnel from the Store. \
+                             Right now: {error}"
+                        ),
                     )
                     .await;
-            }
-            None => {
-                self.tell(
-                    external_chat,
-                    "The Workbench's page opens here once the Workbench is served at an address.",
-                )
-                .await;
-            }
-        }
+                    return;
+                }
+            },
+        };
+        let hosted = self
+            .state
+            .channels()
+            .and_then(|channels| channels.read(&self.id))
+            .ok()
+            .and_then(|document| document.app_at);
+        let url = match hosted {
+            // Hosted elsewhere: the page is told where this Workbench is and
+            // which channel.
+            Some(at) => format!("{at}/?at={origin}&channel={}", self.id),
+            None => format!("{origin}/channels/{}/app", self.id),
+        };
+        let _ = self
+            .call(
+                channel::SEND,
+                json!({
+                    "chat": external_chat,
+                    "markdown": "The Workbench, here: a file of any size to the agent, what it put out, the chat.",
+                    "app": { "label": "Open", "url": url },
+                }),
+            )
+            .await;
     }
 
     async fn greet(&self, external_chat: &str) {

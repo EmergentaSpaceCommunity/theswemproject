@@ -233,6 +233,36 @@ fn open_to_anybody(method: &Method, segments: &[&str]) -> bool {
     )
 }
 
+/// The gate: what a tunnel points at. An allow-list, never a delegation: a
+/// channel's app page and its API, which authorise by the messenger's
+/// signature on every call, and 404 to everything else - no page of the
+/// Workbench's, no sign-in, no stream, no secret of a run, no webhook
+/// door. It reads no cookie and trusts no header about where a request
+/// came from. Kept here, beside `let_in`, so who may come in stays in one
+/// file.
+pub(super) async fn route_the_gate(
+    state: &Arc<WorkbenchShellState>,
+    request: Request<AskedBody>,
+) -> Response<ShellBody> {
+    let method = request.method().clone();
+    let query = request.uri().query().map(str::to_owned);
+    let path = request.uri().path().to_owned();
+    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let not_found = || respond_json(StatusCode::NOT_FOUND, &json!({ "error": "not found" }));
+    match (&method, segments.as_slice()) {
+        (&Method::GET, ["channels", channel_id, "app"]) => super::mini_app_page(channel_id),
+        (_, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..])
+            if open_to_an_app(&method, &segments) =>
+        {
+            match super::route_the_app(state, &method, &segments, query.as_deref(), request).await {
+                Ok(response) => response,
+                Err(_) => not_found(),
+            }
+        }
+        _ => not_found(),
+    }
+}
+
 /// What a channel's Mini App asks, from wherever it is hosted: its page,
 /// and what it does on behalf of whoever the messenger says opened it.
 pub(super) fn open_to_an_app(method: &Method, segments: &[&str]) -> bool {

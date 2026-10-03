@@ -35,10 +35,13 @@ An agent is reached from Telegram today: a bot added on Providers → Channels, 
 a code, a stranger kept out, the bot in a group and a forum topic, a guest let into a chat, the
 agent's questions answered with a button, files each way within the messenger's limits, and
 deliveries to the door of a Workbench served at an address, a page of the Workbench inside the
-messenger for files of any size (`docs/channels.md`). Next: the bot run from a served
-Workbench with the laptop closed, tried by hand; another messenger as a package of the same
-kind; the page inside the messenger hosted apart from the Workbench, with a Workbench that is
-not served reached through a door opened on request.
+messenger for files of any size - from a laptop through a tunnel from the Store, no key
+(`docs/channels.md`, ADR-0015). Next: a hosted copy of the page named by the product as the
+default; the bot run from a served Workbench with the laptop closed, tried by hand; a keeper
+that knocks from outside on a Workbench that sleeps, as a hosted service with a self-host
+(ADR-0015); secrets a package declares, when a package needs one (a named tunnel); another
+messenger as a package of the same kind. Debt: the page inside the messenger (`web/mini-app`)
+is not scanned by the genericity test, which reads crates only.
 
 ## Teams of agents
 

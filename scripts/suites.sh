@@ -45,9 +45,9 @@ cargo test -p swem-host --test web_suite -- --ignored
 # The Telegram channel is built first so the host's channel suite finds it
 # beside the test binaries and walks it against the Bot API fixture rather
 # than skipping.
-echo "==> the Telegram channel"
-cargo build -p swem-channel-telegram
+echo "==> the Telegram channel and the Cloudflare tunnel"
+cargo build -p swem-channel-telegram -p swem-tunnel-cloudflare
 
 echo "==> the crate suites"
 exec cargo test -p swem-sdk -p swem-store -p swem-runner -p swem-host -p swem-cli \
-  -p swem-channel-telegram --no-fail-fast "$@"
+  -p swem-channel-telegram -p swem-tunnel-cloudflare --no-fail-fast "$@"

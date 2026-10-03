@@ -116,6 +116,10 @@ pub fn require_the_binaries_cargo_does_not_build() {
             "swem-channel-telegram",
             "cargo build -p swem-channel-telegram",
         ),
+        (
+            "swem-tunnel-fixture",
+            "cargo build -p swem-host --bin swem-tunnel-fixture",
+        ),
     ]
     .into_iter()
     .filter(|(name, _)| !beside.join(format!("{name}{suffix}")).is_file())

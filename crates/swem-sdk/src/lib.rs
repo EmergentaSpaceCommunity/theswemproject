@@ -13,6 +13,7 @@
 
 pub mod channel;
 pub mod shape;
+pub mod tunnel;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;

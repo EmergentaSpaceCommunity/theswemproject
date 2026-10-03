@@ -21,6 +21,56 @@
           "after_install": "Every project's server loads it from its next call on."
         }
       ]
+    },
+    {
+      "kind": "tool",
+      "id": "cloudflared",
+      "name": "cloudflared",
+      "description": "Cloudflare's connector, release 2026.9.3 from github.com/cloudflare/cloudflared; what the Cloudflare tunnel drives. Digests are of the release's own files, to be checked against them.",
+      "version": "2026.9.3",
+      "distribution": {
+        "binary": {
+          "darwin-x86_64": {
+            "archive": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-darwin-amd64.tgz",
+            "sha256": "d1155d0837487f261183b15c1eab6c4ebcad9dc49b94675f1524c3564cea3977",
+            "cmd": "./cloudflared"
+          },
+          "darwin-aarch64": {
+            "archive": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-darwin-arm64.tgz",
+            "sha256": "587c2cfb1c230fe36c7fa7727da78be459dae028cabe8c001291999350f07095",
+            "cmd": "./cloudflared"
+          },
+          "linux-x86_64": {
+            "archive": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-amd64",
+            "sha256": "77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2",
+            "cmd": "./cloudflared"
+          },
+          "linux-aarch64": {
+            "archive": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-arm64",
+            "sha256": "aaeb2d7d0da3614634c7e03ab13487a1522c2e79165ed2929cfe23d5e95b326d",
+            "cmd": "./cloudflared"
+          },
+          "windows-x86_64": {
+            "archive": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-windows-amd64.exe",
+            "sha256": "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2",
+            "cmd": "./cloudflared.exe"
+          }
+        }
+      }
+    },
+    {
+      "kind": "swem/tunnel@1",
+      "id": "cloudflare",
+      "name": "Cloudflare quick tunnel",
+      "description": "An address from outside for a while, with no account and no key: Cloudflare's quick tunnel, driven by cloudflared. Came with this product; needs the cloudflared tool.",
+      "version": "0.1.0-dev",
+      "bundled": true,
+      "requires": [
+        {
+          "kind": "tool",
+          "id": "cloudflared"
+        }
+      ]
     }
   ]
 }

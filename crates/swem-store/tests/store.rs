@@ -105,6 +105,33 @@ impl Taker for Packages {
     }
 }
 
+/// A host that takes tools: binaries, checked by nothing but their digest.
+struct Tools;
+
+impl Taker for Tools {
+    fn kind(&self) -> Kind {
+        Kind::parse("example/tool@1").unwrap()
+    }
+    fn words(&self) -> KindWords {
+        KindWords {
+            one: "a tool".into(),
+            many: "Tools".into(),
+            after_install: "On hand.".into(),
+        }
+    }
+    fn accepts(&self, entry: &CatalogEntry) -> Result<(), String> {
+        entry
+            .distribution
+            .binary
+            .as_ref()
+            .map(|_| ())
+            .ok_or_else(|| "a tool is a binary".to_owned())
+    }
+    fn after_install(&self, _receipt: &InstallReceipt) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 fn catalog(entries: &str) -> Catalog {
     Catalog::parse(
         format!(r#"{{"schema":"swem:catalog@0.2","name":"Things","entries":[{entries}]}}"#)
@@ -479,4 +506,67 @@ fn a_server_that_says_it_takes_a_kind_takes_packages_through_the_host() {
             .unwrap()
             .starts_with("remove_package {\"id\":\"hello\"}")
     );
+}
+
+/// A tool published as one bare executable, not an archive, installs as a
+/// binary distribution: fetched, checked by its digest, placed as the
+/// command it is named, and runnable.
+#[test]
+fn a_bare_executable_is_a_binary_distribution() {
+    let root = root("bare");
+    let kind = Kind::parse("example/tool@1").unwrap();
+    // The "executable": a script that says hello, published under a name
+    // with no archive extension.
+    let published = root.join("hello-tool-1.2.3");
+    std::fs::write(&published, "#!/bin/sh\necho hello from the tool\n").unwrap();
+    let digest = {
+        use sha2::Digest as _;
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(std::fs::read(&published).unwrap())
+        )
+    };
+    let url = format!("file://{}", published.display());
+    let platform = swem_store::registry_platform().expect("a platform this test runs on");
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(&format!(
+        r#"{{"kind":"example/tool@1","id":"hello-tool","name":"Hello tool","version":"1.2.3",
+            "distribution":{{"binary":{{"{platform}":{{"archive":"{url}","sha256":"{digest}","cmd":"./hello-tool"}}}}}}}}"#
+    )));
+    store.taken_by(Arc::new(Tools));
+    let planned = store.plan(&kind, "hello-tool").unwrap();
+    let receipts = store
+        .install(&kind, "hello-tool", &planned.plan.plan_id, None)
+        .unwrap();
+    let executable = receipts[0].executable.clone().expect("an executable");
+    assert!(
+        executable.ends_with("hello-tool"),
+        "{}",
+        executable.display()
+    );
+    assert_eq!(receipts[0].discovery_method, "registry-binary-sha256-bare");
+    #[cfg(unix)]
+    {
+        let said = std::process::Command::new(&executable).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&said.stdout).trim(),
+            "hello from the tool"
+        );
+    }
+
+    // A digest that is not the file's refuses it, and nothing lands.
+    let mut other = Store::open(&root.join("indexes2"), &root.join("installed2")).unwrap();
+    other.ship(catalog(&format!(
+        r#"{{"kind":"example/tool@1","id":"hello-tool","name":"Hello tool","version":"1.2.3",
+            "distribution":{{"binary":{{"{platform}":{{"archive":"{url}","sha256":"{}","cmd":"./hello-tool"}}}}}}}}"#,
+        "0".repeat(64)
+    )));
+    other.taken_by(Arc::new(Tools));
+    let planned = other.plan(&kind, "hello-tool").unwrap();
+    assert!(
+        other
+            .install(&kind, "hello-tool", &planned.plan.plan_id, None)
+            .is_err()
+    );
+    assert!(other.receipts(&kind).is_empty());
 }

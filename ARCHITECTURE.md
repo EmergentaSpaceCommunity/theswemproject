@@ -46,6 +46,12 @@ A library plus test fixtures. It owns:
   page inside the messenger is one static file (`workbench_shell/mini_app.html`) served at
   `/channels/<id>/app`, answered from any origin by the signature alone. A bot belongs to one
   harness and its token is one more key. ADR-0013, ADR-0014.
+- **Tunnels** (`workbench_shell/tunnel.rs`). An address from outside for a while, for a
+  Workbench that is not served at one: a package of kind `swem/tunnel@1` (the twin of a
+  channel, `swem_sdk::tunnel`) stands at a public address for the gate - a second loopback
+  listener (`door::route_the_gate`) that answers the page inside the messenger and its API and
+  nothing else. `swem-tunnel-cloudflare` ships beside the binary and drives the `cloudflared`
+  tool the Store installs. The harness names no tunnel vendor. ADR-0015.
 - **The ledger of chats** (`routing.rs`, `chat_ledger.rs`, `chat_work.rs`). One SQLite file:
   participants, chats and their members, messages with their sender, the session an agent has
   in a chat, what a chat owes an agent (deliveries) and what an agent asks (questions), and

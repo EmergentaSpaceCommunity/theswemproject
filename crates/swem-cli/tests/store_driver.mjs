@@ -32,7 +32,10 @@ step("the Store lists the registry's agents");
 // And nothing that did not come with the product: this product has no
 // Cycle beside it, so the Store lists no Cycle as "came with SWEM".
 if (await b.exists('.store-entry[data-id="swem-cycle"]')) cleanup(1, "the Store lists a Cycle this product does not have");
-step("nothing is listed as what came with SWEM, because nothing did");
+// What did come: the tunnel beside the binary, and the tool it drives.
+await b.waitFor("the tunnel that came with the product", async () => b.exists('.store-entry[data-id="cloudflare"]'), 100);
+if (!(await b.exists('.store-entry[data-id="cloudflared"]'))) cleanup(1, "the Store does not offer the tool the tunnel drives");
+step("no Cycle is listed as what came with SWEM; the tunnel and its tool are");
 
 step("add a catalog by address");
 await setValue("index-url", catalogUrl);

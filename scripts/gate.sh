@@ -30,10 +30,11 @@ echo "==> the editor's own ACP client, which the editor-door walk is proved by"
 echo "==> the fixture agents and servers the walks use"
 cargo build -p swem-host --bin swem-hands-agent --bin swem-echo-agent \
   --bin swem-mcp-echo --bin swem-mcp-observer-fixture --bin swem-mcp-apps-fixture \
-  --bin swem-mcp-taker-fixture --bin swem-channel-fixture --bin swem-telegram-api-fixture
+  --bin swem-mcp-taker-fixture --bin swem-channel-fixture --bin swem-telegram-api-fixture \
+  --bin swem-tunnel-fixture
 
-echo "==> the Telegram channel, which ships beside the product binary"
-cargo build -p swem-channel-telegram
+echo "==> the Telegram channel and the Cloudflare tunnel, which ship beside the product binary"
+cargo build -p swem-channel-telegram -p swem-tunnel-cloudflare
 
 # The container walk builds its own image from the fixture agent, and skips
 # cleanly when this machine has no Podman: see

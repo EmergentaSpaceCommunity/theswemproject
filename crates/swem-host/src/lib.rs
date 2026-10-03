@@ -109,14 +109,14 @@ pub use workbench_shell::{
     CatalogDistribution, CatalogEntry, ChannelDocument, ChannelShown, ChatPage,
     DeclareMcpServerBody, GuestPolicy, GuestWaiting, INDEX_SCHEMA, IndexFile, InstalledSkill,
     Listening, McpServerOrigin, McpServerView, ModelContext, ModelContextBlock, NamedValue,
-    NpxDistribution, ObservedAppOpen, OpenTerminalBody, RegistryStatus, ResolvedAgentConnection,
-    ResolvedAgentEnvironment, ResolvedDirectAgentConnection, SaidInChat, Saying,
-    ShellConnectionMode, StartChatBody, StoreEntry, StoreIndexView, StoreInstallBody,
-    StorePlanBody, StoreRemoveBody, StoreView, TerminalInputBody, TerminalOutput, TerminalSizeBody,
-    TerminalView, Way, WorkbenchAgentOption, WorkbenchOnboarding, WorkbenchShellError,
-    WorkbenchShellHandle, WorkbenchShellState, credential_environment, mint_session_token,
-    serve_workbench, serve_workbench_http, serve_workbench_http_with_apps,
-    serve_workbench_http_with_apps_at,
+    NpxDistribution, ObservedAppOpen, OpenTerminalBody, ReachStanding, RegistryStatus,
+    ResolvedAgentConnection, ResolvedAgentEnvironment, ResolvedDirectAgentConnection, SaidInChat,
+    Saying, ShellConnectionMode, StartChatBody, StoreEntry, StoreIndexView, StoreInstallBody,
+    StorePlanBody, StoreRemoveBody, StoreView, TUNNEL_IDLE, TerminalInputBody, TerminalOutput,
+    TerminalSizeBody, TerminalView, TunnelPackage, TunnelShown, Way, WorkbenchAgentOption,
+    WorkbenchOnboarding, WorkbenchShellError, WorkbenchShellHandle, WorkbenchShellState,
+    credential_environment, mint_session_token, serve_workbench, serve_workbench_http,
+    serve_workbench_http_with_apps, serve_workbench_http_with_apps_at,
 };
 pub use workbench_shell::{AskedBody, ShellBody, asked};
 

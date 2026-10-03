@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 
 import { useSession } from "../agent/store.ts";
 import { fetchJson } from "../http.ts";
-import { ChatSign, Plug, Prompt } from "./icons.tsx";
+import { ChatSign, Globe, Plug, Prompt } from "./icons.tsx";
 import { Standing } from "./standing.tsx";
 
 export type GuestPolicy = "nobody" | "by_invitation" | "anyone";
@@ -44,6 +44,14 @@ export interface ChannelPackage {
 interface ChannelsStanding {
   channels: ChannelShown[];
   packages: ChannelPackage[];
+}
+
+/// How this Workbench is reached from outside: served at an address, a
+/// tunnel open for a while, or neither - and what could open a tunnel.
+interface ReachStanding {
+  served_at?: string;
+  tunnel?: { package: string; origin: string; opened_ms: number };
+  packages: { id: string; name: string; version?: string; bundled: boolean }[];
 }
 
 const send = (method: string, body?: unknown): RequestInit => ({
@@ -193,11 +201,33 @@ function words(channel: ChannelShown): string {
 export function Channels() {
   const { profiles } = useSession();
   const [standing, setStanding] = useState<ChannelsStanding | null>(null);
+  const [reach, setReach] = useState<ReachStanding | null>(null);
   const [adding, setAdding] = useState(false);
   const [problem, setProblem] = useState("");
+  const [opening, setOpening] = useState(false);
   const read = async () => {
     try {
       setStanding(await fetchJson<ChannelsStanding>("/api/channels"));
+      setReach(await fetchJson<ReachStanding>("/api/reach"));
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+  const openTunnel = async () => {
+    setOpening(true);
+    setProblem("");
+    try {
+      setReach(await fetchJson<ReachStanding>("/api/reach/tunnel", send("POST", {})));
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setOpening(false);
+    }
+  };
+  const closeTunnel = async () => {
+    setProblem("");
+    try {
+      setReach(await fetchJson<ReachStanding>("/api/reach/tunnel", send("DELETE")));
     } catch (failure) {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
@@ -223,7 +253,7 @@ export function Channels() {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
   };
-  const reach = async (channel: ChannelShown, reach: "pull" | "door") => {
+  const setChannelReach = async (channel: ChannelShown, reach: "pull" | "door") => {
     try {
       await fetchJson<ChannelShown>(`/api/channels/${encodeURIComponent(channel.id)}`, send("PATCH", { reach }));
       await read();
@@ -295,11 +325,11 @@ export function Channels() {
                     : "Asks the messenger for what is new. The messenger could deliver here instead if this Workbench were served at an address."}
               </span>
               {channel.reach === "door" ? (
-                <button type="button" className="k-btn k-quiet" onClick={() => void reach(channel, "pull")}>
+                <button type="button" className="k-btn k-quiet" onClick={() => void setChannelReach(channel, "pull")}>
                   Ask instead
                 </button>
               ) : channel.door_offered ? (
-                <button type="button" className="k-btn k-quiet" onClick={() => void reach(channel, "door")}>
+                <button type="button" className="k-btn k-quiet" onClick={() => void setChannelReach(channel, "door")}>
                   Have it delivered
                 </button>
               ) : null}
@@ -343,6 +373,33 @@ export function Channels() {
         ) : (
           <Standing tone="none">None installed</Standing>
         )}
+      </div>
+      <div className="k-row w-nowrap w-top" id="reach-row" data-reach-state={reach?.served_at ? "served" : reach?.tunnel ? "tunnel" : "none"}>
+        <Globe size={18} />
+        <span className="w-col w-close k-grow">
+          <span className="k-name">From outside</span>
+          <span className="k-caption">
+            {reach?.served_at
+              ? `Served at ${reach.served_at}: the messenger delivers here, and the page a bot opens inside it is answered from here.`
+              : reach?.tunnel
+                ? `Open through ${reach.tunnel.package} since ${new Date(reach.tunnel.opened_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: the page a bot opens inside the messenger is answered at ${reach.tunnel.origin}. It closes after thirty minutes unused.`
+                : (reach?.packages.length ?? 0) > 0
+                  ? "No address from outside. A tunnel opens one for a while - for the page a bot opens inside the messenger; /app to the bot opens it too."
+                  : "No address from outside, and nothing here can open one: install a tunnel from the Store (cloudflared needs no key), or serve the Workbench at an address."}
+          </span>
+        </span>
+        <span className="k-inline w-tight w-nowrap">
+          {reach?.tunnel ? (
+            <button id="tunnel-close" className="k-btn k-quiet" onClick={() => void closeTunnel()}>
+              Close
+            </button>
+          ) : !reach?.served_at && (reach?.packages.length ?? 0) > 0 ? (
+            <button id="tunnel-open" className="k-btn k-quiet" disabled={opening} onClick={() => void openTunnel()}>
+              {opening ? "Opening…" : "Open a tunnel"}
+            </button>
+          ) : null}
+          <Standing tone={reach?.served_at || reach?.tunnel ? "ready" : "none"}>{reach?.served_at ? "Served" : reach?.tunnel ? "Open" : "None"}</Standing>
+        </span>
       </div>
       {problem ? <div className="k-notice k-danger">{problem}</div> : null}
       {adding ? (

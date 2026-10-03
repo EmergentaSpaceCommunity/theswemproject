@@ -147,9 +147,11 @@
       await read();
     } catch {
       $("why").textContent = at
-        ? `The Workbench at ${at} cannot be reached from here. It has to be served at an address the messenger can reach.`
-        : "The Workbench cannot be reached from here.";
+        ? "This Workbench has no address from outside right now - its tunnel may have closed. Send /app to the bot and open this page again."
+        : "The Workbench cannot be reached from here. Send /app to the bot and open this page again.";
       $("why").dataset.unreachable = "";
+      for (const id of ["who", "send", "handed", "chat"]) $(id).hidden = true;
+      $("nobody").hidden = false;
     }
   };
   $("upload").addEventListener("click", async () => {

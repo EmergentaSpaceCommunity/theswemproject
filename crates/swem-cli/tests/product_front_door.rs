@@ -2688,3 +2688,109 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
     assert_eq!(arrived.len(), bytes.len());
     assert_eq!(arrived, bytes, "the file arrived changed");
 }
+
+/// A Workbench on a laptop has no address from outside, and the page a bot
+/// opens inside the messenger needs one. The person installs a tunnel from
+/// the Store (here a fixture that stands at the Workbench's own gate, so
+/// the walk really goes through the gate), sends /app to the bot, and the
+/// bot's button opens the page through the tunnel: who you are, 60 MB in.
+/// The gate answers the page and nothing else. Before the tunnel, the page
+/// and the bot say what to do; closed from the Channels page, the page says
+/// to send /app again.
+#[test]
+#[ignore = "product gate: starts the real binary and drives a real browser"]
+fn a_person_opens_the_workbench_inside_the_messenger_from_a_laptop() {
+    let _serial = one_at_a_time();
+    let (Some(browser), Some(node)) = (browser(), node()) else {
+        eprintln!("skipped: no browser or node on this machine");
+        return;
+    };
+    let data_root = fresh_data_root("messenger-tunnel");
+    declare_the_fixture_agent(&data_root);
+    let big = data_root.join("from-the-phone").join("notes-big.bin");
+    std::fs::create_dir_all(big.parent().expect("a parent")).expect("the phone's directory");
+    let bytes: Vec<u8> = (0..60u32 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&big, &bytes).expect("the big file");
+
+    // The tunnel fixture, published as one bare executable in a catalog of
+    // the test's own: the road a tool takes.
+    let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .to_path_buf();
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let fixture = beside.join(format!("swem-tunnel-fixture{suffix}"));
+    assert!(
+        fixture.is_file(),
+        "build the tunnel fixture first: cargo build -p swem-host --bin swem-tunnel-fixture"
+    );
+    let platform = swem_host::registry_platform().expect("a platform this gate runs on");
+    let catalog = data_root.join("supply").join("catalog.json");
+    std::fs::create_dir_all(catalog.parent().expect("a parent")).expect("the supply");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "swem:catalog@0.2",
+            "name": "Tunnels for this gate",
+            "entries": [{
+                "kind": "swem/tunnel@1", "id": "nowhere", "name": "A tunnel to nowhere",
+                "version": "0.1.0",
+                "distribution": {"binary": {platform: {
+                    "archive": format!("file://{}", fixture.display()),
+                    "sha256": sha256_of(&fixture),
+                    "cmd": format!("./swem-tunnel-nowhere{suffix}")}}}
+            }]
+        }))
+        .expect("serialize the catalog"),
+    )
+    .expect("write the catalog");
+
+    let hosted = serve_one_file_as(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/mini-app/dist/index.html"),
+        "text/html;charset=utf-8",
+    );
+    let bot_api = beside.join(format!("swem-telegram-api-fixture{suffix}"));
+    let mut api = Command::new(&bot_api)
+        .arg("--files")
+        .arg(data_root.join("messenger-files"))
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let api_address = {
+        let stdout = api.stdout.take().expect("the fixture's stdout");
+        BufReader::new(stdout)
+            .lines()
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+
+    let (product, url) = start_product(&data_root);
+    let driver =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_tunnel_driver.mjs");
+    let output = Command::new(&node)
+        .arg(&driver)
+        .arg(&url)
+        .arg(&api_address)
+        .arg(format!("file://{}", catalog.display()))
+        .arg(&big)
+        .arg(&hosted)
+        .env("SWEM_BROWSER", &browser)
+        .env("SWEM_BROWSER_NO_SANDBOX", "1")
+        .output()
+        .expect("run the messenger tunnel driver");
+    product.stop();
+    let _ = api.kill();
+    let _ = api.wait();
+    let walked = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("{walked}");
+    assert!(
+        output.status.success() && walked.contains("messenger tunnel OK"),
+        "the messenger tunnel walk did not finish:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let workspaces = find_directory(&data_root, "workspaces").expect("the product made workspaces");
+    let arrived = std::fs::read(workspaces.join("hands").join("inbox").join("notes-big.bin"))
+        .expect("the big file reached the agent's inbox through the gate");
+    assert_eq!(arrived, bytes, "the file arrived changed");
+}
