@@ -35,6 +35,13 @@ step("the agent is theirs");
 const code = await addBotAndPair(b, api, profile, {guests: "nobody", tg});
 step("the bot is added, looked at, the code shown and said: the person is known to the bot");
 
+// --- The agent's own Channels tab shows its bot ---------------------------
+await b.openAgent(profile, "channels");
+await b.waitFor("the bot on the agent's Channels tab", async () =>
+  (await b.evaluate(`document.querySelector('[data-agent-panel="channels"] .agent-bot')?.innerText ?? ""`)).includes("Running"), 100);
+if (!(await b.exists("#agent-add-bot"))) cleanup(1, "the agent's Channels tab offers no way to add a bot");
+step("the agent's own Channels tab shows the bot it answers in, and a way to add another");
+
 // --- A message to the bot is a chat with the agent -----------------------
 const chatsBefore = ((await b.ask("/api/chats")).body ?? []).length;
 await written(OWNER, "hello from my phone");

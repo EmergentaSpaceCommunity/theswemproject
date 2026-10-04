@@ -41,7 +41,7 @@ export interface ChannelPackage {
   bundled: boolean;
 }
 
-interface ChannelsStanding {
+export interface ChannelsStanding {
   channels: ChannelShown[];
   packages: ChannelPackage[];
   app_hosted_at?: string;
@@ -55,7 +55,7 @@ interface ReachStanding {
   packages: { id: string; name: string; version?: string; bundled: boolean }[];
 }
 
-const send = (method: string, body?: unknown): RequestInit => ({
+export const send = (method: string, body?: unknown): RequestInit => ({
   method,
   headers: { "content-type": "application/json" },
   body: body === undefined ? undefined : JSON.stringify(body),
@@ -66,12 +66,12 @@ const GUESTS: { id: GuestPolicy; words: string }[] = [
   { id: "anyone", words: "Anyone new: whoever writes may speak to the agent" },
 ];
 
-function AddBot({ packages, hostedAt, onAdded, onClose }: { packages: ChannelPackage[]; hostedAt?: string; onAdded: (shown: ChannelShown) => void; onClose: () => void }) {
+export function AddBot({ packages, hostedAt, forAgent, onAdded, onClose }: { packages: ChannelPackage[]; hostedAt?: string; forAgent?: string; onAdded: (shown: ChannelShown) => void; onClose: () => void }) {
   const { profiles } = useSession();
   const [name, setName] = useState("");
   const [pkg, setPkg] = useState(packages[0]?.id ?? "");
   const [key, setKey] = useState("");
-  const [agent, setAgent] = useState(profiles[0]?.profile_id ?? "");
+  const [agent, setAgent] = useState(forAgent ?? profiles[0]?.profile_id ?? "");
   const [guests, setGuests] = useState<GuestPolicy>("nobody");
   const [apiRoot, setApiRoot] = useState("");
   const [appAt, setAppAt] = useState("");
