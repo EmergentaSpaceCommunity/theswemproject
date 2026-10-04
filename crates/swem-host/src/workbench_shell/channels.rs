@@ -177,6 +177,10 @@ pub struct ChannelPackage {
 pub struct ChannelsStanding {
     pub channels: Vec<ChannelShown>,
     pub packages: Vec<ChannelPackage>,
+    /// Where the product hosts the page a bot opens inside the messenger,
+    /// if it does: what a bot is told when the person names no host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_hosted_at: Option<String>,
 }
 
 /// What a person gives to add a channel.
@@ -725,7 +729,25 @@ impl WorkbenchShellState {
             }
         }
         packages.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(ChannelsStanding { channels, packages })
+        Ok(ChannelsStanding {
+            channels,
+            packages,
+            app_hosted_at: self.app_hosted_at().map(str::to_owned),
+        })
+    }
+
+    /// Where the product hosts the page a bot opens inside the messenger.
+    pub fn set_app_hosted_at(&self, address: &str) {
+        let _ = self
+            .app_hosted_at
+            .set(address.trim().trim_end_matches('/').to_owned());
+    }
+
+    pub(super) fn app_hosted_at(&self) -> Option<&str> {
+        self.app_hosted_at
+            .get()
+            .map(String::as_str)
+            .filter(|address| !address.is_empty())
     }
 
     /// Add a channel: its document, its key, a pairing code; then start it.
@@ -1181,12 +1203,15 @@ impl Runner {
                 }
             },
         };
+        // The host the person named for this bot, else the product's own
+        // copy, else the Workbench's page itself.
         let hosted = self
             .state
             .channels()
             .and_then(|channels| channels.read(&self.id))
             .ok()
-            .and_then(|document| document.app_at);
+            .and_then(|document| document.app_at)
+            .or_else(|| self.state.app_hosted_at().map(str::to_owned));
         let url = match hosted {
             // Hosted elsewhere: the page is told where this Workbench is and
             // which channel.

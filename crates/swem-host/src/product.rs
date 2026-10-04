@@ -218,6 +218,7 @@ pub struct Product {
     routes: Option<PathBuf>,
     operation_timeout: Duration,
     shipped: Vec<Catalog>,
+    app_hosted_at: Option<String>,
     acp_registry: Option<String>,
     declarations: Vec<McpServer>,
     container_image: Option<String>,
@@ -248,6 +249,7 @@ impl Product {
             routes: None,
             operation_timeout: Duration::from_mins(10),
             shipped: Vec::new(),
+            app_hosted_at: None,
             acp_registry: None,
             declarations: Vec::new(),
             container_image: None,
@@ -339,6 +341,16 @@ impl Product {
     #[must_use]
     pub fn shipped_catalog(mut self, catalog: Catalog) -> Self {
         self.shipped.push(catalog);
+        self
+    }
+
+    /// Where a copy of the page a bot opens inside the messenger is hosted,
+    /// as this product's default: what a bot is told when the person named
+    /// no host of their own. The harness has no default of its own; it
+    /// serves the page itself when nobody is named.
+    #[must_use]
+    pub fn app_hosted_at(mut self, address: impl Into<String>) -> Self {
+        self.app_hosted_at = Some(address.into());
         self
     }
 
@@ -556,6 +568,9 @@ impl Product {
         state
             .enable_store_with(&root.indexes(), self.shipped, self.takers)
             .map_err(|error| error.to_string())?;
+        if let Some(address) = self.app_hosted_at {
+            state.set_app_hosted_at(&address);
+        }
         // The MCP servers a person declares from the product land in the same
         // declaration map as the ones the product itself declared, so an
         // agent attaches either kind by name.

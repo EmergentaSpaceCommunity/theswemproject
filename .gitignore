@@ -11,3 +11,6 @@
 # Python leaves these beside any script it imports; none of it is source.
 __pycache__/
 *.pyc
+
+# What wrangler leaves behind when the page inside the messenger is deployed: an account id and temporaries.
+.wrangler/

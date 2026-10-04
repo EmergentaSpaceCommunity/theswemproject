@@ -849,6 +849,9 @@ pub struct WorkbenchShellState {
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
     channels: std::sync::OnceLock<channels::Channels>,
+    /// Where the product hosts a copy of the page a bot opens inside the
+    /// messenger, if it does.
+    app_hosted_at: std::sync::OnceLock<String>,
     /// A tunnel that is open, and where tunnels keep their files.
     tunnel: std::sync::Mutex<Option<tunnel::Tunnel>>,
     tunnel_root: std::sync::OnceLock<PathBuf>,
@@ -1076,6 +1079,7 @@ impl WorkbenchShellState {
             removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
             channels: std::sync::OnceLock::new(),
+            app_hosted_at: std::sync::OnceLock::new(),
             tunnel: std::sync::Mutex::new(None),
             tunnel_root: std::sync::OnceLock::new(),
             keep_time_command: std::sync::OnceLock::new(),

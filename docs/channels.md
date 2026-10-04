@@ -88,7 +88,11 @@ host with HTTPS - put the committed `web/mini-app/dist/index.html` there (it is 
 `web/mini-app/index.html` by `node scripts/mini-app.mjs`, and a test keeps the two together),
 and give the address under **More** when adding the bot ("Where the page the bot opens inside
 the messenger is hosted"); the bot's button then carries this Workbench's address, and the
-Workbench answers the page from any origin with the signature alone. The page loads no script
+Workbench answers the page from any origin with the signature alone. The SWEM distribution
+names a copy it hosts (`https://swem-telegram.emergenta.space`, put up from
+`web/mini-app/wrangler.jsonc`) as what a bot is told when nobody is named - a convenience,
+never a requirement: name your own, or leave the product's default out and the Workbench
+serves the page itself (ADR-0015). The page loads no script
 of the messenger's: it reads the signed data from the address it was opened with. Either way
 the Workbench has to be reachable from the messenger: served at an address, or through a
 tunnel. Telegram opens a Mini App over HTTPS only.
