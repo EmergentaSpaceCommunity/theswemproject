@@ -53,6 +53,7 @@ interface ReachStanding {
   served_at?: string;
   tunnel?: { package: string; origin: string; opened_ms: number };
   packages: { id: string; name: string; version?: string; bundled: boolean }[];
+  needs?: { id: string; name: string; version: string; from: string }[];
 }
 
 export const send = (method: string, body?: unknown): RequestInit => ({
@@ -220,7 +221,7 @@ export function Channels() {
     setOpening(true);
     setProblem("");
     try {
-      setReach(await fetchJson<ReachStanding>("/api/reach/tunnel", send("POST", {})));
+      setReach(await fetchJson<ReachStanding>("/api/reach/tunnel", send("POST", { install: (reach?.needs ?? []).length > 0 })));
     } catch (failure) {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -394,7 +395,9 @@ export function Channels() {
               ? `Served at ${reach.served_at}: the messenger delivers here, and the page a bot opens inside it is answered from here.`
               : reach?.tunnel
                 ? `Open through ${reach.tunnel.package} since ${new Date(reach.tunnel.opened_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: the page a bot opens inside the messenger is answered at ${reach.tunnel.origin}. It closes after thirty minutes unused.`
-                : (reach?.packages.length ?? 0) > 0
+                : (reach?.needs ?? []).length > 0
+                  ? `No address from outside. A tunnel opens one for a while; it needs ${(reach?.needs ?? []).map((one) => `${one.name} ${one.version} (from ${one.from})`).join(", ")}, fetched once with your consent.`
+                  : (reach?.packages.length ?? 0) > 0
                   ? "No address from outside. A tunnel opens one for a while - for the page a bot opens inside the messenger; /app to the bot opens it too."
                   : "No address from outside, and nothing here can open one: install a tunnel from the Store (cloudflared needs no key), or serve the Workbench at an address."}
           </span>
@@ -406,7 +409,7 @@ export function Channels() {
             </button>
           ) : !reach?.served_at && (reach?.packages.length ?? 0) > 0 ? (
             <button id="tunnel-open" className="k-btn k-quiet" disabled={opening} onClick={() => void openTunnel()}>
-              {opening ? "Opening…" : "Open a tunnel"}
+              {opening ? "Opening…" : (reach?.needs ?? []).length > 0 ? `Install ${(reach?.needs ?? []).map((one) => one.name).join(", ")} and open` : "Open a tunnel"}
             </button>
           ) : null}
           <Standing tone={reach?.served_at || reach?.tunnel ? "ready" : "none"}>{reach?.served_at ? "Served" : reach?.tunnel ? "Open" : "None"}</Standing>

@@ -86,7 +86,7 @@ pub use channels::{
     ChannelShown, ChannelsStanding, GuestPolicy, GuestSeen, Reach,
 };
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
-pub use tunnel::{IDLE as TUNNEL_IDLE, ReachStanding, TunnelPackage, TunnelShown};
+pub use tunnel::{IDLE as TUNNEL_IDLE, ReachStanding, TunnelNeeds, TunnelPackage, TunnelShown};
 #[path = "workbench_shell/timekeeper.rs"]
 mod timekeeper;
 pub use timekeeper::{KeeperStanding, NewScheduleBody, ScheduleShown, nothing_for_a_keeper_to_do};
@@ -4648,14 +4648,18 @@ pub(crate) async fn route_shell(
         // or closed by hand.
         (&Method::GET, ["api", "reach"]) => json_result(state.reach_standing()),
         (&Method::POST, ["api", "reach", "tunnel"]) => {
-            let package = match read_json(request).await {
-                Ok(body) => body
-                    .get("package")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                Err(_) => None,
+            let body = read_json(request).await.unwrap_or(Value::Null);
+            let package = body
+                .get("package")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            // `install`: the person consented to what the tunnel needs.
+            let opened = if body.get("install").and_then(Value::as_bool) == Some(true) {
+                state.install_and_open_tunnel().await
+            } else {
+                state.open_tunnel(package.as_deref()).await
             };
-            match state.open_tunnel(package.as_deref()).await {
+            match opened {
                 Ok(_) => json_result(state.reach_standing()),
                 Err(error) => error_response(&error),
             }

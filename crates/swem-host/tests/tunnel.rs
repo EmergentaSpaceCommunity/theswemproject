@@ -264,3 +264,68 @@ async fn a_program_that_is_not_a_tunnel_is_refused_in_words() {
             .is_empty()
     );
 }
+
+/// What a tunnel requires and is not installed is said, with where it
+/// comes from; one consent installs it and opens the tunnel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_a_tunnel_needs_is_installed_with_one_consent() {
+    let root = fixture_root("needs");
+    let state = WorkbenchShellState::open(
+        &root.join("inventory"),
+        &root.join("routes.sqlite3"),
+        Duration::from_secs(20),
+        |_| panic!("no agent connection is resolved here"),
+    )
+    .expect("open shell state");
+    let state = Arc::new(state);
+    state
+        .enable_installs(root.join("installed"))
+        .expect("installs");
+    state
+        .enable_tunnels(&root.join("tunnels"))
+        .expect("tunnels");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem-tunnel-fixture"));
+    // A tool the tunnel needs: any program will do for the Store.
+    let tool = PathBuf::from(env!("CARGO_BIN_EXE_swem-channel-fixture"));
+    let platform = registry_platform().expect("a platform this test runs on");
+    let catalog = swem_host::Catalog::parse(
+        format!(
+            r#"{{"schema":"swem:catalog@0.2","name":"Tunnels for the test","entries":[
+              {{"kind":"tool","id":"the-tool","name":"The tool","version":"1.0.0",
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./the-tool"}}}}}}}},
+              {{"kind":"swem/tunnel@1","id":"nowhere","name":"A tunnel to nowhere","version":"0.1.0",
+                "requires":[{{"kind":"tool","id":"the-tool"}}],
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./swem-tunnel-nowhere"}}}}}}}}]}}"#,
+            tool.display(),
+            sha256_of(&tool),
+            fixture.display(),
+            sha256_of(&fixture)
+        )
+        .as_bytes(),
+    )
+    .expect("a catalog");
+    state
+        .enable_store(&root.join("indexes"), vec![catalog])
+        .expect("the store");
+    install_the_fixture(&state);
+    assert!(state.reach_standing().expect("standing").needs.is_empty());
+    // The tool is taken away: the tunnel needs it again, and says so.
+    state
+        .store_remove(&swem_host::StoreRemoveBody {
+            kind: Kind::TOOL,
+            id: "the-tool".into(),
+        })
+        .expect("the tool removed");
+    let needs = state.reach_standing().expect("standing").needs;
+    assert_eq!(needs.len(), 1, "{needs:?}");
+    assert_eq!(needs[0].id, "the-tool");
+    assert_eq!(needs[0].version, "1.0.0");
+    // One consent: installed, then the tunnel opens.
+    let opened = state
+        .install_and_open_tunnel()
+        .await
+        .expect("installed and opened");
+    assert!(opened.origin.starts_with("http://127.0.0.1:"));
+    assert!(state.reach_standing().expect("standing").needs.is_empty());
+    state.close_tunnel().await;
+}

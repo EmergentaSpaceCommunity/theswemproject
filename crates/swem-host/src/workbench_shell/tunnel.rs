@@ -58,6 +58,18 @@ pub struct TunnelPackage {
     pub bundled: bool,
 }
 
+/// Something a tunnel package needs that is not installed yet, as the
+/// person is asked to consent to it: what, which version, from where.
+#[derive(Clone, Debug, Serialize)]
+pub struct TunnelNeeds {
+    pub kind: swem_sdk::Kind,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Where it is fetched from, by host.
+    pub from: String,
+}
+
 /// How this Workbench is reached from outside, as the page shows it.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReachStanding {
@@ -69,6 +81,10 @@ pub struct ReachStanding {
     pub tunnel: Option<TunnelShown>,
     /// What could open one.
     pub packages: Vec<TunnelPackage>,
+    /// What the tunnel that would open needs installed first, if anything:
+    /// one consent, and it is fetched.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<TunnelNeeds>,
 }
 
 impl WorkbenchShellState {
@@ -117,11 +133,100 @@ impl WorkbenchShellState {
     /// Never, in practice: an install root that cannot be read lists no
     /// packages.
     pub fn reach_standing(&self) -> Result<ReachStanding, WorkbenchShellError> {
+        let needs = if self.served_origin().is_none() && self.tunnel_shown().is_none() {
+            self.tunnel_package_chosen(None)
+                .map(|package| self.tunnel_needs(&package))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Ok(ReachStanding {
             served_at: self.served_origin(),
             tunnel: self.tunnel_shown(),
             packages: self.tunnel_packages(),
+            needs,
         })
+    }
+
+    /// What a tunnel package requires, as its catalog entry says, that is
+    /// not installed here yet.
+    pub(super) fn tunnel_needs(&self, package: &str) -> Vec<TunnelNeeds> {
+        let Ok(view) = self.store() else {
+            return Vec::new();
+        };
+        let Some(entry) = view
+            .entries
+            .iter()
+            .find(|entry| entry.kind.as_str() == tunnel::TUNNEL_KIND && entry.id == package)
+        else {
+            return Vec::new();
+        };
+        entry
+            .requires
+            .iter()
+            .filter_map(|wanted| {
+                let found = view
+                    .entries
+                    .iter()
+                    .find(|one| one.kind == wanted.kind && one.id == wanted.id)?;
+                if found.installed.is_some() || found.bundled {
+                    return None;
+                }
+                let from = self
+                    .store_plan(&super::StorePlanBody {
+                        kind: found.kind.clone(),
+                        id: found.id.clone(),
+                    })
+                    .ok()
+                    .and_then(|planned| match planned.plan.distribution {
+                        swem_sdk::RegistryDistribution::Binary { archive, .. } => Some(archive),
+                        swem_sdk::RegistryDistribution::Archive { url, .. } => Some(url),
+                        _ => None,
+                    })
+                    .and_then(|address| url::Url::parse(&address).ok())
+                    .and_then(|address| address.host_str().map(str::to_owned))
+                    .unwrap_or_default();
+                Some(TunnelNeeds {
+                    kind: found.kind.clone(),
+                    id: found.id.clone(),
+                    name: found.name.clone(),
+                    version: found.version.clone(),
+                    from,
+                })
+            })
+            .collect()
+    }
+
+    /// Install what the tunnel that would open needs, from the Store, each
+    /// against the plan it is shown by - the person consented to the list
+    /// [`Self::tunnel_needs`] gave - then open the tunnel.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open_tunnel`]; an install that fails, in its words.
+    pub async fn install_and_open_tunnel(
+        self: &Arc<Self>,
+    ) -> Result<TunnelShown, WorkbenchShellError> {
+        let package = self.tunnel_package_chosen(None)?;
+        for needed in self.tunnel_needs(&package) {
+            let state = Arc::clone(self);
+            tokio::task::spawn_blocking(move || {
+                let planned = state.store_plan(&super::StorePlanBody {
+                    kind: needed.kind.clone(),
+                    id: needed.id.clone(),
+                })?;
+                state
+                    .store_install(&super::StoreInstallBody {
+                        kind: needed.kind,
+                        id: needed.id,
+                        plan_id: planned.plan.plan_id,
+                    })
+                    .map(|_| ())
+            })
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))??;
+        }
+        self.open_tunnel(Some(&package)).await
     }
 
     /// What can open a tunnel: the Store's receipts of the kind, and what
@@ -282,7 +387,10 @@ impl WorkbenchShellState {
     /// The package to open a tunnel with: the one named, else the one the
     /// person installed, else the one that came with the product; several
     /// installed, the person names one.
-    fn tunnel_package_chosen(&self, named: Option<&str>) -> Result<String, WorkbenchShellError> {
+    pub(super) fn tunnel_package_chosen(
+        &self,
+        named: Option<&str>,
+    ) -> Result<String, WorkbenchShellError> {
         let packages = self.tunnel_packages();
         if let Some(named) = named {
             return packages

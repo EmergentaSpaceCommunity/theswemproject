@@ -113,10 +113,11 @@ tunnel. Telegram opens a Mini App over HTTPS only.
 
 A Workbench on a laptop has no address the outside can reach. A **tunnel** is a package from
 the Store that stands at one for a while (ADR-0015). The one that came with the product drives
-Cloudflare's quick tunnel: no account, no key - install the `cloudflared` tool from the Store
-(it is fetched from Cloudflare's release, checked by digest) and that is all. Then `/app` to
-the bot, or **Open a tunnel** under Providers → Channels, opens one; the bot's button points the
-page at it. What the tunnel reaches is only the page and its API - never the Workbench itself,
+Cloudflare's quick tunnel: no account, no key. The first time, `/app` to the bot asks its owner
+once - with what is fetched and from where (`cloudflared`, from Cloudflare's release, checked by
+digest) - and one tap on **Install and open** installs it, opens the tunnel and sends the button
+to the page; **Install cloudflared and open** under Providers → Channels does the same. After
+that, `/app` just opens it. What the tunnel reaches is only the page and its API - never the Workbench itself,
 sign-in, or anything a stranger could use. It closes after thirty minutes unused, or with
 **Close** on the page; the page inside the messenger then says to send `/app` again. Cloudflare
 calls a quick tunnel a thing for testing and development: no uptime promise, a new address each

@@ -1181,6 +1181,10 @@ struct Runner {
     origins: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
+/// The question the bot asks its owner before fetching what a tunnel
+/// needs; not one of the agent's.
+const INSTALL_FOR_A_TUNNEL: &str = "swem:install-for-a-tunnel";
+
 /// How long a `pull` may wait before answering with nothing.
 const PULL_WAIT: u64 = 20;
 /// How often the ledger is looked at for what to carry.
@@ -1302,6 +1306,15 @@ impl Runner {
                 }
             }
             Inbound::Answered {
+                chat,
+                person,
+                question,
+                option,
+                reference: _,
+            } if question == INSTALL_FOR_A_TUNNEL => {
+                self.install_for_a_tunnel(&chat, &person, &option).await
+            }
+            Inbound::Answered {
                 chat: _,
                 person,
                 question,
@@ -1349,6 +1362,31 @@ impl Runner {
             }
             None => match self.state.open_tunnel(None).await {
                 Ok(tunnel) => tunnel.origin,
+                // The tunnel needs something fetched first: one tap of the
+                // owner's is the consent, with what and from where said.
+                Err(_) if !self.missing_for_a_tunnel().is_empty() => {
+                    let needs = self.missing_for_a_tunnel();
+                    let words = needs
+                        .iter()
+                        .map(|one| format!("{} {} (from {})", one.name, one.version, one.from))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = self
+                        .call(
+                            channel::ASK,
+                            json!({
+                                "chat": external_chat,
+                                "question": INSTALL_FOR_A_TUNNEL,
+                                "title": format!("To open the Workbench here from this computer, a tunnel needs {words}. Install it and open?"),
+                                "options": [
+                                    { "id": "install", "label": "Install and open" },
+                                    { "id": "not-now", "label": "Not now" },
+                                ],
+                            }),
+                        )
+                        .await;
+                    return;
+                }
                 Err(error) => {
                     self.tell(
                         external_chat,
@@ -1383,6 +1421,41 @@ impl Runner {
                 }),
             )
             .await;
+    }
+
+    /// The owner's tap on "Install and open": fetch what the tunnel needs,
+    /// open it, offer the page. Anybody else's tap does nothing.
+    async fn install_for_a_tunnel(
+        &self,
+        chat: &channel::ChatRef,
+        person: &Person,
+        option: &str,
+    ) -> Result<(), WorkbenchShellError> {
+        let is_owner = self
+            .participant_of(person)
+            .await?
+            .is_some_and(|one| one.kind == ParticipantKind::Person);
+        if !is_owner || option != "install" {
+            return Ok(());
+        }
+        self.tell(&chat.id, "Installing, then opening - a moment.")
+            .await;
+        match self.state.install_and_open_tunnel().await {
+            Ok(_) => self.offer_the_app(&chat.id, true).await,
+            Err(error) => {
+                self.tell(&chat.id, &format!("It could not be done: {error}"))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// What the tunnel that would open needs installed first.
+    fn missing_for_a_tunnel(&self) -> Vec<super::tunnel::TunnelNeeds> {
+        self.state
+            .tunnel_package_chosen(None)
+            .map(|package| self.state.tunnel_needs(&package))
+            .unwrap_or_default()
     }
 
     async fn greet(&self, external_chat: &str) {

@@ -55,9 +55,14 @@ await b.goTo("#/providers/channels");
 await b.waitFor("the row from outside", async () => b.exists('#reach-row[data-reach-state="none"]'), 100);
 const noWay = await b.evaluate(`document.getElementById("reach-row")?.innerText ?? ""`);
 if (!noWay.includes("No address from outside")) cleanup(1, `the row does not say so: ${noWay}`);
+if (!(await b.evaluate(`document.getElementById("tunnel-open")?.innerText ?? ""`)).includes("and open")) cleanup(1, "the page does not offer to install what the tunnel needs and open it");
 await written(OWNER, "/app");
-await b.waitFor("the bot says what is missing", async () =>
-  sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("address from outside")), 150);
+// The tunnel that came with the product needs a tool fetched first: the
+// bot asks its owner once, with what and from where, and a button. (The
+// walk does not press it: that would fetch from the vendor's release.)
+await b.waitFor("the bot asks to install what the tunnel needs", async () =>
+  sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("a tunnel needs")
+    && JSON.stringify(call.body.reply_markup ?? {}).includes("Install and open")), 150);
 if ((await buttons()).length > 0) cleanup(1, "a button was sent with no address to open");
 step("with no address and no tunnel, the page and the bot say what to do");
 
