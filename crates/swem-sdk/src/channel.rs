@@ -55,9 +55,10 @@ pub const RECEIVE: &str = "receive";
 /// the messenger, opened by the bot's button and let in by the messenger's
 /// signature on who opened it.
 pub const VERIFY_APP: &str = "verify_app";
-/// Take back a button the bot sent: `take_back {chat, reference}`. Not in
-/// the shape: a channel that answers it withdraws the button to a page
-/// whose address closed.
+/// Take back a button the bot sent: `take_back {chat, reference,
+/// markdown}` - the message says `markdown` from then on, with no button.
+/// Not in the shape: a channel that answers it withdraws the button to a
+/// page whose address closed.
 pub const TAKE_BACK: &str = "take_back";
 
 /// A button that opens a page inside the messenger, on `send`: `app

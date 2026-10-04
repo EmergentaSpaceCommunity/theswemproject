@@ -106,6 +106,7 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
   const place = usePlace();
   const called = useStore(named, (state) => state.called);
   const owner = useStore(world, (state) => state.owner);
+  const you = useStore(world, (state) => state.you);
   const participants = useStore(world, (state) => state.participants);
   const several = useStore(world, (state) => chatsOf(state, null).map((chat) => chat.chat_id).join(" "));
   const chats = useStore(world, (state) => state.chats);
@@ -144,7 +145,7 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
                 </span>
                 <span className="k-two">
                   <span className="k-name">{chat.title || "New chat"}</span>
-                  <span className="k-caption">{names(chat.members, owner)}</span>
+                  <span className="k-caption">{names(chat.members, you)}</span>
                 </span>
               </button>
             );

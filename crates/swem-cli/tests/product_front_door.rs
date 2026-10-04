@@ -2651,12 +2651,6 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
             .expect("a line")
     };
 
-    // The page as it is hosted anywhere: the committed copy, served from
-    // an origin of its own, as a static host would.
-    let hosted = serve_one_file_as(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/mini-app/dist/index.html"),
-        "text/html;charset=utf-8",
-    );
     let (product, address, word) = start_product_at_an_address(&data_root);
     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/messenger_app_driver.mjs");
     let output = Command::new(&node)
@@ -2665,7 +2659,6 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
         .arg(&word)
         .arg(&api_address)
         .arg(&big)
-        .arg(&hosted)
         .env("SWEM_BROWSER", &browser)
         .env("SWEM_BROWSER_NO_SANDBOX", "1")
         .output()
@@ -2687,6 +2680,85 @@ fn a_person_opens_the_workbench_inside_the_messenger() {
         .expect("the big file reached the agent's inbox");
     assert_eq!(arrived.len(), bytes.len());
     assert_eq!(arrived, bytes, "the file arrived changed");
+}
+
+/// What the messenger walk on a laptop installs from the Store: the tunnel
+/// fixture, published as one bare executable in a catalog of the test's
+/// own (the road a tool takes), and the Apps fixture packaged as a server
+/// whose tool brings an App. Where the product's binaries lie, the
+/// platform's suffix, and the two catalogs.
+fn supplies_for_the_messenger_walk(data_root: &Path) -> (PathBuf, &'static str, PathBuf, PathBuf) {
+    let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
+        .parent()
+        .expect("the product binary has a directory")
+        .to_path_buf();
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let fixture = beside.join(format!("swem-tunnel-fixture{suffix}"));
+    assert!(
+        fixture.is_file(),
+        "build the tunnel fixture first: cargo build -p swem-host --bin swem-tunnel-fixture"
+    );
+    let platform = swem_host::registry_platform().expect("a platform this gate runs on");
+    let supply = data_root.join("supply");
+    std::fs::create_dir_all(&supply).expect("the supply");
+    let catalog = supply.join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "swem:catalog@0.2",
+            "name": "Tunnels for this gate",
+            "entries": [{
+                "kind": "swem/tunnel@1", "id": "nowhere", "name": "A tunnel to nowhere",
+                "version": "0.1.0",
+                "distribution": {"binary": {platform: {
+                    "archive": format!("file://{}", fixture.display()),
+                    "sha256": sha256_of(&fixture),
+                    "cmd": format!("./swem-tunnel-nowhere{suffix}")}}}
+            }]
+        }))
+        .expect("serialize the catalog"),
+    )
+    .expect("write the catalog");
+    // And a server whose tool brings an App - the Apps fixture, packaged as
+    // the Store takes a server - so that an App reaches the messenger.
+    let apps_fixture = format!("swem-mcp-apps-fixture{suffix}");
+    assert!(
+        beside.join(&apps_fixture).is_file(),
+        "build the Apps fixture first: cargo build -p swem-host --bin swem-mcp-apps-fixture"
+    );
+    let archive = supply.join("notes.tar.gz");
+    let tarred = Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&beside)
+        .arg(&apps_fixture)
+        .status()
+        .expect("run tar");
+    assert!(tarred.success(), "packaging the Apps fixture failed");
+    let servers = supply.join("servers.json");
+    std::fs::write(
+        &servers,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "swem:catalog@0.1",
+            "name": "Servers for this gate",
+            "entries": [
+                {"kind": "server", "id": "notes", "name": "Notes", "version": "0.1.0-gate",
+                 "description": "a note board with an App",
+                 "distribution": {"binary": {platform: {
+                     "archive": format!("file://{}", archive.display()),
+                     "sha256": sha256_of(&archive),
+                     "cmd": apps_fixture,
+                     "args": ["--receipt", supply.join("notes-receipt.json").display().to_string(),
+                              "--poison", supply.join("notes-poison.json").display().to_string(),
+                              "--home"]}}}}
+            ]
+        }))
+        .expect("serialize the catalog"),
+    )
+    .expect("write the catalog");
+
+    (beside, suffix, catalog, servers)
 }
 
 /// A Workbench on a laptop has no address from outside, and the page a bot
@@ -2712,43 +2784,7 @@ fn a_person_opens_the_workbench_inside_the_messenger_from_a_laptop() {
     let bytes: Vec<u8> = (0..60u32 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
     std::fs::write(&big, &bytes).expect("the big file");
 
-    // The tunnel fixture, published as one bare executable in a catalog of
-    // the test's own: the road a tool takes.
-    let beside = PathBuf::from(env!("CARGO_BIN_EXE_swem"))
-        .parent()
-        .expect("the product binary has a directory")
-        .to_path_buf();
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let fixture = beside.join(format!("swem-tunnel-fixture{suffix}"));
-    assert!(
-        fixture.is_file(),
-        "build the tunnel fixture first: cargo build -p swem-host --bin swem-tunnel-fixture"
-    );
-    let platform = swem_host::registry_platform().expect("a platform this gate runs on");
-    let catalog = data_root.join("supply").join("catalog.json");
-    std::fs::create_dir_all(catalog.parent().expect("a parent")).expect("the supply");
-    std::fs::write(
-        &catalog,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema": "swem:catalog@0.2",
-            "name": "Tunnels for this gate",
-            "entries": [{
-                "kind": "swem/tunnel@1", "id": "nowhere", "name": "A tunnel to nowhere",
-                "version": "0.1.0",
-                "distribution": {"binary": {platform: {
-                    "archive": format!("file://{}", fixture.display()),
-                    "sha256": sha256_of(&fixture),
-                    "cmd": format!("./swem-tunnel-nowhere{suffix}")}}}
-            }]
-        }))
-        .expect("serialize the catalog"),
-    )
-    .expect("write the catalog");
-
-    let hosted = serve_one_file_as(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/mini-app/dist/index.html"),
-        "text/html;charset=utf-8",
-    );
+    let (beside, suffix, catalog, servers) = supplies_for_the_messenger_walk(&data_root);
     let bot_api = beside.join(format!("swem-telegram-api-fixture{suffix}"));
     let mut api = Command::new(&bot_api)
         .arg("--files")
@@ -2774,7 +2810,7 @@ fn a_person_opens_the_workbench_inside_the_messenger_from_a_laptop() {
         .arg(&api_address)
         .arg(format!("file://{}", catalog.display()))
         .arg(&big)
-        .arg(&hosted)
+        .arg(format!("file://{}", servers.display()))
         .env("SWEM_BROWSER", &browser)
         .env("SWEM_BROWSER_NO_SANDBOX", "1")
         .output()

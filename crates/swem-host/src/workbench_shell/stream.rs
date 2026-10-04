@@ -679,11 +679,14 @@ pub(super) async fn route_chats(
         (
             &Method::GET | &Method::POST,
             ["api", "chats", chat_id, "agents", agent_id, "session"],
-        ) => json_result(
-            state
-                .session_in_chat(chat_id, agent_id, method == Method::POST)
-                .await,
-        ),
+        ) => match chat_within(state, &scope, chat_id).await {
+            Ok(chat) => json_result(
+                state
+                    .session_in_chat(&chat.chat_id, agent_id, method == Method::POST)
+                    .await,
+            ),
+            Err(error) => error_response(&error),
+        },
         (&Method::GET | &Method::POST, ["api", "questions", ..]) => {
             route_questions(state, method, segments, request, &scope, who).await
         }

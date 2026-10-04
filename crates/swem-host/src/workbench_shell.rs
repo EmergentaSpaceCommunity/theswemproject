@@ -28,7 +28,6 @@ use base64::Engine as _;
 use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt as _, Full, StreamBody};
 use hyper::body::{Bytes, Frame};
-use hyper::header::HeaderValue;
 use hyper::{Method, Request, Response, StatusCode};
 use rmcp::model::{ElicitationAction, JsonObject};
 use serde::{Deserialize, Serialize};
@@ -267,8 +266,6 @@ const PALETTE_CSS: &str = include_str!("../../../web/view-kit/palette.css");
 /// How the Workbench's own page lays the kit's shapes out.
 const WORKBENCH_CSS: &str = include_str!("workbench_shell/workbench.css");
 const WORKBENCH_JS: &str = include_str!("../web/apps-host/dist/workbench.js");
-/// A channel's Mini App: the page a bot opens inside the messenger.
-const MINI_APP_HTML: &str = include_str!("../../../web/mini-app/index.html");
 
 /// Connection-local launch material for a profile resolved to a direct
 /// process. The CLI resolves through agent discovery; tests resolve to fixture
@@ -849,9 +846,6 @@ pub struct WorkbenchShellState {
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
     channels: std::sync::OnceLock<channels::Channels>,
-    /// Where the product hosts a copy of the page a bot opens inside the
-    /// messenger, if it does.
-    app_hosted_at: std::sync::OnceLock<String>,
     /// The sessions of people who came through a messenger: for a while.
     messenger_sessions: std::sync::Mutex<door::MessengerSessions>,
     /// A tunnel that is open, and where tunnels keep their files.
@@ -1081,7 +1075,6 @@ impl WorkbenchShellState {
             removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
             channels: std::sync::OnceLock::new(),
-            app_hosted_at: std::sync::OnceLock::new(),
             messenger_sessions: std::sync::Mutex::new(door::MessengerSessions::default()),
             tunnel: std::sync::Mutex::new(None),
             tunnel_root: std::sync::OnceLock::new(),
@@ -2243,6 +2236,27 @@ impl WorkbenchShellState {
         Ok((connection_id, route_id, session_id))
     }
 
+    /// Whether a connection's chat is within a scope's reach.
+    ///
+    /// # Errors
+    ///
+    /// No such connection; the ledger cannot be read.
+    pub(crate) async fn connection_within(
+        &self,
+        scope: &crate::Scope,
+        connection_id: &str,
+    ) -> Result<bool, WorkbenchShellError> {
+        let route_id = self.connection(connection_id).await?.route_id.clone();
+        let chat = self
+            .with_ledger(move |ledger| match ledger.session_of_route(&route_id)? {
+                Some(session) => ledger.chat(&session.chat_id).map(Some),
+                None => Ok(None),
+            })
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        Ok(chat.is_some_and(|chat| scope.admits(&chat)))
+    }
+
     async fn connection(
         &self,
         connection_id: &str,
@@ -2973,6 +2987,20 @@ impl WorkbenchShellState {
         server_name: &str,
         uri: &str,
     ) -> Result<OpenedApp, WorkbenchShellError> {
+        self.app_open_through(connection_id, server_name, uri, door::Through::Main)
+            .await
+    }
+
+    /// [`Self::app_open`] for a page reached through a given listener: the
+    /// sandbox it is told is the one that listener's origin can reach - the
+    /// machine's own, or the tunnel's second address.
+    async fn app_open_through(
+        &self,
+        connection_id: &str,
+        server_name: &str,
+        uri: &str,
+        through: door::Through,
+    ) -> Result<OpenedApp, WorkbenchShellError> {
         let connection = self.connection(connection_id).await?;
         let mut apps = connection.apps.lock().await;
         if apps.is_none() {
@@ -3033,10 +3061,12 @@ impl WorkbenchShellState {
             }),
         )
         .await?;
+        let sandbox = match through {
+            door::Through::Gate => self.tunnel_sandbox(),
+            door::Through::Main => self.sandbox.get().cloned(),
+        };
         let (sandbox_url, sandbox_origin) =
-            self.sandbox.get().map_or((None, None), |(url, origin)| {
-                (Some(url.clone()), Some(origin.clone()))
-            });
+            sandbox.map_or((None, None), |(url, origin)| (Some(url), Some(origin)));
         let view_url = sandbox_origin
             .as_ref()
             .filter(|_| isolated)
@@ -3561,6 +3591,98 @@ where
     request.map(|body| body.map_err(std::io::Error::other).boxed_unsync())
 }
 
+/// A script of the page, packed once: its bytes gzipped, and a tag of
+/// them, so that a browser that has it is answered with nothing and one
+/// that has not is sent a quarter of it - the page over a tunnel loads
+/// in a moment instead of a while.
+struct PackedScript {
+    plain: &'static str,
+    gzipped: std::sync::OnceLock<Bytes>,
+    etag: std::sync::OnceLock<String>,
+}
+
+impl PackedScript {
+    const fn of(plain: &'static str) -> Self {
+        Self {
+            plain,
+            gzipped: std::sync::OnceLock::new(),
+            etag: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn etag(&self) -> &str {
+        self.etag.get_or_init(|| {
+            use sha2::Digest as _;
+            format!("\"{:x}\"", sha2::Sha256::digest(self.plain.as_bytes()))
+        })
+    }
+
+    fn gzipped(&self) -> Bytes {
+        self.gzipped
+            .get_or_init(|| {
+                use std::io::Write as _;
+                let mut packed =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                let _ = packed.write_all(self.plain.as_bytes());
+                Bytes::from(packed.finish().unwrap_or_default())
+            })
+            .clone()
+    }
+}
+
+static WORKBENCH_JS_PACKED: PackedScript = PackedScript::of(WORKBENCH_JS);
+static APPS_BRIDGE_PACKED: PackedScript = PackedScript::of(APPS_BRIDGE);
+
+/// A packed script, as the browser asked for it: not at all when it holds
+/// this very one, gzipped when it takes gzip, plain otherwise.
+fn respond_script(
+    request: &Request<AskedBody>,
+    script: &PackedScript,
+    content_type: &str,
+) -> Response<ShellBody> {
+    let etag = script.etag();
+    let held = request
+        .headers()
+        .get(hyper::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|one| one.trim() == etag));
+    let builder = Response::builder()
+        .header("content-type", content_type)
+        .header("etag", etag)
+        .header("cache-control", "no-cache")
+        .header("vary", "accept-encoding");
+    if held {
+        return builder
+            .status(StatusCode::NOT_MODIFIED)
+            .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
+            .expect("static response");
+    }
+    let takes_gzip = request
+        .headers()
+        .get(hyper::header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|one| one.trim().starts_with("gzip")));
+    if takes_gzip {
+        return builder
+            .status(StatusCode::OK)
+            .header("content-encoding", "gzip")
+            .body(
+                Full::new(script.gzipped())
+                    .map_err(infallible_to_io)
+                    .boxed(),
+            )
+            .expect("static response");
+    }
+    builder
+        .status(StatusCode::OK)
+        .body(
+            Full::new(Bytes::from_static(script.plain.as_bytes()))
+                .map_err(infallible_to_io)
+                .boxed(),
+        )
+        .expect("static response")
+}
+
 fn respond(status: StatusCode, content_type: &str, body: String) -> Response<ShellBody> {
     Response::builder()
         .status(status)
@@ -3658,151 +3780,6 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
         let (key, value) = pair.split_once('=')?;
         (key == name).then(|| value.to_owned())
     })
-}
-
-/// The page a bot opens inside the messenger, with the channel written in.
-fn mini_app_page(channel_id: &str) -> Response<ShellBody> {
-    let safe: String = channel_id
-        .chars()
-        .filter(|letter| letter.is_ascii_alphanumeric() || *letter == '_' || *letter == '-')
-        .collect();
-    respond(
-        StatusCode::OK,
-        "text/html;charset=utf-8",
-        MINI_APP_HTML
-            .replace("__PALETTE_CSS__", PALETTE_CSS)
-            .replace("__KIT_CSS__", KIT_CSS)
-            .replace("__CHANNEL_ID__", &safe),
-    )
-}
-
-/// The Mini App's API, answered the same from the main listener and from
-/// the gate a tunnel points at: who opened it is said by the messenger's
-/// signature, which the channel checks on every call. `Err` for a route
-/// that is not the app's.
-async fn route_the_app(
-    state: &Arc<WorkbenchShellState>,
-    method: &Method,
-    segments: &[&str],
-    query: Option<&str>,
-    request: Request<AskedBody>,
-) -> Result<Response<ShellBody>, Request<AskedBody>> {
-    let response = match (method, segments) {
-        (&Method::OPTIONS, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]) => {
-            for_an_app(respond(StatusCode::NO_CONTENT, "text/plain", String::new()))
-        }
-        (&Method::GET, ["api", "channels", channel_id, "app"]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            for_an_app(json_result(
-                state.app_standing(&channel_id, &init_data).await,
-            ))
-        }
-        (&Method::POST, ["api", "channels", channel_id, "app", "files"]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            let words = query_param(query, "words")
-                .map(|value| percent_decode(&value))
-                .unwrap_or_default();
-            let ingest = upload_content(state, request, query);
-            for_an_app(json_result(
-                state
-                    .app_upload(&channel_id, &init_data, &words, ingest)
-                    .await,
-            ))
-        }
-        (&Method::GET, ["api", "channels", channel_id, "app", "files", name]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            let name = percent_decode(name);
-            for_an_app(match state.app_file(&channel_id, &init_data, &name).await {
-                Ok((bytes, media_type)) => respond_bytes(StatusCode::OK, &media_type, bytes),
-                Err(error) => error_response(&error),
-            })
-        }
-        (
-            &Method::GET,
-            [
-                "api",
-                "channels",
-                channel_id,
-                "app",
-                "questions",
-                question_id,
-            ],
-        ) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            for_an_app(json_result(
-                state
-                    .app_question(&channel_id, &init_data, question_id)
-                    .await,
-            ))
-        }
-        (
-            &Method::POST,
-            [
-                "api",
-                "channels",
-                channel_id,
-                "app",
-                "questions",
-                question_id,
-                "answer",
-            ],
-        ) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            let question_id = (*question_id).to_owned();
-            for_an_app(match read_json(request).await {
-                Ok(answer) => json_result(
-                    state
-                        .app_answer(&channel_id, &init_data, &question_id, answer)
-                        .await,
-                ),
-                Err(error) => error_response(&error),
-            })
-        }
-        (&Method::POST, ["api", "channels", channel_id, "app", "messages"]) => {
-            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
-            for_an_app(match read_json(request).await {
-                Ok(body) => {
-                    let text = body
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    json_result(state.app_say(&channel_id, &init_data, &text).await)
-                }
-                Err(error) => error_response(&error),
-            })
-        }
-        _ => return Err(request),
-    };
-    Ok(response)
-}
-
-/// What a Mini App sends to be known: the messenger's signed data, in a
-/// header of its own.
-fn app_data_of(request: &Request<AskedBody>) -> String {
-    request
-        .headers()
-        .get("x-swem-app-data")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned()
-}
-
-/// An answer to a Mini App, which may be hosted anywhere: any origin may
-/// ask, carrying the messenger's signature and nothing of a session.
-fn for_an_app(mut response: Response<ShellBody>) -> Response<ShellBody> {
-    let headers = response.headers_mut();
-    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
-    headers.insert(
-        "access-control-allow-headers",
-        HeaderValue::from_static("x-swem-app-data, content-type"),
-    );
-    headers.insert(
-        "access-control-allow-methods",
-        HeaderValue::from_static("GET, POST, OPTIONS"),
-    );
-    response
 }
 
 /// A request's body as text, for what is handed on as it came.
@@ -4240,31 +4217,31 @@ pub(crate) async fn route_shell(
         Err(request) => request,
     };
     // Somebody who came through a messenger reaches an agent's files only
-    // within the bot's agent.
-    if let (Some(who), ["api", "profiles", profile_id, ..]) = (who.as_ref(), segments.as_slice())
+    // within the bot's agent, and a connection's Apps only in a chat of
+    // theirs with it.
+    if let Some(who) = who.as_ref()
         && who.through_a_messenger()
     {
-        match state.scope_of(Some(who)).await {
-            Ok(scope) if scope.reaches_agent(profile_id) => {}
-            Ok(_) => {
-                return respond_json(StatusCode::FORBIDDEN, &json!({ "error": "forbidden" }));
-            }
+        let scope = match state.scope_of(Some(who)).await {
+            Ok(scope) => scope,
             Err(error) => return error_response(&error),
+        };
+        let within = match segments.as_slice() {
+            ["api", "profiles", profile_id, ..] => scope.reaches_agent(profile_id),
+            ["api", "connections", connection_id, "apps", ..] => {
+                scope.is_the_owner()
+                    && match state.connection_within(&scope, connection_id).await {
+                        Ok(within) => within,
+                        Err(error) => return error_response(&error),
+                    }
+            }
+            _ => true,
+        };
+        if !within {
+            return respond_json(StatusCode::FORBIDDEN, &json!({ "error": "forbidden" }));
         }
     }
     match (&method, segments.as_slice()) {
-        // A channel's Mini App: one static page, served here so a bot has
-        // somewhere to point by default; hosted anywhere else just as well.
-        (&Method::GET, ["channels", channel_id, "app"]) => {
-            if !state.is_served_at_an_address() && through != door::Through::Gate {
-                return respond(
-                    StatusCode::NOT_FOUND,
-                    "text/plain;charset=utf-8",
-                    "A channel's app is served where the Workbench has an address.\n".to_owned(),
-                );
-            }
-            mini_app_page(channel_id)
-        }
         (&Method::GET, []) => {
             // Opening the address the product printed is how a person hands
             // the page the run's secret: the address carries it once, the
@@ -4325,10 +4302,10 @@ pub(crate) async fn route_shell(
             }
             response
         }
-        (&Method::GET, ["workbench.js"]) => respond(
-            StatusCode::OK,
+        (&Method::GET, ["workbench.js"]) => respond_script(
+            &request,
+            &WORKBENCH_JS_PACKED,
             "application/javascript;charset=utf-8",
-            WORKBENCH_JS.to_owned(),
         ),
         (&Method::GET, ["api", "profiles"]) => json_result(state.profiles()),
         // Configuring the agent: what it reaches, where it works, and a
@@ -4656,15 +4633,6 @@ pub(crate) async fn route_shell(
                 Err(error) => error_response(&error),
             }
         }
-        // The channel's Mini App, from inside the messenger: who opened it
-        // is said by the messenger's signature, which the channel checks.
-        (
-            &Method::OPTIONS | &Method::GET | &Method::POST,
-            ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..],
-        ) => match route_the_app(state, &method, &segments, query.as_deref(), request).await {
-            Ok(response) => response,
-            Err(_) => respond_json(StatusCode::NOT_FOUND, &json!({ "error": "not found" })),
-        },
         // How this Workbench is reached from outside, and a tunnel opened
         // or closed by hand.
         (&Method::GET, ["api", "reach"]) => json_result(state.reach_standing()),
@@ -4992,11 +4960,9 @@ pub(crate) async fn route_shell(
             // The product ships the official AppBridge it was built against,
             // so a domain App opens without a flag and without a second
             // install step. `--apps-bundle` still overrides it for development.
-            None if WorkbenchShellState::apps_enabled() => respond(
-                StatusCode::OK,
-                "application/javascript",
-                APPS_BRIDGE.to_owned(),
-            ),
+            None if WorkbenchShellState::apps_enabled() => {
+                respond_script(&request, &APPS_BRIDGE_PACKED, "application/javascript")
+            }
             // No bundle configured: the Apps panel stays disabled - the
             // honest App-disabled mode, not an error.
             None => respond(
@@ -5109,7 +5075,11 @@ pub(crate) async fn route_shell(
                     "open needs server_name and uri".into(),
                 ));
             };
-            json_result(state.app_open(&connection_id, server_name, uri).await)
+            json_result(
+                state
+                    .app_open_through(&connection_id, server_name, uri, through)
+                    .await,
+            )
         }
         (&Method::POST, ["api", "connections", connection_id, "apps", app_id, "rpc"]) => {
             let connection_id = (*connection_id).to_owned();

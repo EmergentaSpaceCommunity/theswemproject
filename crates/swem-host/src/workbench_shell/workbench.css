@@ -234,3 +234,29 @@ a.k-btn { color: inherit; text-decoration: none; }
 .w-happened { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; border-top: var(--border-width-regular) solid var(--color-border-secondary); }
 .w-happened:first-child { border-top: 0; }
 .w-happened > .k-dot { align-self: center; }
+
+/* The page inside a messenger, and any window as narrow as a phone: no
+   side lists, the head close, the stream and the composer edge to edge,
+   the files one above the other. The same page; nothing is drawn twice. */
+.w-in-messenger .w-head { padding: 10px 12px 0; gap: 8px; }
+.w-in-messenger .w-h1 { font-size: var(--font-heading-md-size); line-height: var(--font-heading-md-line-height); }
+.w-in-messenger .k-tabs { overflow-x: auto; }
+@media (max-width: 700px) {
+  .w-rail { display: none; }
+  .w-head { padding: 10px 12px 0; }
+  .w-head .k-chip { display: none; }
+  .w-side, .w-side.w-right { display: none; }
+  .w-stream { padding: 14px 12px 8px; gap: 14px; }
+  .w-composer { margin: 0 8px 10px; }
+  .w-lost { margin: 8px 12px 0; }
+  .w-files { flex-direction: column; }
+  .w-tree { width: auto; max-height: 45%; border-right: 0; border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }
+  .w-tree-handed { max-height: none; }
+  .w-settings { padding: 16px 12px; }
+}
+
+/* The Apps alone, as a tab: the chat beside them is not drawn, the panel
+   takes the width. */
+.w-apps-only .w-thread { display: none; }
+.w-apps-only .w-side.w-right.w-apps { display: flex; width: 100%; max-width: 100%; border-left: 0; }
+.w-apps-only .w-apps [aria-label="Hide the Apps"] { display: none; }

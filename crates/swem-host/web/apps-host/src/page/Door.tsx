@@ -270,13 +270,19 @@ export function Door({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SIGN_IN_ASKED, ask);
   }, [ask]);
   if (!standing) {
-    return problem ? (
+    return (
       <Alone>
-        <div className="k-notice k-danger w-door w-narrow" role="alert">
-          {problem}
-        </div>
+        {problem ? (
+          <div className="k-notice k-danger w-door w-narrow" role="alert">
+            {problem}
+          </div>
+        ) : (
+          <span className="k-caption" data-opening="">
+            Opening…
+          </span>
+        )}
       </Alone>
-    ) : null;
+    );
   }
   const who = standing.who;
   if (codes) {
@@ -293,6 +299,21 @@ export function Door({ children }: { children: ReactNode }) {
     );
   }
   if (standing.at === null || (who !== null && who.by !== "code")) return <>{children}</>;
+  // Through the gate a tunnel points at there is no sign-in: somebody who
+  // came through a messenger is in already, anybody else is told how.
+  if (standing.gate) {
+    const refused = document.getElementById("workbench-root")?.dataset.refused;
+    return (
+      <Alone>
+        <section className="k-dialog w-door w-narrow" aria-label="From the bot" data-from-the-bot="refused">
+          <div className="w-col w-close">
+            <h1 className="w-h1">Open this from the bot</h1>
+            <span className="k-caption">{refused ? `It did not let you in: ${refused}.` : "This page is opened from a bot's button inside the messenger."} Send /app to the bot and open it again.</span>
+          </div>
+        </section>
+      </Alone>
+    );
+  }
   const cameIn = (said: string[] | null) => {
     setWithWord(false);
     if (said && said.length > 0) setCodes(said);

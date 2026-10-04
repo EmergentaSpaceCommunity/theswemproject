@@ -137,7 +137,6 @@ export function AgentChannels({ agent, hidden }: { agent: Participant; hidden: b
         {adding ? (
           <AddBot
             packages={packages}
-            hostedAt={standing?.app_hosted_at}
             forAgent={agent.profile_id}
             onAdded={() => {
               setAdding(false);

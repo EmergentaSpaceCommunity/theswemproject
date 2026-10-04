@@ -138,29 +138,32 @@ async fn a_tunnel_opens_the_app_and_nothing_else() {
     // Opened again, it is the same one.
     let again = state.open_tunnel(None).await.expect("still open");
     assert_eq!(again.origin, opened.origin);
+    // A second address, for the sandbox the Apps are drawn in: the package
+    // stood twice, and the sandbox's own router answers there.
+    let sandbox = opened
+        .sandbox_origin
+        .clone()
+        .expect("the sandbox's address through the tunnel");
+    assert_ne!(sandbox, opened.origin);
+    let (status, body) = ask_the_gate(&sandbox, "GET", "/sandbox?csp=");
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = ask_the_gate(&sandbox, "GET", "/api/chats");
+    assert_eq!(status, 404, "the sandbox's address answers no API");
 
-    // The gate answers the app's page and its API, by the signature it
-    // carries - here none, so the API refuses - and nothing else.
-    let (status, page) = ask_the_gate(&opened.origin, "GET", "/channels/some-bot/app");
-    assert_eq!(status, 200);
-    assert!(page.contains("<title>SWEM</title>"));
-    // No such bot, and no signature either way: not found, nothing more.
-    let (status, _) = ask_the_gate(&opened.origin, "GET", "/api/channels/some-bot/app");
-    assert_eq!(status, 404, "the API with no signature");
-    let (status, _) = ask_the_gate(
-        &opened.origin,
-        "OPTIONS",
-        "/api/channels/some-bot/app/files",
-    );
-    assert_eq!(status, 204);
     // The Workbench's own page is what the gate serves, for somebody who
     // came through a messenger to open; behind it, without a session of
     // theirs, nothing - and no word of sign-in, the run's secret, a knock
     // or a channel's webhook door.
     for path in ["/", "/workbench.js", "/api/access"] {
-        let (status, _) = ask_the_gate(&opened.origin, "GET", path);
+        let (status, body) = ask_the_gate(&opened.origin, "GET", path);
         assert_eq!(status, 200, "GET {path} through the gate");
+        if path == "/" {
+            assert!(body.contains("<title>SWEM Workbench</title>"), "the page");
+        }
     }
+    // No such bot: the exchange refuses, with nothing of a session.
+    let (status, _) = ask_the_gate(&opened.origin, "POST", "/api/access/by-channel/some-bot");
+    assert_ne!(status, 200);
     for (method, path) in [
         ("GET", "/api/chats"),
         ("POST", "/api/time/due"),
@@ -184,6 +187,10 @@ async fn a_tunnel_opens_the_app_and_nothing_else() {
     assert!(
         std::net::TcpStream::connect(opened.origin.trim_start_matches("http://")).is_err(),
         "the gate still listens after the tunnel closed"
+    );
+    assert!(
+        std::net::TcpStream::connect(sandbox.trim_start_matches("http://")).is_err(),
+        "the sandbox's listener still listens after the tunnel closed"
     );
     let calls = std::fs::read_to_string(root.join("tunnels").join("nowhere").join("calls.jsonl"))
         .expect("the fixture wrote its calls");

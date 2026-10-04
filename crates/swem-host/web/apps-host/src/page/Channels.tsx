@@ -21,7 +21,6 @@ export interface ChannelShown {
   agent?: string;
   guests: GuestPolicy;
   settings: { api_root?: string; door?: string };
-  app_at?: string;
   pairing_code?: string;
   bot?: { id: string; username: string; name: string; reach?: string };
   running: boolean;
@@ -44,7 +43,6 @@ export interface ChannelPackage {
 export interface ChannelsStanding {
   channels: ChannelShown[];
   packages: ChannelPackage[];
-  app_hosted_at?: string;
 }
 
 /// How this Workbench is reached from outside: served at an address, a
@@ -67,7 +65,7 @@ const GUESTS: { id: GuestPolicy; words: string }[] = [
   { id: "anyone", words: "Anyone new: whoever writes may speak to the agent" },
 ];
 
-export function AddBot({ packages, hostedAt, forAgent, onAdded, onClose }: { packages: ChannelPackage[]; hostedAt?: string; forAgent?: string; onAdded: (shown: ChannelShown) => void; onClose: () => void }) {
+export function AddBot({ packages, forAgent, onAdded, onClose }: { packages: ChannelPackage[]; forAgent?: string; onAdded: (shown: ChannelShown) => void; onClose: () => void }) {
   const { profiles } = useSession();
   const [name, setName] = useState("");
   const [pkg, setPkg] = useState(packages[0]?.id ?? "");
@@ -75,7 +73,6 @@ export function AddBot({ packages, hostedAt, forAgent, onAdded, onClose }: { pac
   const [agent, setAgent] = useState(forAgent ?? profiles[0]?.profile_id ?? "");
   const [guests, setGuests] = useState<GuestPolicy>("nobody");
   const [apiRoot, setApiRoot] = useState("");
-  const [appAt, setAppAt] = useState("");
   const [more, setMore] = useState(false);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
@@ -92,7 +89,6 @@ export function AddBot({ packages, hostedAt, forAgent, onAdded, onClose }: { pac
           agent: agent || null,
           guests,
           settings: apiRoot.trim() ? { api_root: apiRoot.trim() } : {},
-          app_at: appAt.trim() || null,
         }),
       );
       onAdded(shown);
@@ -162,13 +158,6 @@ export function AddBot({ packages, hostedAt, forAgent, onAdded, onClose }: { pac
                 <label className="k-stack w-close">
                   <span className="k-caption">Bot API address, when not the messenger's own (a local Bot API server)</span>
                   <input id="channel-api-root" className="k-field k-mono" value={apiRoot} onChange={(event) => setApiRoot(event.target.value)} placeholder="http://127.0.0.1:8081" spellCheck={false} />
-                </label>
-                <label className="k-stack w-close">
-                  <span className="k-caption">
-                    Where the page the bot opens inside the messenger is hosted (a copy of web/mini-app with HTTPS).
-                    {hostedAt ? ` Empty: ${hostedAt}, which came with this product.` : " Empty: this Workbench serves it itself."}
-                  </span>
-                  <input id="channel-app-at" className="k-field k-mono" value={appAt} onChange={(event) => setAppAt(event.target.value)} placeholder={hostedAt ?? "https://…"} spellCheck={false} />
                 </label>
               </>
             ) : (
@@ -317,11 +306,6 @@ export function Channels() {
               </span>
             ) : null}
             {channel.said ? <span className="k-caption k-is-danger">{channel.said}</span> : null}
-            {channel.app_at ? (
-              <span className="k-caption">The page inside the messenger is hosted at {channel.app_at}.</span>
-            ) : standing?.app_hosted_at ? (
-              <span className="k-caption">The page inside the messenger opens from {standing.app_hosted_at}, which came with this product.</span>
-            ) : null}
             <span className="k-inline w-tight" data-reach={channel.reach}>
               <span className="k-caption">
                 {channel.reach === "door"
@@ -419,7 +403,6 @@ export function Channels() {
       {adding ? (
         <AddBot
           packages={packages}
-          hostedAt={standing?.app_hosted_at}
           onAdded={() => {
             setAdding(false);
             void read();

@@ -337,24 +337,16 @@ pub(super) fn open_to_a_messenger(method: &Method, segments: &[&str]) -> bool {
                 | ["api", "chats" | "questions" | "content", _]
                 | ["api", "profiles", _, "tree" | "file" | "files"]
                 | ["api", "profiles", _, "files", _, _]
+                | ["api", "connections", _, "apps", ..]
+                | ["api", "chats", _, "agents", _, "session"]
         ) | (
             &Method::POST,
             ["api", "content"]
                 | ["api", "access", "sign-out"]
                 | ["api", "chats", _, "messages" | "stop"]
                 | ["api", "questions", _, "answer"]
-        )
-    )
-}
-
-/// What a channel's Mini App asks, from wherever it is hosted: its page,
-/// and what it does on behalf of whoever the messenger says opened it.
-pub(super) fn open_to_an_app(method: &Method, segments: &[&str]) -> bool {
-    matches!(
-        (method, segments),
-        (
-            &Method::GET | &Method::POST | &Method::OPTIONS,
-            ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..]
+                | ["api", "connections", _, "apps", ..]
+                | ["api", "chats", _, "agents", _, "session"]
         )
     )
 }
@@ -441,9 +433,6 @@ impl WorkbenchShellState {
             if !from_the_workbenchs_own_page(headers) {
                 return Err(forbidden());
             }
-            if open_to_an_app(method, segments) {
-                return Ok(None);
-            }
             let who = self.messenger_who(headers, through);
             if open_on_the_gate(method, segments) {
                 return Ok(who);
@@ -461,12 +450,6 @@ impl WorkbenchShellState {
                 Some(who) if from_the_workbenchs_own_page(headers) => Ok(Some(who)),
                 _ => Err(forbidden()),
             };
-        }
-        // A Mini App of a channel's, hosted anywhere, says who opened it
-        // with the messenger's signature; which page asks is not the
-        // question there, and nobody is let in by this alone.
-        if self.served_at.get().is_some() && open_to_an_app(method, segments) {
-            return Ok(None);
         }
         let Some(served) = self.served_at.get() else {
             if !from_the_workbenchs_own_page(headers)
@@ -546,10 +529,16 @@ impl WorkbenchShellState {
         sessions
             .by_cookie
             .retain(|_, session| session.expires_ms > now);
-        sessions
+        let who = sessions
             .by_cookie
             .get(&digest(held))
-            .map(|session| session.principal.clone())
+            .map(|session| session.principal.clone());
+        // Somebody known used the tunnel: it stays open a while longer.
+        // Nobody else - a scanner at the address - keeps it open.
+        if who.is_some() && through == Through::Gate {
+            self.touch_tunnel();
+        }
+        who
     }
 
     /// What this principal may: everything, unless they came through a

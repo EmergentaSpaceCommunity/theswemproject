@@ -386,11 +386,6 @@ enum McpCommand {
     },
 }
 
-/// Where this distribution hosts the page a bot opens inside the messenger
-/// (`web/mini-app`, as `web/mini-app/wrangler.jsonc` puts it up): what a bot
-/// is told when the person names no host of their own.
-const APP_HOSTED_AT: &str = "https://swem-telegram.emergenta.space";
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let command = Cli::parse()
@@ -705,9 +700,7 @@ fn product(
         Some(hub) => product = product.declare(hub),
         None => shipped.entries.retain(|entry| entry.id != "swem-cycle"),
     }
-    product = product
-        .shipped_catalog(shipped)
-        .app_hosted_at(APP_HOSTED_AT);
+    product = product.shipped_catalog(shipped);
     if let Some(inventory) = inventory {
         product = product.profiles_at(inventory);
     }

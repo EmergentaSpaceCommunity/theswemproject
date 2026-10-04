@@ -4,7 +4,7 @@
 
 import { useSyncExternalStore } from "react";
 
-export type AgentTab = "chat" | "files" | "terminal" | "schedules" | "channels" | "settings";
+export type AgentTab = "chat" | "files" | "terminal" | "schedules" | "channels" | "settings" | "apps";
 export type ProvidersTab = "engines" | "models" | "hosts" | "time" | "channels";
 export type SettingsTab = "access";
 
@@ -18,7 +18,7 @@ export type Place =
   | { at: "settings"; tab: SettingsTab }
   | { at: "app"; server: string };
 
-const TABS: AgentTab[] = ["chat", "files", "terminal", "schedules", "channels", "settings"];
+const TABS: AgentTab[] = ["chat", "files", "terminal", "schedules", "channels", "settings", "apps"];
 
 export function read(hash: string): Place {
   const [first, second, third, fourth] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);

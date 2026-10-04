@@ -87,27 +87,30 @@ proxy's address is what the messenger sees.
 
 ## The Workbench inside the messenger
 
-A bot of a Workbench served at an address offers a page of the Workbench's inside the messenger
-(a Mini App): `/app` to the bot, or whenever a file is too big for the bot to carry. Opened from
-the bot, the page knows who you are by the messenger's signature, which the channel checks
-against the bot's token - the Workbench never sees the token and verifies nothing itself - and
-shows the chat you have with the bot, takes a file of any size to the agent (it lands in the
-agent's inbox with your words, as a file handed over on the Workbench's page does), and lists
-what the agent put out, to save. Opened by nobody, it says what it is; a signature that is not
-the messenger's is refused. The page is one static file the Workbench serves at
-`/channels/<id>/app`. To host it anywhere else - GitHub Pages, Cloudflare Pages, any static
-host with HTTPS - put the committed `web/mini-app/dist/index.html` there (it is written from
-`web/mini-app/index.html` by `node scripts/mini-app.mjs`, and a test keeps the two together),
-and give the address under **More** when adding the bot ("Where the page the bot opens inside
-the messenger is hosted"); the bot's button then carries this Workbench's address, and the
-Workbench answers the page from any origin with the signature alone. The SWEM distribution
-names a copy it hosts (`https://swem-telegram.emergenta.space`, put up from
-`web/mini-app/wrangler.jsonc`) as what a bot is told when nobody is named - a convenience,
-never a requirement: name your own, or leave the product's default out and the Workbench
-serves the page itself (ADR-0015). The page loads no script
-of the messenger's: it reads the signed data from the address it was opened with. Either way
-the Workbench has to be reachable from the messenger: served at an address, or through a
-tunnel. Telegram opens a Mini App over HTTPS only.
+The bot opens the Workbench's own page inside the messenger: `/app` to the bot, the **Answer**
+button under a form the agent asks, or whenever a file is too big for the bot to carry. It is
+the same page the Workbench draws in a browser - no copy of it, nothing hosted anywhere -
+drawn for somebody who came through a messenger, at a phone's width: no rail, the bot's agent
+alone, and the tabs that are theirs. The owner has **Chat** (the chat as it stands, the agent's
+questions with their fields, the composer - which attaches a file of any size; it lands in the
+agent's inbox with your words), **Files** (the agent's folder, what it handed out, to read and
+to edit) and **Apps** (the Apps the agent's servers bring, drawn where they always are - in the
+sandbox, through the Workbench; through a tunnel, at a second address of the same tunnel).
+When a tool of the agent brings an App, the bot says so and its **Open** button opens the page
+on that chat's Apps. Somebody the bot met has **Chat** of their own chats, and nothing else:
+not the agent's files, not what it put out, not its questions, not its Apps.
+
+Who you are, the page learns once: the messenger signs who opened it, the channel checks the
+signature against the bot's token (the Workbench never sees the token and verifies nothing
+itself), and the Workbench's own door gives the page a session for a day - the same session for
+the same signed data, nobody for a signature that is not the messenger's. From then on the page
+asks the Workbench as the page always does, and the Workbench answers as far as that person
+reaches: the owner from the messenger reaches this bot's agent - its chats, its files, its
+questions - and nothing of the Workbench's setting up (terminals, providers, keys, the Store,
+access are the passkey's or the laptop's); a guest reaches their chats. The bot's button carries
+the Workbench's own address: the one it is served at, or a tunnel's. The page loads no script of
+the messenger's, and names none: the bot's button says where in the address the messenger puts
+its signed data. Telegram opens a page inside it over HTTPS only.
 
 ## A tunnel: an address from outside, for a while
 
@@ -117,9 +120,11 @@ Cloudflare's quick tunnel: no account, no key. The first time, `/app` to the bot
 once - with what is fetched and from where (`cloudflared`, from Cloudflare's release, checked by
 digest) - and one tap on **Install and open** installs it, opens the tunnel and sends the button
 to the page; **Install cloudflared and open** under Providers → Channels does the same. After
-that, `/app` just opens it. What the tunnel reaches is only the page and its API - never the Workbench itself,
-sign-in, or anything a stranger could use. It closes after thirty minutes unused, or with
-**Close** on the page; the page inside the messenger then says to send `/app` again. Cloudflare
+that, `/app` just opens it. What the tunnel reaches is the page, and behind it only somebody who came through
+a messenger - never sign-in, the run's secret, a token, or a channel's webhook door. It closes
+after thirty minutes unused (what keeps it open is the page being used by somebody known), or
+with **Close** on the page; the bot then takes back the buttons it sent through it and says to
+send `/app` again. Cloudflare
 calls a quick tunnel a thing for testing and development: no uptime promise, a new address each
 time - which is what an address for a while is. Webhooks never go through a tunnel; on a laptop
 the bot asks the messenger for what is new, which works behind any network.

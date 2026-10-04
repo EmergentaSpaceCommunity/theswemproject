@@ -109,7 +109,9 @@ export interface ChatPage {
 
 export interface Now {
   head: number;
-  owner: Participant;
+  owner: Participant | null;
+  /// Who the page is, when not the owner: somebody from a messenger.
+  you?: string | null;
   participants: Participant[];
   chats: Chat[];
   deliveries: Delivery[];

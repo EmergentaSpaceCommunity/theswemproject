@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SWEM Workbench</title>
 <!-- The shared palette and view kit, inlined by the host at serve time. Both
      are the same files every domain App gets: one set of values, one set of
@@ -154,7 +155,14 @@
 <body>
 <!-- The page keeps no conversation of its own: everything in it is what
      the host said on the one stream it follows. -->
-<div id="workbench-root"></div>
+<div id="workbench-root">
+  <!-- What is seen until the page's script has arrived and drawn: over a
+       slow way in, a word rather than a dark screen. -->
+  <div class="w-shell w-alone" data-loading="">
+    <div class="w-brand"><span class="w-brand-mark"></span><span>SWEM</span></div>
+    <span class="k-caption">Opening…</span>
+  </div>
+</div>
 <script src="workbench.js"></script>
 </body>
 </html>

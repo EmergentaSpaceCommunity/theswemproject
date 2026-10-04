@@ -65,8 +65,12 @@ gate** is the listener a tunnel points at.
 - The age and replay of the messenger's signed data are the channel package's business
   (ADR-0013); the gate adds no check of its own and none is needed for an app that is read by
   signature per call.
-- `web/mini-app/index.html` names no messenger; the page's genericity is not yet checked by
-  `tests/genericity.rs`, which scans crates only - recorded in `ROADMAP.md`.
+- **Revised by ADR-0016 (2026-10-04).** The gate now serves the Workbench's own page and lets
+  in somebody who came through a messenger, by a session the door minted from the messenger's
+  signature - and nobody else; what this decision kept out stays out. The hosted copy of a
+  separate page is retired: it had become a second interface, and a page on another origin
+  could not hold the Workbench's session. "The hosted parts are convenience, never protocol"
+  stands for what remains hosted (the knock service, when it exists).
 
 ## Links
 

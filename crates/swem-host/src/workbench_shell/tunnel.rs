@@ -44,6 +44,24 @@ fn gate_loop(
     ))
 }
 
+/// The sandbox's listener through the tunnel: the sandbox's own router, as
+/// on the machine. Erased as the gate's is.
+fn sandbox_loop(
+    state: Arc<WorkbenchShellState>,
+    listener: tokio::net::TcpListener,
+    told: tokio::sync::oneshot::Receiver<()>,
+) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+    Box::pin(super::accept_until_told(
+        listener,
+        None,
+        told,
+        move |request| {
+            let state = Arc::clone(&state);
+            async move { Box::pin(super::route_sandbox(&state, request)).await }
+        },
+    ))
+}
+
 /// How long a tunnel stays open with nobody using it.
 pub const IDLE: Duration = Duration::from_mins(30);
 
@@ -57,6 +75,17 @@ pub(super) struct Tunnel {
     gate: Option<tokio::sync::oneshot::Sender<()>>,
     /// Notified whenever somebody known uses the tunnel.
     touched: Arc<tokio::sync::Notify>,
+    /// The second address, for the sandbox the Apps are drawn in: the same
+    /// package started once more, at a listener of its own. Absent when the
+    /// package could not stand twice; then no App opens through the tunnel.
+    sandbox: Option<Address>,
+}
+
+/// One address the package stands at, and the listener it points at.
+pub(super) struct Address {
+    origin: String,
+    entry: Arc<AppAttachmentEntry>,
+    told: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// A tunnel as the page shows it.
@@ -65,6 +94,9 @@ pub struct TunnelShown {
     pub package: String,
     pub origin: String,
     pub opened_ms: i64,
+    /// Where the Apps are drawn, through the tunnel, when they can be.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_origin: Option<String>,
 }
 
 /// What can open a tunnel here: a package the Store installed, or one that
@@ -121,6 +153,22 @@ impl WorkbenchShellState {
         })
     }
 
+    /// Where the Apps are drawn for a page reached through the tunnel: the
+    /// sandbox's URL and origin at the tunnel's second address.
+    pub(super) fn tunnel_sandbox(&self) -> Option<(String, String)> {
+        self.tunnel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|tunnel| tunnel.sandbox.as_ref())
+            .map(|address| {
+                (
+                    format!("{}/sandbox", address.origin),
+                    address.origin.clone(),
+                )
+            })
+    }
+
     /// Somebody known used the tunnel: it stays open a while longer.
     pub(super) fn touch_tunnel(&self) {
         if let Some(tunnel) = self
@@ -142,6 +190,10 @@ impl WorkbenchShellState {
                 package: tunnel.package.clone(),
                 origin: tunnel.origin.clone(),
                 opened_ms: tunnel.opened_ms,
+                sandbox_origin: tunnel
+                    .sandbox
+                    .as_ref()
+                    .map(|address| address.origin.clone()),
             })
     }
 
@@ -368,11 +420,16 @@ impl WorkbenchShellState {
             }
         };
 
+        // The second address, for the sandbox: the package once more, at a
+        // listener that runs the sandbox's router. Without it the page
+        // works and no App opens through the tunnel.
+        let sandbox = self.stand_for_the_sandbox(&package).await;
         let touched = Arc::new(tokio::sync::Notify::new());
         let shown = TunnelShown {
             package: package.clone(),
             origin: origin.clone(),
             opened_ms: now_ms(),
+            sandbox_origin: sandbox.as_ref().map(|address| address.origin.clone()),
         };
         *self
             .tunnel
@@ -384,6 +441,7 @@ impl WorkbenchShellState {
             entry,
             gate: Some(told),
             touched: Arc::clone(&touched),
+            sandbox,
         });
         // Unused for a while, it closes: the house pattern of a session
         // that is let go when nobody is there.
@@ -393,6 +451,26 @@ impl WorkbenchShellState {
             state.close_tunnel().await;
         });
         Ok(shown)
+    }
+
+    /// The sandbox's address through the tunnel: a listener of its own
+    /// running the sandbox's router, and the package started once more to
+    /// stand at it.
+    async fn stand_for_the_sandbox(self: &Arc<Self>, package: &str) -> Option<Address> {
+        let stdio = self.tunnel_stdio(package).ok()?;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.ok()?;
+        let port = listener.local_addr().ok()?.port();
+        let (told, told_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(sandbox_loop(Arc::clone(self), listener, told_rx));
+        let Ok((entry, origin)) = standing_at(package, stdio, port).await else {
+            let _ = told.send(());
+            return None;
+        };
+        Some(Address {
+            origin,
+            entry,
+            told: Some(told),
+        })
     }
 
     /// The package to open a tunnel with: the one named, else the one the
@@ -462,12 +540,22 @@ impl WorkbenchShellState {
             return;
         };
         self.forget_messenger_sessions();
+        self.take_back_app_buttons().await;
         let _ = call_tool_of(&tunnel.entry, tunnel::CLOSE, json!({})).await;
         if let Some(told) = tunnel.gate.take() {
             let _ = told.send(());
         }
         if let Some(alone) = Arc::into_inner(tunnel.entry) {
             let _ = alone.shutdown().await;
+        }
+        if let Some(mut sandbox) = tunnel.sandbox.take() {
+            let _ = call_tool_of(&sandbox.entry, tunnel::CLOSE, json!({})).await;
+            if let Some(told) = sandbox.told.take() {
+                let _ = told.send(());
+            }
+            if let Some(alone) = Arc::into_inner(sandbox.entry) {
+                let _ = alone.shutdown().await;
+            }
         }
     }
 

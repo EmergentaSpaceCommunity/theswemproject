@@ -20,7 +20,17 @@ export type Who =
   | { by: "device"; device_id: string; name: string }
   | { by: "code" }
   | { by: "token"; token_id: string; name: string; may: May[] }
-  | { by: "embedder" };
+  | { by: "embedder" }
+  | { by: "messenger"; channel_id: string; external_id: string; name: string; participant?: string };
+
+/// Somebody who came through a messenger: the bot's agent, as the page
+/// draws itself around it, and whether they are the owner.
+export interface InAMessenger {
+  channel: string;
+  agent: string;
+  agent_id: string;
+  owner: boolean;
+}
 
 export interface DoorStanding {
   /// Where this Workbench is served; nothing when it is on this computer alone.
@@ -29,7 +39,13 @@ export interface DoorStanding {
   claimed: boolean;
   who: Who | null;
   called?: string;
+  messenger?: InAMessenger | null;
+  /// Reached through the gate a tunnel points at: nothing of sign-in is here.
+  gate?: boolean;
 }
+
+/// How the page is drawn for somebody who came through a messenger.
+export const inAMessenger = createStore<{ messenger: InAMessenger | null }>(() => ({ messenger: null }));
 
 export interface Device {
   device_id: string;
@@ -84,6 +100,8 @@ export async function doorStanding(): Promise<DoorStanding> {
   const standing = await fetchJson<DoorStanding>("/api/access");
   const called = standing.called?.trim() || "SWEM";
   if (named.getState().called !== called) named.setState({ called });
+  const messenger = standing.messenger ?? null;
+  if (JSON.stringify(inAMessenger.getState().messenger) !== JSON.stringify(messenger)) inAMessenger.setState({ messenger });
   if (typeof document !== "undefined") document.title = called === "SWEM" ? "SWEM Workbench" : called;
   return standing;
 }

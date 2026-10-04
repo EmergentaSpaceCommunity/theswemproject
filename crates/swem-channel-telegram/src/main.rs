@@ -69,6 +69,13 @@ struct AppButton {
     url: String,
 }
 
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct TakeBackParams {
+    chat: String,
+    reference: String,
+    markdown: String,
+}
+
 /// What a Mini App sends to be known: the messenger's signed `initData`.
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 struct VerifyAppParams {
@@ -658,6 +665,34 @@ impl Channel {
                 .get("message_id")
                 .map(Value::to_string)
                 .unwrap_or_default(),
+        }))
+    }
+
+    #[tool(
+        description = "Take back a button the bot sent: the message says the words given, with no button"
+    )]
+    async fn take_back(
+        &self,
+        Parameters(params): Parameters<TakeBackParams>,
+    ) -> Result<Json<channel::Sent>, String> {
+        let (chat_id, _) = api::chat_parts(&params.chat);
+        let message_id: i64 = params
+            .reference
+            .parse()
+            .map_err(|_| format!("not a message of this bot's: {}", params.reference))?;
+        self.api
+            .call(
+                "editMessageText",
+                json!({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text::html(&params.markdown),
+                    "parse_mode": "HTML",
+                }),
+            )
+            .await?;
+        Ok(Json(channel::Sent {
+            reference: params.reference,
         }))
     }
 

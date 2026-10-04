@@ -19,6 +19,8 @@ export interface World {
   /// Whether the stream is down; the page says so and keeps what it has.
   lost: boolean;
   owner: Participant | null;
+  /// Who the page is: the owner, or somebody who came through a messenger.
+  you: Participant | null;
   participants: Record<string, Participant>;
   chats: Record<string, Chat>;
   /// What is owed and not ended, by delivery.
@@ -48,6 +50,7 @@ export const world = createStore<World>(() => ({
   ready: false,
   lost: false,
   owner: null,
+  you: null,
   participants: {},
   chats: {},
   deliveries: {},
@@ -68,6 +71,7 @@ function stands(now: Now, anew = false): void {
     ready: true,
     lost: false,
     owner: now.owner,
+    you: (now.you ? now.participants.find((one) => one.participant_id === now.you) : undefined) ?? now.owner,
     participants: byId(now.participants, (one) => one.participant_id),
     chats: byId(now.chats, (chat) => chat.chat_id),
     deliveries: byId(now.deliveries, (delivery) => delivery.delivery_id),
@@ -225,8 +229,12 @@ export interface Saying {
 export const act = {
   /// Ask the host who there is again: somebody was made.
   async people(): Promise<void> {
-    const people = await fetchJson<{ owner: Participant; participants: Participant[] }>("/api/people");
-    world.setState({ owner: people.owner, participants: byId(people.participants, (one) => one.participant_id) });
+    const people = await fetchJson<{ owner: Participant | null; you?: string | null; participants: Participant[] }>("/api/people");
+    world.setState({
+      owner: people.owner,
+      you: (people.you ? people.participants.find((one) => one.participant_id === people.you) : undefined) ?? people.owner,
+      participants: byId(people.participants, (one) => one.participant_id),
+    });
   },
   async startChat(agents: string[], title = ""): Promise<Chat> {
     const chat = await fetchJson<Chat>("/api/chats", json({ agents, title }));

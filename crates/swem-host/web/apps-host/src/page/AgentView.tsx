@@ -8,7 +8,7 @@ import { AgentSettings } from "./settings/AgentSettings.tsx";
 import { sessionStore } from "../agent/store.ts";
 import { Guard } from "../Guard.tsx";
 import { ChatView, FirstWords } from "./ChatView.tsx";
-import { ChatSign, Clock, Folder, Gear, Moon, People, Plug, Plus, Prompt } from "./icons.tsx";
+import { ChatSign, Clock, Folder, Gear, Moon, People, Plug, Plus, Prompt, Tiles } from "./icons.tsx";
 import { AddSomeone, Members } from "./Members.tsx";
 import { AgentChannels } from "./AgentChannels.tsx";
 import { Files } from "./Files.tsx";
@@ -26,9 +26,13 @@ const TABS: { tab: AgentTab; label: string; sign: typeof ChatSign }[] = [
   { tab: "schedules", label: "Schedules", sign: Clock },
   { tab: "channels", label: "Channels", sign: Plug },
   { tab: "settings", label: "Settings", sign: Gear },
+  // Drawn as a tab for somebody from a messenger; on the Workbench the Apps
+  // are beside the chat.
+  { tab: "apps", label: "Apps", sign: Tiles },
 ];
+const WORKBENCH_TABS: AgentTab[] = TABS.map((one) => one.tab).filter((tab) => tab !== "apps");
 
-function Header({ agent, tab }: { agent: Participant; tab: AgentTab }) {
+function Header({ agent, tab, tabs, compact }: { agent: Participant; tab: AgentTab; tabs: AgentTab[]; compact: boolean }) {
   const what = useDoing(agent.participant_id);
   const { profile, engine, host } = useStanding(agent);
   const role = (profile?.role ?? "").split("\n").find((line) => line.trim()) ?? "";
@@ -36,34 +40,36 @@ function Header({ agent, tab }: { agent: Participant; tab: AgentTab }) {
     <header className="w-head">
       <div className="k-spread">
         <div className="k-inline w-nowrap">
-          <Avatar who={agent} size="large" />
+          <Avatar who={agent} size={compact ? undefined : "large"} />
           <div className="w-col w-close">
             <div className="k-inline w-tight">
               <h1 className="w-h1">{agent.name}</h1>
-              <span className="k-mono k-muted">@{agent.handle}</span>
+              {compact ? null : <span className="k-mono k-muted">@{agent.handle}</span>}
               <StateWord what={what} />
             </div>
-            {role ? <div className="k-caption w-one-line">{role}</div> : null}
+            {role && !compact ? <div className="k-caption w-one-line">{role}</div> : null}
           </div>
         </div>
-        <div className="k-inline w-tight w-nowrap">
-          {engine ? <span className="k-chip">{engine}</span> : null}
-          {profile?.model ? <span className="k-chip">{profile.model}</span> : null}
-          {host ? <span className="k-chip">{host}</span> : null}
-          <button
-            type="button"
-            className="k-btn k-quiet"
-            disabled={what !== "ready"}
-            title="Its sessions are let go of; it wakes with the next thing said"
-            onClick={() => void act.sleep(agent.participant_id)}
-          >
-            <Moon />
-            <span>Put to sleep</span>
-          </button>
-        </div>
+        {compact ? null : (
+          <div className="k-inline w-tight w-nowrap">
+            {engine ? <span className="k-chip">{engine}</span> : null}
+            {profile?.model ? <span className="k-chip">{profile.model}</span> : null}
+            {host ? <span className="k-chip">{host}</span> : null}
+            <button
+              type="button"
+              className="k-btn k-quiet"
+              disabled={what !== "ready"}
+              title="Its sessions are let go of; it wakes with the next thing said"
+              onClick={() => void act.sleep(agent.participant_id)}
+            >
+              <Moon />
+              <span>Put to sleep</span>
+            </button>
+          </div>
+        )}
       </div>
       <nav className="k-tabs" aria-label={agent.name}>
-        {TABS.map((one) => (
+        {TABS.filter((one) => tabs.includes(one.tab)).map((one) => (
           <button
             type="button"
             className={`k-tab${tab === one.tab ? " k-active" : ""}`}
@@ -81,7 +87,7 @@ function Header({ agent, tab }: { agent: Participant; tab: AgentTab }) {
 }
 
 function ChatRow({ chat, agent, active }: { chat: Chat; agent: Participant; active: boolean }) {
-  const owner = useStore(world, (state) => state.owner);
+  const owner = useStore(world, (state) => state.you);
   const what = useStore(world, (state) => doing(state, agent.participant_id, chat.chat_id));
   const several = chat.members.filter((member) => member.kind === "agent").length > 1;
   const state = what === "working" ? "working now" : what === "asking" ? "waiting for you" : what === "waiting" ? "next in line" : when(chat.last_at_ms);
@@ -128,7 +134,22 @@ function Chats({ agent, chats, chosen }: { agent: Participant; chats: Chat[]; ch
   );
 }
 
-export function AgentView({ agent, tab, chat }: { agent: Participant; tab: AgentTab; chat?: string }) {
+/// `tabs` is what is drawn of the agent: everything, or - for somebody who
+/// came through a messenger - what is theirs; `compact` draws it for a
+/// phone, without the chat list beside and the agent's standing.
+export function AgentView({
+  agent,
+  tab,
+  chat,
+  tabs = WORKBENCH_TABS,
+  compact = false,
+}: {
+  agent: Participant;
+  tab: AgentTab;
+  chat?: string;
+  tabs?: AgentTab[];
+  compact?: boolean;
+}) {
   const order = useStore(world, (state) => chatsOf(state, agent.participant_id).map((one) => one.chat_id).join(" "));
   const known = useStore(world, (state) => state.chats);
   const chats = order.split(" ").filter(Boolean).flatMap((id) => (known[id] ? [known[id]] : []));
@@ -144,10 +165,10 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
   const [adding, setAdding] = useState(false);
   return (
     <main className="w-main">
-      <Header agent={agent} tab={tab} />
+      <Header agent={agent} tab={tab} tabs={tabs} compact={compact} />
       {tab === "chat" ? (
         <div className="w-body">
-          <Chats agent={agent} chats={chats} chosen={chosen?.chat_id ?? null} />
+          {compact ? null : <Chats agent={agent} chats={chats} chosen={chosen?.chat_id ?? null} />}
           <Guard what="The chat">
             {chosen ? (
               <ChatView chat={chosen} key={chosen.chat_id} />
@@ -155,26 +176,43 @@ export function AgentView({ agent, tab, chat }: { agent: Participant; tab: Agent
               <FirstWords agent={agent} key={agent.participant_id} onBegun={(begun) => go({ at: "agent", agent: agent.participant_id, tab: "chat", chat: begun.chat_id })} />
             )}
           </Guard>
-          {chosen && withGuests ? <Members chat={chosen} onAdd={() => setAdding(true)} /> : null}
+          {chosen && withGuests && !compact ? <Members chat={chosen} onAdd={() => setAdding(true)} /> : null}
+        </div>
+      ) : null}
+      {tab === "apps" && chosen ? (
+        <div className="w-body w-apps-only">
+          <Guard what="The Apps">
+            <ChatView chat={chosen} view="apps" key={`apps:${chosen.chat_id}`} />
+          </Guard>
         </div>
       ) : null}
       {chosen ? <AddSomeone chat={chosen} open={adding} onClose={() => setAdding(false)} /> : null}
       <div className="w-panel" hidden={tab === "chat"}>
-        <Guard what="The agent's files">
-          <Files agent={agent} hidden={tab !== "files"} key={agent.profile_id ?? agent.participant_id} />
-        </Guard>
-        <Guard what="The agent's terminal">
-          <Terminals agent={agent} hidden={tab !== "terminal"} key={agent.profile_id ?? agent.participant_id} />
-        </Guard>
-        <Guard what="The agent's schedules">
-          <Schedules agent={agent} hidden={tab !== "schedules"} />
-        </Guard>
-        <Guard what="The agent's channels">
-          <AgentChannels agent={agent} hidden={tab !== "channels"} />
-        </Guard>
-        <Guard what="The agent's settings">
-          <AgentSettings agent={agent} hidden={tab !== "settings"} />
-        </Guard>
+        {tabs.includes("files") ? (
+          <Guard what="The agent's files">
+            <Files agent={agent} hidden={tab !== "files"} key={agent.profile_id ?? agent.participant_id} />
+          </Guard>
+        ) : null}
+        {tabs.includes("terminal") ? (
+          <Guard what="The agent's terminal">
+            <Terminals agent={agent} hidden={tab !== "terminal"} key={agent.profile_id ?? agent.participant_id} />
+          </Guard>
+        ) : null}
+        {tabs.includes("schedules") ? (
+          <Guard what="The agent's schedules">
+            <Schedules agent={agent} hidden={tab !== "schedules"} />
+          </Guard>
+        ) : null}
+        {tabs.includes("channels") ? (
+          <Guard what="The agent's channels">
+            <AgentChannels agent={agent} hidden={tab !== "channels"} />
+          </Guard>
+        ) : null}
+        {tabs.includes("settings") ? (
+          <Guard what="The agent's settings">
+            <AgentSettings agent={agent} hidden={tab !== "settings"} />
+          </Guard>
+        ) : null}
       </div>
     </main>
   );

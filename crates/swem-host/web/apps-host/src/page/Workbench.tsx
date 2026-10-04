@@ -8,9 +8,11 @@ import { Guard } from "../Guard.tsx";
 import { ServerApp } from "../spaces/ServerApp.tsx";
 import { StoreSpace } from "../store/StoreSpace.tsx";
 import { AgentView, GroupView } from "./AgentView.tsx";
+import { inAMessenger } from "./door.ts";
+import { pointedAt } from "./messenger.ts";
 import { NewAgent } from "./NewAgent.tsx";
 import { NewChat } from "./NewChat.tsx";
-import { go, usePlace } from "./place.ts";
+import { go, usePlace, type AgentTab } from "./place.ts";
 import { Providers } from "./Providers.tsx";
 import { Rail, useSpaces } from "./Rail.tsx";
 import { Settings } from "./Settings.tsx";
@@ -31,7 +33,58 @@ function Home() {
   return <main className="w-main" />;
 }
 
+/// The page for somebody who came through a messenger: no rail, the bot's
+/// agent alone, with the tabs that are theirs - Chat, and for the owner
+/// Files and Apps - opened on what the bot pointed at.
+function InTheMessenger({ agent, owner }: { agent: string; owner: boolean }) {
+  const place = usePlace();
+  const ready = useStore(world, (state) => state.ready);
+  const participants = useStore(world, (state) => state.participants);
+  const questions = useStore(world, (state) => state.questions);
+  const lost = useStore(world, (state) => state.lost);
+  const [pointed] = useState(() => pointedAt());
+  const tabs: AgentTab[] = owner ? ["chat", "files", "apps"] : ["chat"];
+  // The stream and nothing else: the profiles and the machines are the
+  // Workbench's own, not a messenger session's to ask for.
+  useEffect(() => {
+    follow();
+  }, []);
+  // Where the bot pointed, once: a tab, or the chat a question waits in.
+  const [went, setWent] = useState(false);
+  useEffect(() => {
+    if (!ready || went) return;
+    const open = pointed?.open ?? "chat";
+    if (open === "question" && pointed?.question) {
+      const question = questions[pointed.question];
+      if (!question) return;
+      setWent(true);
+      go({ at: "agent", agent, tab: "chat", chat: question.chat_id });
+      return;
+    }
+    setWent(true);
+    const tab: AgentTab = (open === "files" || open === "apps") && owner ? open : "chat";
+    go({ at: "agent", agent, tab, ...(pointed?.chat ? { chat: pointed.chat } : {}) });
+  }, [ready, went, pointed, questions, agent, owner]);
+  const who = participants[agent];
+  const tab: AgentTab = place.at === "agent" && tabs.includes(place.tab) ? place.tab : "chat";
+  const chat = place.at === "agent" ? place.chat : undefined;
+  return (
+    <div className="w-shell w-in-messenger" data-in-messenger={owner ? "owner" : "guest"}>
+      <div className="w-stage">
+        {lost ? <div className="k-notice k-warning w-lost">The Workbench is not answering. What is here is what was last heard; it comes back by itself.</div> : null}
+        {ready && who ? <AgentView agent={who} tab={tab} chat={chat} tabs={tabs} compact key={who.participant_id} /> : <main className="w-main" />}
+      </div>
+    </div>
+  );
+}
+
 export function Workbench() {
+  const messenger = useStore(inAMessenger, (state) => state.messenger);
+  if (messenger) return <InTheMessenger agent={messenger.agent_id} owner={messenger.owner} />;
+  return <WorkbenchWhole />;
+}
+
+function WorkbenchWhole() {
   const place = usePlace();
   const spaces = useSpaces();
   const ready = useStore(world, (state) => state.ready);

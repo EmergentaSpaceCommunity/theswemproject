@@ -12,5 +12,3 @@
 __pycache__/
 *.pyc
 
-# What wrangler leaves behind when the page inside the messenger is deployed: an account id and temporaries.
-.wrangler/

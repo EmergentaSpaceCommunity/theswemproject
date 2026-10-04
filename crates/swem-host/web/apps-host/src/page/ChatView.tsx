@@ -326,7 +326,7 @@ function One({ item, people }: { item: Item; people: Record<string, Participant>
 function Said() {
   const group = useAuiState((state) => (state.message.metadata?.custom as { group?: Group } | undefined)?.group);
   const people = useStore(world, (state) => state.participants);
-  const owner = useStore(world, (state) => state.owner);
+  const owner = useStore(world, (state) => state.you);
   if (!group) return null;
   const first = group.items[0];
   const by = group.by ? people[group.by] : undefined;
@@ -620,7 +620,7 @@ function Thread({
   after?: React.ReactNode;
   children?: React.ReactNode;
 }) {
-  const owner = useStore(world, (state) => state.owner);
+  const owner = useStore(world, (state) => state.you);
   const messages = useMemo<ThreadMessageLike[]>(
     () =>
       groups.map((group) => {
@@ -663,10 +663,12 @@ function Thread({
   );
 }
 
-export function ChatView({ chat }: { chat: Chat }) {
+/// `view` is what of the chat is drawn: the chat with the Apps beside it,
+/// or the Apps alone, as a tab for a phone.
+export function ChatView({ chat, view = "chat" }: { chat: Chat; view?: "chat" | "apps" }) {
   const store = chatStore(chat.chat_id);
   const state = useStore(store);
-  const owner = useStore(world, (one) => one.owner);
+  const owner = useStore(world, (one) => one.you);
   const busy = useStore(world, (one) => Object.values(one.deliveries).some((delivery) => delivery.chat_id === chat.chat_id));
   const groups = useMemo(() => grouped(state.timeline.items), [state.timeline.items]);
   const others = chat.members.filter((member) => member.participant_id !== owner?.participant_id && member.kind !== "schedule");
@@ -677,10 +679,13 @@ export function ChatView({ chat }: { chat: Chat }) {
   // of several it would be one agent's among others.
   const only = several ? undefined : agents[0];
   const offers = useOffers(chat.chat_id, only?.participant_id, only ? (state.timeline.offers[only.participant_id] ?? 0) : 0);
-  const [appsShown, setAppsShown] = useState(false);
+  const [appsShown, setAppsShown] = useState(view === "apps");
   const since = useStore(world, (now) => now.since);
   const broughtLast = only ? state.timeline.brought[only.participant_id] : undefined;
-  const broughtNow = broughtLast && broughtLast.place > since ? broughtLast : undefined;
+  // What a tool brought while the page was open is shown as it arrives; the
+  // Apps alone, opened on purpose - from a bot's button - show the last one
+  // brought, whenever that was.
+  const broughtNow = broughtLast && (view === "apps" || broughtLast.place > since) ? broughtLast : undefined;
   const handles = useMemo(() => chat.members.filter((member) => member.kind !== "schedule").map((member) => member.handle), [chat.members]);
   const say = async (saying: Saying): Promise<string | void> => {
     const forHowMany = await act.say(chat.chat_id, saying);

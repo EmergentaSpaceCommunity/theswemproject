@@ -1,19 +1,22 @@
 // A Workbench on a laptop: no address from outside. The person installs a
 // tunnel from the Store, sends /app to the bot, and the bot's button opens
-// the Workbench's page inside the messenger through the tunnel - which here
-// is a fixture that stands at the Workbench's own gate, so the walk really
-// goes through the gate. What the gate answers is the page and nothing
-// else. Closed from the Channels page, the page says to send /app again.
+// the Workbench's own page inside the messenger through the tunnel - which
+// here is a fixture that stands at the Workbench's own gate, so the walk
+// really goes through the gate. The page is the page, drawn for somebody
+// who came through a messenger at a phone's width: the owner has the
+// agent's files and the chat, and hands a file of any size; a guest has
+// their chat and nothing else. The gate lets in a messenger session and
+// nothing else. Closed from the Channels page, the bot takes its button
+// back.
 
-import {createHmac} from "node:crypto";
 import {launchBrowser, sleep, cleanup, browserPath} from "../../swem-host/tests/cdp_browser.mjs";
-import {OWNER, TOKEN, addBotAndPair, messenger} from "./messenger_common.mjs";
+import {OWNER, STRANGER, addBotAndPair, messenger, pageInTheMessenger} from "./messenger_common.mjs";
 
 const step = (name) => console.log(`step: ${name}`);
-const [url, api, catalogUrl, bigFile, hosted] = process.argv.slice(2);
+const [url, api, catalogUrl, bigFile, serversUrl] = process.argv.slice(2);
 const browser = browserPath();
-if (!url || !api || !catalogUrl || !bigFile || !hosted) {
-  console.error("usage: messenger_tunnel_driver.mjs <address> <bot-api-address> <catalog> <a-big-file> <where-the-page-is-hosted>");
+if (!url || !api || !catalogUrl || !bigFile || !serversUrl) {
+  console.error("usage: messenger_tunnel_driver.mjs <address> <bot-api-address> <catalog> <a-big-file> <servers-catalog>");
   process.exit(2);
 }
 
@@ -21,14 +24,8 @@ const b = await launchBrowser({browser, url, label: "messenger-tunnel"});
 const origin = new URL(url).origin;
 const tg = messenger(api);
 const {written, sent, sentTo} = tg;
+const page = pageInTheMessenger(b);
 const USAGE = "this fixture takes";
-const signed = (user, token = TOKEN) => {
-  const fields = {auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify(user)};
-  const check = Object.keys(fields).sort().map((name) => `${name}=${fields[name]}`).join("\n");
-  const secret = createHmac("sha256", "WebAppData").update(token).digest();
-  const hash = createHmac("sha256", secret).update(check).digest("hex");
-  return new URLSearchParams({...fields, hash}).toString();
-};
 const setValue = async (id, value) =>
   b.evaluate(`(() => {
     const field = document.getElementById(${JSON.stringify(id)});
@@ -39,41 +36,53 @@ const open = async (where) => {
   await b.send("Page.navigate", {url: where});
   await sleep(600);
 };
-const buttons = async () => sentTo(await sent(), OWNER.id).flatMap((call) => call.body.reply_markup?.inline_keyboard?.flat() ?? []).filter((one) => one.web_app?.url);
+const buttons = async (who = OWNER) => sentTo(await sent(), who.id).flatMap((call) => call.body.reply_markup?.inline_keyboard?.flat() ?? []).filter((one) => one.web_app?.url);
 
 step("the product opens");
 const profile = await b.makeAgent("hands");
-const owner = (await b.ask("/api/people")).body?.owner?.name ?? "";
-await addBotAndPair(b, api, profile, {guests: "nobody", appAt: hosted, tg});
+// A server whose tool brings an App, from the Store, attached before the
+// agent's first session: what an agent attaches it is told when a session
+// starts.
+await b.goTo("#/store");
+await b.waitFor("the Store", async () => b.exists("#index-url"), 100);
+await setValue("index-url", serversUrl);
+await b.waitFor("the Store takes a catalog", async () => b.evaluate(`!document.getElementById("index-add")?.disabled`), 150);
+await b.click("#index-add");
+await b.waitFor("the server listed", async () => b.exists('.store-entry[data-kind="server"][data-id="notes"]'), 300);
+await b.waitFor("the server installable", async () =>
+  b.evaluate(`(() => { const one = document.querySelector('.store-install[data-kind="server"][data-id="notes"]'); return !!one && !one.disabled; })()`), 100);
+await b.click('.store-install[data-kind="server"][data-id="notes"]');
+await b.consent();
+await b.waitFor("the server installed", async () => b.exists('.store-entry[data-kind="server"][data-id="notes"][data-installed="true"]'), 600, 500);
+await b.openAgent(profile, "settings");
+await b.waitFor("the servers of the agent", async () => b.exists('.server-attach[data-server="notes"]'), 150);
+await b.click('.server-attach[data-server="notes"]');
+await b.waitFor("the server attached", async () => b.evaluate(`!!document.querySelector('.server-attach[data-server="notes"]')?.checked`), 100);
+step("a server whose tool brings an App is installed and attached to the agent");
+await addBotAndPair(b, api, profile, {guests: "anyone", tg});
 await written(OWNER, "hello from my phone");
 await b.waitFor("the agent answers", async () => sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes(USAGE)), 200, 200);
 
 // --- No address: the page says so, and the bot says what is missing ---------
-// (The tunnel that came with the product is beside the binary, but the tool
-// it drives is not installed here, so it cannot open one either.)
 await b.goTo("#/providers/channels");
 await b.waitFor("the row from outside", async () => b.exists('#reach-row[data-reach-state="none"]'), 100);
 const noWay = await b.evaluate(`document.getElementById("reach-row")?.innerText ?? ""`);
 if (!noWay.includes("No address from outside")) cleanup(1, `the row does not say so: ${noWay}`);
 if (!(await b.evaluate(`document.getElementById("tunnel-open")?.innerText ?? ""`)).includes("and open")) cleanup(1, "the page does not offer to install what the tunnel needs and open it");
 await written(OWNER, "/app");
-// The tunnel that came with the product needs a tool fetched first: the
-// bot asks its owner once, with what and from where, and a button. (The
-// walk does not press it: that would fetch from the vendor's release.)
 await b.waitFor("the bot asks to install what the tunnel needs", async () =>
   sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("a tunnel needs")
     && JSON.stringify(call.body.reply_markup ?? {}).includes("Install and open")), 150);
 if ((await buttons()).length > 0) cleanup(1, "a button was sent with no address to open");
 step("with no address and no tunnel, the page and the bot say what to do");
 
-// --- A tunnel from the Store ----------------------------------------------------
+// --- A tunnel from the Store, and a server whose tool brings an App --------
 await b.goTo("#/store");
 await b.waitFor("the Store", async () => b.exists("#index-url"), 100);
 await setValue("index-url", catalogUrl);
+await b.waitFor("the Store takes a catalog", async () => b.evaluate(`!document.getElementById("index-add")?.disabled`), 150);
 await b.click("#index-add");
 await b.waitFor("the tunnel listed", async () => b.exists('.store-entry[data-kind="swem/tunnel@1"][data-id="nowhere"]'), 300);
-// The Store still reads the catalog for a moment after listing it; the
-// button is pressed once it is pressable.
 await b.waitFor("the tunnel installable", async () =>
   b.evaluate(`(() => { const one = document.querySelector('.store-install[data-kind="swem/tunnel@1"][data-id="nowhere"]'); return !!one && !one.disabled; })()`), 100);
 await b.click('.store-install[data-kind="swem/tunnel@1"][data-id="nowhere"]');
@@ -87,45 +96,86 @@ await written(OWNER, "/app");
 await b.waitFor("the bot offers its page through the tunnel", async () => (await buttons()).length > 0, 200, 200);
 const offered = (await buttons())[0];
 const opened = new URL(offered.web_app.url);
-const at = opened.searchParams.get("at");
-if (!at || !at.startsWith("http://127.0.0.1:")) cleanup(1, `the button does not say where the Workbench is reached: ${offered.web_app.url}`);
-if (at === origin) cleanup(1, "the button points at the Workbench itself, not at the gate");
+const gate = opened.origin;
+if (!gate.startsWith("http://127.0.0.1:")) cleanup(1, `the button does not point at the gate: ${offered.web_app.url}`);
+if (gate === origin) cleanup(1, "the button points at the Workbench itself, not at the gate");
+if (opened.searchParams.get("open") !== "files" || !opened.searchParams.get("channel")) cleanup(1, `the button does not say what to open: ${offered.web_app.url}`);
 await b.goTo("#/providers/channels");
 await b.waitFor("the row says the tunnel is open", async () => b.exists('#reach-row[data-reach-state="tunnel"]'), 100);
 const openRow = await b.evaluate(`document.getElementById("reach-row")?.innerText ?? ""`);
-if (!openRow.includes("nowhere") || !openRow.includes(at)) cleanup(1, `the row does not say through what and where: ${openRow}`);
+if (!openRow.includes("nowhere") || !openRow.includes(gate)) cleanup(1, `the row does not say through what and where: ${openRow}`);
 step("/app opened the tunnel and the bot sent a button pointing through it");
 
-// --- The page, through the gate ---------------------------------------------
-await open(`${offered.web_app.url}#tgWebAppData=${encodeURIComponent(signed(OWNER))}`);
-await b.waitFor("the page knows who opened it", async () =>
-  (await b.evaluate(`document.getElementById("you")?.innerText ?? ""`)).includes(`You are ${owner} here`), 100);
-const placed = await b.setFileInputFiles("#file", [bigFile]);
-if (!placed) cleanup(1, "the file could not be put in the page's input");
-await b.fill("#words", "through the tunnel");
-await b.click("#upload");
-await b.waitFor("the file is sent through the gate", async () => b.exists("#sending[data-sent]"), 300, 200);
+// --- The page, through the gate, at a phone's width ------------------------
+await page.open(offered.web_app.url, OWNER);
+await b.waitFor("the page is drawn for the owner from the messenger", async () => b.exists('[data-in-messenger="owner"]'), 150);
+if (await b.exists(".w-rail")) cleanup(1, "the rail is drawn inside the messenger");
+const tabs = await page.tabs();
+if (tabs.join(",") !== "Chat,Files,Apps") cleanup(1, `the owner's tabs: ${tabs.join(",")}`);
+await b.waitFor("the Files tab, as the bot pointed", async () => (await page.activeTab()) === "Files", 100);
+await b.waitFor("the agent's files", async () => b.exists('[data-agent-panel="files"]:not([hidden]) .w-tree-items'), 150);
+if (!(await b.pressText('[data-in-messenger] .k-tab', "Chat"))) cleanup(1, "no Chat tab");
+await b.waitFor("the chat as it stands", async () => page.streamSays("hello from my phone"), 150);
+const placed = await b.setFileInputFiles('.w-composer input[type="file"]', [bigFile]);
+if (!placed) cleanup(1, "the composer takes no file");
+await b.fill(".w-composer-input", "through the tunnel");
+await b.waitFor("Send", async () => b.evaluate(`!document.querySelector('.w-composer button[type="submit"]')?.disabled`));
+await b.click('.w-composer button[type="submit"]');
+await b.waitFor("the words are in the chat", async () => page.streamSays("through the tunnel"), 300, 200);
 await b.waitFor("the agent answered what came with the file", async () =>
-  sentTo(await sent(), OWNER.id).filter((call) => String(call.body.text).includes(USAGE)).length >= 2, 200, 200);
-// And the gate answers nothing but the page - asked from here, as a
-// stranger at the public address would ask.
+  sentTo(await sent(), OWNER.id).filter((call) => String(call.body.text).includes(USAGE)).length >= 2, 300, 200);
+// And the gate lets in nothing but a messenger session - asked from here
+// as a stranger at the public address would ask, with no cookie.
 const refused = [];
-for (const path of ["/api/chats", "/", "/api/access", "/api/channels/x/receive", "/api/reach"]) {
-  const response = await fetch(at + path, {method: path.endsWith("receive") ? "POST" : "GET"});
+for (const [method, path] of [["GET", "/api/chats"], ["POST", "/api/channels/x/receive"], ["GET", "/api/reach"], ["POST", "/api/access/sign-in/begin"], ["GET", "/api/stream"]]) {
+  const response = await fetch(gate + path, {method});
   refused.push(`${path}:${response.status}`);
 }
-if (refused.some((one) => !one.endsWith(":404"))) cleanup(1, `the gate answers more than the page: ${refused.join(" ")}`);
-step("the page works through the gate, which answers nothing else");
+if (refused.some((one) => !one.endsWith(":403"))) cleanup(1, `the gate answers more than it should: ${refused.join(" ")}`);
+step("the owner's page works through the gate at a phone's width, and the gate refuses everybody else");
 
-// --- Closed from the Channels page, the page says what to do ---------------
+// --- An App a tool of the agent brought: the bot's button, the Apps tab ----
+await page.laptop();
+await written(OWNER, JSON.stringify({tool: "save_note", arguments: {nonce: "messenger-nonce-1", text: "a note from the phone"}}));
+await b.waitFor("the bot offers the App the agent brought", async () =>
+  sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("brought an App")
+    && (call.body.reply_markup?.inline_keyboard?.flat() ?? []).some((one) => one.web_app?.url?.includes("open=apps"))), 300, 200);
+const broughtButton = sentTo(await sent(), OWNER.id).flatMap((call) => call.body.reply_markup?.inline_keyboard?.flat() ?? []).find((one) => one.web_app?.url?.includes("open=apps"));
+await page.open(broughtButton.web_app.url, OWNER);
+await b.waitFor("the page is drawn for the owner from the messenger", async () => b.exists('[data-in-messenger="owner"]'), 150);
+await b.waitFor("the Apps tab, as the bot pointed", async () => (await page.activeTab()) === "Apps", 100);
+await b.waitFor("the App the tool brought, drawn through the tunnel's second address", async () =>
+  (await b.exists('[data-in-messenger] .w-apps:not([hidden]) #app-frame'))
+    && (await b.evaluate(`[...document.querySelectorAll('[data-in-messenger] .w-apps:not([hidden]) > .k-caption')].map((one) => one.textContent).join(" ")`)).includes("agent App result delivered"), 600, 300);
+const frameOrigin = await b.evaluate(`(() => { try { return new URL(document.getElementById("app-frame").src).origin; } catch { return ""; } })()`);
+if (!frameOrigin.startsWith("http://127.0.0.1:") || frameOrigin === gate || frameOrigin === origin) cleanup(1, `the App is not drawn at the tunnel's second address: ${frameOrigin}`);
+step("an App the agent brought opens on the page's Apps tab, through the tunnel's second address");
+
+// --- A guest: their chat and nothing else ------------------------------------
+await written(STRANGER, "hello, I am Bob");
+await b.waitFor("the agent answers Bob", async () => sentTo(await sent(), STRANGER.id).some((call) => String(call.body.text).includes(USAGE)), 200, 200);
+await written(STRANGER, "/app");
+await b.waitFor("the bot offers Bob his page", async () => (await buttons(STRANGER)).length > 0, 200, 200);
+const bobs = (await buttons(STRANGER))[0];
+if (new URL(bobs.web_app.url).searchParams.get("open") !== "chat") cleanup(1, `a guest's button opens ${bobs.web_app.url}`);
+await page.open(bobs.web_app.url, STRANGER);
+await b.waitFor("the page is drawn for a guest", async () => b.exists('[data-in-messenger="guest"]'), 150);
+const bobTabs = await page.tabs();
+if (bobTabs.join(",") !== "Chat") cleanup(1, `a guest's tabs: ${bobTabs.join(",")}`);
+await b.waitFor("Bob's own chat", async () => page.streamSays("hello, I am Bob"), 150);
+if (await page.streamSays("hello from my phone")) cleanup(1, "a guest sees the owner's chat");
+step("a guest's page is their chat and nothing else");
+
+// --- Closed from the Channels page, the bot takes its buttons back ----------
+await page.laptop();
 await open(`${origin}/#/providers/channels`);
 await b.waitFor("the row with the tunnel", async () => b.exists("#tunnel-close"), 150);
 await b.click("#tunnel-close");
 await b.waitFor("the tunnel closed", async () => b.exists('#reach-row[data-reach-state="none"]'), 100);
-await open(`${offered.web_app.url}#tgWebAppData=${encodeURIComponent(signed(OWNER))}`);
-await b.waitFor("the page says to send /app again", async () =>
-  (await b.evaluate(`document.getElementById("why")?.innerText ?? ""`)).includes("Send /app to the bot"), 150, 200);
-step("closed, the page says to send /app to the bot again");
+await b.waitFor("the bot took its buttons back", async () =>
+  sentTo(await sent(), OWNER.id, "editMessageText").some((call) => String(call.body.text).includes("send /app again"))
+    && sentTo(await sent(), STRANGER.id, "editMessageText").length > 0, 150);
+step("closed, the bot took its buttons back and said to send /app again");
 
 console.log("messenger tunnel OK");
 await sleep(200);

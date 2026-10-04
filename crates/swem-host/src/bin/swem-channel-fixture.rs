@@ -79,6 +79,13 @@ struct VerifyAppParams {
     init_data: String,
 }
 
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct TakeBackParams {
+    chat: String,
+    reference: String,
+    markdown: String,
+}
+
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
 struct Sent {
     reference: String,
@@ -180,6 +187,18 @@ impl Channel {
             "name": "Fixture",
             "app_data_fragment": "appData"
         }))
+    }
+
+    #[tool(description = "Take back a button the bot sent")]
+    fn take_back(
+        &self,
+        Parameters(params): Parameters<TakeBackParams>,
+    ) -> Result<Json<Sent>, String> {
+        self.record(
+            "take_back",
+            &json!({ "chat": params.chat, "reference": params.reference, "markdown": params.markdown }),
+        )
+        .map(Json)
     }
 
     /// The fixture's page data is `user=<json>&hash=<hex>`, the hash an

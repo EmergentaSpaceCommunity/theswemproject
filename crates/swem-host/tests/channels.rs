@@ -163,7 +163,6 @@ async fn the_owner_pairs_with_a_code_talks_to_their_agent_and_a_stranger_gets_on
             agent: Some("coder".into()),
             guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings::default(),
-            app_at: None,
             key: Some("not-a-real-token".into()),
         })
         .await
@@ -343,7 +342,6 @@ async fn a_program_that_is_not_a_channel_is_refused_in_words() {
             agent: Some("coder".into()),
             guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings::default(),
-            app_at: None,
             key: None,
         })
         .await
@@ -446,7 +444,6 @@ async fn the_telegram_channel_carries_a_chat_through_the_bot_api() {
                 api_root: Some(address.clone()),
                 door: None,
             },
-            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -558,7 +555,6 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
                 api_root: Some(address.clone()),
                 door: None,
             },
-            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -769,7 +765,6 @@ async fn a_message_through_a_channel_has_what_was_due_said() {
                 api_root: Some(address.clone()),
                 door: None,
             },
-            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -908,7 +903,6 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
                 api_root: Some(address.clone()),
                 door: None,
             },
-            app_at: None,
             key: Some("123456:fixture".into()),
         })
         .await
@@ -1177,6 +1171,7 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
             .expect("a line")
     };
     let state = shell_with_one_agent(&root);
+    with_the_tunnel_fixture(&root, &state);
     let token = "123456:fixture";
     let shown = state
         .add_channel(AddChannelBody {
@@ -1190,7 +1185,6 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
                 api_root: Some(address.clone()),
                 door: None,
             },
-            app_at: None,
             key: Some(token.into()),
         })
         .await
@@ -1209,6 +1203,10 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
             .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "7")
     })
     .await;
+
+    // The page is reached through a tunnel, opened before the agent asks:
+    // a question waits for an answer only so long.
+    let origin = state.open_tunnel(None).await.expect("a tunnel").origin;
 
     // The owner asks the agent for something it answers with a form.
     fixture_call(
@@ -1286,35 +1284,81 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
         .flatten()
     })
     .await;
-    let bob = signed_init_data(&json!({"id": 9, "first_name": "Bob"}), token);
-    let refused = state
-        .app_question(&channel_id, &bob, &question_id)
-        .await
-        .unwrap_err();
-    assert!(refused.to_string().contains("owner"), "{refused}");
+    // The bot's button says what to open and under which name the
+    // messenger signs who opened it.
+    let button = until("the Answer button", || {
+        sent(&address).into_iter().find_map(|call| {
+            call["body"]["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"]
+                .as_str()
+                .map(str::to_owned)
+        })
+    })
+    .await;
+    assert!(
+        button.starts_with(&format!("{origin}/?open=question&channel={channel_id}"))
+            && button.contains("&signed=tgWebAppData")
+            && button.contains(&format!("&question={question_id}")),
+        "{button}"
+    );
+    let exchange = |data: &str| {
+        ask_the_gate(
+            &origin,
+            "POST",
+            &format!("/api/access/by-channel/{channel_id}"),
+            None,
+            Some(&json!({ "init_data": data }).to_string()),
+        )
+    };
+    let (status, bob, body) = exchange(&signed_init_data(
+        &json!({"id": 9, "first_name": "Bob"}),
+        token,
+    ));
+    assert_eq!(status, 200, "{body}");
+    let bob = bob.expect("a cookie for Bob");
+    let (status, _, refused) = ask_the_gate(
+        &origin,
+        "GET",
+        &format!("/api/questions/{question_id}"),
+        Some(&bob),
+        None,
+    );
+    assert_eq!(status, 403, "{refused}");
+    assert!(refused.contains("owner"), "{refused}");
 
     // The owner reads it, with its fields, and answers it.
-    let ada = signed_init_data(&json!({"id": 7, "first_name": "Ada"}), token);
-    let read = state
-        .app_question(&channel_id, &ada, &question_id)
-        .await
-        .expect("the owner reads the question");
+    let (status, ada, body) = exchange(&signed_init_data(
+        &json!({"id": 7, "first_name": "Ada"}),
+        token,
+    ));
+    assert_eq!(status, 200, "{body}");
+    let ada = ada.expect("a cookie for Ada");
+    let (status, _, read) = ask_the_gate(
+        &origin,
+        "GET",
+        &format!("/api/questions/{question_id}"),
+        Some(&ada),
+        None,
+    );
+    assert_eq!(status, 200, "{read}");
+    let read: Value = serde_json::from_str(&read).expect("json");
     assert_eq!(read["mode"], "form", "{read}");
     assert!(
         read["requestedSchema"]["properties"]["strategy"].is_object(),
         "{read}"
     );
-    state
-        .app_answer(
-            &channel_id,
-            &ada,
-            &question_id,
-            json!({"action": "accept", "content": {
+    let (status, _, body) = ask_the_gate(
+        &origin,
+        "POST",
+        &format!("/api/questions/{question_id}/answer"),
+        Some(&ada),
+        Some(
+            &json!({"action": "accept", "content": {
                 "strategy": "bold", "iterations": 2, "stems": ["voice"]
-            }}),
-        )
-        .await
-        .expect("the owner answers");
+            }})
+            .to_string(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
     // The agent went on: its answer reaches the messenger.
     until("the agent says it was accepted", || {
         sent(&address).into_iter().find(|call| {
@@ -1328,10 +1372,23 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
     .await;
 
     // And words said from the page are said in the chat, as the owner's.
-    state
-        .app_say(&channel_id, &ada, "and one more thing")
-        .await
-        .expect("said from the page");
+    let ada_chat = state.chats().await.expect("chats")[0].chat_id.clone();
+    let (status, _, body) = ask_the_gate(
+        &origin,
+        "POST",
+        &format!("/api/chats/{ada_chat}/messages"),
+        Some(&ada),
+        Some(&json!({ "text": "and one more thing" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+    // The tunnel closed, the bot takes its button back.
+    state.close_tunnel().await;
+    until("the button taken back", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "editMessageText" && call["body"]["chat_id"] == "7")
+    })
+    .await;
 
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();
@@ -1499,7 +1556,6 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
             agent: Some("coder".into()),
             guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings::default(),
-            app_at: None,
             key: Some(key.into()),
         })
         .await
@@ -1608,6 +1664,9 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
         ("GET", "/api/people".to_owned(), 200),
         ("GET", "/api/profiles/coder/tree".to_owned(), 200),
         ("GET", "/api/profiles/coder/files".to_owned(), 200),
+        // The Apps of a connection are the owner's within reach: the route
+        // is open, and a connection nobody has is not found.
+        ("GET", "/api/connections/nobody/apps".to_owned(), 404),
         ("GET", "/api/profiles".to_owned(), 403),
         ("GET", "/api/reach".to_owned(), 403),
         ("GET", "/api/access/standing".to_owned(), 403),
@@ -1659,6 +1718,7 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
         ("GET", format!("/api/chats/{ada_chat}")),
         ("GET", "/api/profiles/coder/tree".to_owned()),
         ("GET", "/api/questions/q-1".to_owned()),
+        ("GET", "/api/connections/nobody/apps".to_owned()),
         ("POST", format!("/api/chats/{ada_chat}/messages")),
     ] {
         let (status, _, body) = ask_the_gate(

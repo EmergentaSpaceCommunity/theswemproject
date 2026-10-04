@@ -118,7 +118,7 @@ export function AddSomeone({ chat, open, onClose }: { chat: Chat; open: boolean;
 }
 
 export function Members({ chat, onAdd }: { chat: Chat; onAdd: () => void }) {
-  const owner = useStore(world, (state) => state.owner);
+  const owner = useStore(world, (state) => state.you);
   const [problem, setProblem] = useState("");
   const change = (what: { answer_rule?: string; reply_limit?: number }) => {
     setProblem("");

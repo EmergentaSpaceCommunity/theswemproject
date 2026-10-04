@@ -13,7 +13,6 @@
 //! the timekeeper is one loop.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -71,11 +70,6 @@ pub struct ChannelDocument {
     /// a door of this Workbench, which needs it served at an address.
     #[serde(default)]
     pub reach: Reach,
-    /// Where the page the bot opens inside the messenger is hosted, when
-    /// not by this Workbench: a static copy of `web/mini-app` anywhere
-    /// with HTTPS. The bot's button then carries this Workbench's address.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_at: Option<String>,
     #[serde(default)]
     pub settings: channel::Settings,
     /// The code the owner says to the bot once, to be known there.
@@ -138,8 +132,6 @@ pub struct ChangeChannelBody {
     pub reach: Option<Reach>,
     /// Where the page inside the messenger is hosted; empty for here.
     #[serde(default)]
-    pub app_at: Option<String>,
-    #[serde(default)]
     pub guests: Option<GuestPolicy>,
     #[serde(default)]
     pub agent: Option<String>,
@@ -155,19 +147,6 @@ pub(super) struct MessengerPerson {
     /// The bot's agent, by profile and as a participant.
     pub agent_profile: String,
     pub agent_id: String,
-}
-
-/// Who opened a channel's Mini App, and what is theirs here.
-struct AppPerson {
-    participant: crate::Participant,
-    /// The owner sees what the agent put out; a guest sees their chat only.
-    is_owner: bool,
-    /// Whether the agent takes a turn on what they send.
-    may_speak: bool,
-    chat_id: String,
-    /// The bot's agent, by profile.
-    agent: String,
-    bot: Bot,
 }
 
 /// Somebody a bot has met, and whether the agent takes a turn on what they
@@ -197,10 +176,6 @@ pub struct ChannelPackage {
 pub struct ChannelsStanding {
     pub channels: Vec<ChannelShown>,
     pub packages: Vec<ChannelPackage>,
-    /// Where the product hosts the page a bot opens inside the messenger,
-    /// if it does: what a bot is told when the person names no host.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_hosted_at: Option<String>,
 }
 
 /// What a person gives to add a channel.
@@ -219,19 +194,23 @@ pub struct AddChannelBody {
     pub guests: GuestPolicy,
     #[serde(default)]
     pub settings: channel::Settings,
-    /// Where the page inside the messenger is hosted, when not here.
-    #[serde(default)]
-    pub app_at: Option<String>,
     /// The bot's secret; kept with the keys, never in the document.
     #[serde(default)]
     pub key: Option<String>,
 }
+
+/// A channel's program and the buttons it sent, to take back.
+type TakenBack = (Arc<AppAttachmentEntry>, Vec<(String, String)>);
 
 /// What a channel's runner holds while it runs.
 struct Running {
     entry: Arc<AppAttachmentEntry>,
     stop: Arc<tokio::sync::Notify>,
     said: Arc<Mutex<String>>,
+    /// The buttons to the page the bot sent while the tunnel stood: the
+    /// messenger's chat and the message's reference, taken back when the
+    /// tunnel closes.
+    buttons: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 /// The channels of one Workbench.
@@ -423,22 +402,6 @@ impl WorkbenchShellState {
         })
     }
 
-    /// The address of the page a bot opens inside the messenger, for this
-    /// Workbench at `origin`: the host the person named for the bot, else
-    /// the product's own copy, else the Workbench's page itself.
-    pub(super) fn app_url_for(&self, document: &ChannelDocument, origin: &str) -> String {
-        match document
-            .app_at
-            .clone()
-            .or_else(|| self.app_hosted_at().map(str::to_owned))
-        {
-            // Hosted elsewhere: the page is told where this Workbench is and
-            // which channel.
-            Some(at) => format!("{at}/?at={origin}&channel={}", document.id),
-            None => format!("{origin}/channels/{}/app", document.id),
-        }
-    }
-
     /// Where a messenger delivers for a channel, when this Workbench is
     /// served at an address.
     fn door_of(&self, id: &str) -> Option<String> {
@@ -469,10 +432,6 @@ impl WorkbenchShellState {
         }
         if let Some(guests) = body.guests {
             document.guests = guests;
-        }
-        if let Some(app_at) = body.app_at {
-            let app_at = app_at.trim().trim_end_matches('/').to_owned();
-            document.app_at = (!app_at.is_empty()).then_some(app_at);
         }
         if let Some(agent) = body.agent {
             document.agent = (!agent.trim().is_empty()).then(|| agent.trim().to_owned());
@@ -549,290 +508,41 @@ impl WorkbenchShellState {
         })
     }
 
-    /// Who opened a channel's Mini App, by the messenger's signature, and
-    /// the chat they have through the bot.
-    ///
-    /// # Errors
-    ///
-    /// The channel does not run or cannot verify; the data is not the
-    /// messenger's; the person is not known here or has no chat yet.
-    async fn app_person(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-    ) -> Result<AppPerson, WorkbenchShellError> {
-        let channels = self.channels()?;
-        let document = channels.read(id)?;
-        let entry = channels
+    /// The tunnel closed: every button the bots sent to the page through it
+    /// is taken back, with a word on what to do.
+    pub(super) async fn take_back_app_buttons(&self) {
+        let Ok(channels) = self.channels() else {
+            return;
+        };
+        let running: Vec<TakenBack> = channels
             .running
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .map(|run| Arc::clone(&run.entry))
-            .ok_or_else(|| WorkbenchShellError::NotFound(format!("no channel {id} runs")))?;
-        let person: Person = call_tool_of(
-            &entry,
-            channel::VERIFY_APP,
-            json!({ "init_data": init_data }),
-        )
-        .await
-        .and_then(|answer| serde_json::from_value(answer).map_err(|error| error.to_string()))
-        .map_err(WorkbenchShellError::Forbidden)?;
-        let (channel, external) = (id.to_owned(), person.id.clone());
-        // The chat the page is about: the one they have with the bot alone,
-        // else a chat through this bot they are in. Somebody in none of them
-        // has nothing here; nobody gets more than their own chats.
-        let found = self
-            .with_ledger(move |ledger| {
-                let Some(participant) = ledger.participant_of_identity(&channel, &external)? else {
-                    return Ok(None);
-                };
-                let is_owner = participant.kind == ParticipantKind::Person;
-                let may_speak = is_owner
-                    || ledger
-                        .identity_of(&channel, &external)?
-                        .is_some_and(|identity| identity.may_speak);
-                if let Some(direct) =
-                    ledger.direct_chat_of(&channel, &participant.participant_id)?
-                    && let Some(chat_id) = ledger.chat_of_channel_chat(&channel, &direct)?
-                {
-                    return Ok(Some((participant, is_owner, may_speak, chat_id)));
-                }
-                for bound in ledger.chats_of_channel(&channel)? {
-                    let chat = ledger.chat(&bound.chat_id)?;
-                    if chat.members.iter().any(|member| {
-                        member.participant_id == participant.participant_id && !member.retired
-                    }) {
-                        return Ok(Some((participant, is_owner, may_speak, bound.chat_id)));
-                    }
-                }
-                Ok(None)
+            .values()
+            .map(|run| {
+                let taken: Vec<(String, String)> = std::mem::take(
+                    &mut *run
+                        .buttons
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                (Arc::clone(&run.entry), taken)
             })
-            .await
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        let Some((participant, is_owner, may_speak, chat_id)) = found else {
-            return Err(WorkbenchShellError::Forbidden(
-                "write to the bot first; then this page knows you".into(),
-            ));
-        };
-        let agent = document
-            .agent
-            .clone()
-            .ok_or_else(|| WorkbenchShellError::Invalid("no agent answers here yet".into()))?;
-        Ok(AppPerson {
-            participant,
-            is_owner,
-            may_speak,
-            chat_id,
-            agent,
-            bot: document.bot.clone().unwrap_or_default(),
-        })
-    }
-
-    /// What a channel's Mini App shows: who you are here, the chat's last
-    /// words, and what the agent put out.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_person`].
-    pub async fn app_standing(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-    ) -> Result<Value, WorkbenchShellError> {
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        let page = self.chat_page(&who.chat_id, None, 50).await?;
-        let workspace = self
-            .inventory
-            .select(&who.agent)
-            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?
-            .workspace;
-        // What the agent put out is the owner's to take, not a guest's.
-        let files: Vec<crate::HandedFile> = if who.is_owner {
-            crate::workbench_files::list(&workspace)
-                .await?
-                .into_iter()
-                .filter(|file| file.area == crate::workbench_files::OUTBOX)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let names: BTreeMap<String, String> = page
-            .chat
-            .members
-            .iter()
-            .map(|member| (member.participant_id.clone(), member.name.clone()))
             .collect();
-        Ok(json!({
-            "you": { "participant_id": who.participant.participant_id, "name": who.participant.name },
-            "owner": who.is_owner,
-            "bot": who.bot,
-            "agent": who.agent,
-            "chat": { "chat_id": who.chat_id, "title": page.chat.title },
-            "messages": page.messages.iter().map(|message| json!({
-                "by": names.get(&message.sender_id).cloned().unwrap_or_default(),
-                "text": message.text,
-                "at_ms": message.created_ms,
-            })).collect::<Vec<_>>(),
-            "files": files,
-        }))
-    }
-
-    /// A file of any size, from the Mini App into the chat: kept as content
-    /// once the person is known, and said in the chat with their words, so
-    /// it reaches the agent's inbox as a file handed over on the page does.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_person`]; or the file cannot be kept.
-    pub async fn app_upload<F>(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-        words: &str,
-        ingest: F,
-    ) -> Result<Value, WorkbenchShellError>
-    where
-        F: Future<Output = Result<crate::WorkbenchContentDescriptor, WorkbenchShellError>>,
-    {
-        // Who asks is known before a byte is kept.
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        let descriptor = ingest.await?;
-        let name = descriptor.name.clone();
-        let said = self
-            .say_in_chat_as(
-                &who.chat_id,
-                Some(who.participant.participant_id),
-                &channel_of(id),
-                Saying {
-                    text: if words.trim().is_empty() {
-                        format!("Sent {name} through the app.")
-                    } else {
-                        words.to_owned()
-                    },
-                    blocks: Vec::new(),
-                    content_refs: vec![descriptor.descriptor_id.clone()],
-                    context: None,
-                    client_ref: None,
-                    for_the_record: !who.may_speak,
-                },
-            )
-            .await?;
-        Ok(json!({
-            "message_id": said.message.message_id,
-            "name": name,
-            "byte_length": descriptor.byte_length,
-        }))
-    }
-
-    /// A question the agent asks, for the page inside the messenger to draw:
-    /// for the owner, who answers it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_person`]; somebody who is not the owner; a question
-    /// no longer waiting.
-    pub async fn app_question(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-        question_id: &str,
-    ) -> Result<Value, WorkbenchShellError> {
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        if !who.is_owner {
-            return Err(WorkbenchShellError::Forbidden(
-                "the agent's questions are its owner's to answer".into(),
-            ));
+        for (entry, buttons) in running {
+            for (chat, reference) in buttons {
+                let _ = call_tool_of(
+                    &entry,
+                    channel::TAKE_BACK,
+                    json!({
+                        "chat": chat,
+                        "reference": reference,
+                        "markdown": "The address closed; send /app again.",
+                    }),
+                )
+                .await;
+            }
         }
-        self.question_in_full(question_id).await
-    }
-
-    /// The owner's answer to a question, from the page inside the messenger.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_question`]; an answer the question does not take.
-    pub async fn app_answer(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-        question_id: &str,
-        answer: Value,
-    ) -> Result<Value, WorkbenchShellError> {
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        if !who.is_owner {
-            return Err(WorkbenchShellError::Forbidden(
-                "the agent's questions are its owner's to answer".into(),
-            ));
-        }
-        self.answer_in_chat_by(question_id, answer, Some(who.participant.participant_id))
-            .await
-            .and_then(|answered| {
-                serde_json::to_value(answered)
-                    .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
-            })
-    }
-
-    /// Words said in the person's chat from the page inside the messenger:
-    /// as theirs, and answered as anything they say is.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_person`]; nothing to say.
-    pub async fn app_say(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-        text: &str,
-    ) -> Result<Value, WorkbenchShellError> {
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        let said = self
-            .say_in_chat_as(
-                &who.chat_id,
-                Some(who.participant.participant_id),
-                &channel_of(id),
-                Saying {
-                    text: text.to_owned(),
-                    blocks: Vec::new(),
-                    content_refs: Vec::new(),
-                    context: None,
-                    client_ref: None,
-                    for_the_record: !who.may_speak,
-                },
-            )
-            .await?;
-        Ok(json!({ "message_id": said.message.message_id }))
-    }
-
-    /// One file the agent put out, for the Mini App to show or save.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::app_person`]; or no such file.
-    pub async fn app_file(
-        self: &Arc<Self>,
-        id: &str,
-        init_data: &str,
-        name: &str,
-    ) -> Result<(Vec<u8>, String), WorkbenchShellError> {
-        let who = self.app_person(id, init_data).await?;
-        self.touch_tunnel();
-        if !who.is_owner {
-            return Err(WorkbenchShellError::Forbidden(
-                "what the agent put out is its owner's".into(),
-            ));
-        }
-        let workspace = self
-            .inventory
-            .select(&who.agent)
-            .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))?
-            .workspace;
-        crate::workbench_files::read(&workspace, crate::workbench_files::OUTBOX, name).await
     }
 
     /// A delivery at a channel's door, handed to the channel as it came.
@@ -944,25 +654,7 @@ impl WorkbenchShellState {
             }
         }
         packages.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(ChannelsStanding {
-            channels,
-            packages,
-            app_hosted_at: self.app_hosted_at().map(str::to_owned),
-        })
-    }
-
-    /// Where the product hosts the page a bot opens inside the messenger.
-    pub fn set_app_hosted_at(&self, address: &str) {
-        let _ = self
-            .app_hosted_at
-            .set(address.trim().trim_end_matches('/').to_owned());
-    }
-
-    pub(super) fn app_hosted_at(&self) -> Option<&str> {
-        self.app_hosted_at
-            .get()
-            .map(String::as_str)
-            .filter(|address| !address.is_empty())
+        Ok(ChannelsStanding { channels, packages })
     }
 
     /// Add a channel: its document, its key, a pairing code; then start it.
@@ -1004,10 +696,6 @@ impl WorkbenchShellState {
             agent: body.agent,
             guests: body.guests,
             reach: Reach::Pull,
-            app_at: body
-                .app_at
-                .map(|at| at.trim().trim_end_matches('/').to_owned())
-                .filter(|at| !at.is_empty()),
             settings: body.settings,
             pairing_code: Some(pairing_code()?),
             bot: None,
@@ -1186,6 +874,7 @@ impl WorkbenchShellState {
         channels.write(&document)?;
         let stop = Arc::new(tokio::sync::Notify::new());
         let said = Arc::new(Mutex::new(String::new()));
+        let buttons: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         channels
             .running
             .lock()
@@ -1196,6 +885,7 @@ impl WorkbenchShellState {
                     entry: Arc::clone(&entry),
                     stop: Arc::clone(&stop),
                     said: Arc::clone(&said),
+                    buttons: Arc::clone(&buttons),
                 },
             );
         let runner = Runner {
@@ -1204,6 +894,7 @@ impl WorkbenchShellState {
             entry,
             said,
             origins: Arc::new(Mutex::new(BTreeMap::new())),
+            buttons,
         };
         let pulled = runner.clone();
         let stopped = Arc::clone(&stop);
@@ -1258,6 +949,8 @@ struct Runner {
     /// by their reference: so a message is not carried back to the chat it
     /// was said in.
     origins: Arc<Mutex<BTreeMap<String, String>>>,
+    /// The buttons to the page sent through a tunnel, to take back.
+    buttons: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 /// The question the bot asks its owner before fetching what a tunnel
@@ -1439,7 +1132,7 @@ impl Runner {
                 .await;
                 return;
             }
-            None => match self.state.open_tunnel(None).await {
+            None => match self.open_a_tunnel_saying_so(external_chat).await {
                 Ok(tunnel) => tunnel.origin,
                 // The tunnel needs something fetched first: one tap of the
                 // owner's is the consent, with what and from where said.
@@ -1480,26 +1173,66 @@ impl Runner {
                 }
             },
         };
-        // The host the person named for this bot, else the product's own
-        // copy, else the Workbench's page itself.
-        let url = match self
+        // The owner's page opens on the agent's files; a guest's on their
+        // chat.
+        let open = if may_open_a_tunnel { "files" } else { "chat" };
+        let words = if may_open_a_tunnel {
+            "The Workbench, here: your agent's files, its questions, what it put out."
+        } else {
+            "The Workbench, here: your chat with the agent."
+        };
+        self.send_a_button(
+            external_chat,
+            words,
+            "Open",
+            &self.app_url(&origin, open, ""),
+        )
+        .await;
+    }
+
+    /// The address of the page inside the messenger, on what the bot points
+    /// at: the Workbench's own page at `origin`, told which channel, where
+    /// the messenger puts the signed data on who opened it, and what to
+    /// open.
+    fn app_url(&self, origin: &str, open: &str, more: &str) -> String {
+        let fragment = self
             .state
             .channels()
             .and_then(|channels| channels.read(&self.id))
-        {
-            Ok(document) => self.state.app_url_for(&document, &origin),
-            Err(_) => format!("{origin}/channels/{}/app", self.id),
-        };
-        let _ = self
+            .ok()
+            .and_then(|document| document.bot)
+            .map(|bot| bot.app_data_fragment)
+            .filter(|fragment| !fragment.is_empty())
+            .map(|fragment| format!("&signed={fragment}"))
+            .unwrap_or_default();
+        format!("{origin}/?open={open}&channel={}{fragment}{more}", self.id)
+    }
+
+    /// A button to the page, sent and remembered: when the tunnel it
+    /// points through closes, it is taken back.
+    async fn send_a_button(&self, external_chat: &str, markdown: &str, label: &str, url: &str) {
+        let sent = self
             .call(
                 channel::SEND,
                 json!({
                     "chat": external_chat,
-                    "markdown": "The Workbench, here: a file of any size to the agent, what it put out, the chat.",
-                    "app": { "label": "Open", "url": url },
+                    "markdown": markdown,
+                    "app": { "label": label, "url": url },
                 }),
             )
             .await;
+        // Only a button through a tunnel is taken back; a served address
+        // stands.
+        if self.state.served_origin().is_none()
+            && let Ok(sent) = sent
+            && let Some(reference) = sent.get("reference").and_then(Value::as_str)
+            && !reference.is_empty()
+        {
+            self.buttons
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((external_chat.to_owned(), reference.to_owned()));
+        }
     }
 
     /// The owner's tap on "Install and open": fetch what the tunnel needs,
@@ -1527,6 +1260,21 @@ impl Runner {
             }
         }
         Ok(())
+    }
+
+    /// Open a tunnel, having said so first: standing at an address takes
+    /// seconds, and silence reads as nothing happening. Nothing is said
+    /// when the tunnel only needs something installed first - that is
+    /// asked instead.
+    async fn open_a_tunnel_saying_so(
+        &self,
+        external_chat: &str,
+    ) -> Result<super::tunnel::TunnelShown, WorkbenchShellError> {
+        if self.missing_for_a_tunnel().is_empty() {
+            self.tell(external_chat, "Opening an address from outside; a moment.")
+                .await;
+        }
+        self.state.open_tunnel(None).await
     }
 
     /// What the tunnel that would open needs installed first.
@@ -2127,7 +1875,41 @@ impl Runner {
                 }
             }
             "chat/question" => self.carry_question(&event.payload, external_chats).await,
+            // A tool of the agent brought an App: the messenger cannot draw
+            // it, so the bot says so and offers the page's Apps tab.
+            "host/app_tool_observed"
+                if event.payload.get("phase").and_then(Value::as_str) == Some("request") =>
+            {
+                self.carry_an_app(chat_id, &event.payload, external_chats)
+                    .await;
+            }
             _ => {}
+        }
+    }
+
+    /// An App a tool of the agent brought, offered as a button to the
+    /// page's Apps tab on this chat - where the Workbench has an address;
+    /// elsewhere it is only said.
+    async fn carry_an_app(&self, chat_id: &str, payload: &Value, external_chats: &[String]) {
+        let what = ["title", "name", "tool", "server_name", "server"]
+            .iter()
+            .find_map(|key| payload.get(key).and_then(Value::as_str))
+            .map_or_else(|| "an App".to_owned(), |name| format!("an App: {name}"));
+        let words = format!("The agent brought {what}.");
+        match self.state.app_origin() {
+            Some(origin) => {
+                let url = self.app_url(&origin, "apps", &format!("&chat={chat_id}"));
+                for external_chat in external_chats {
+                    self.send_a_button(external_chat, &words, "Open", &url)
+                        .await;
+                }
+            }
+            None => {
+                for external_chat in external_chats {
+                    self.tell(external_chat, &format!("{words} Send /app to open it."))
+                        .await;
+                }
+            }
         }
     }
 
@@ -2157,21 +1939,16 @@ impl Runner {
                 .ok()
                 .map(|tunnel| tunnel.origin),
         };
-        let document = self.state.channels().and_then(|c| c.read(&self.id)).ok();
         for external_chat in external_chats {
-            if let (Some(origin), Some(document)) = (&origin, &document) {
-                let url = self.state.app_url_for(document, origin);
-                let joiner = if url.contains('?') { '&' } else { '?' };
-                let _ = self
-                    .call(
-                        channel::SEND,
-                        json!({
-                            "chat": external_chat,
-                            "markdown": format!("**The agent asks:** {message}"),
-                            "app": { "label": "Answer", "url": format!("{url}{joiner}question={question_id}") },
-                        }),
-                    )
-                    .await;
+            if let Some(origin) = &origin {
+                let url = self.app_url(origin, "question", &format!("&question={question_id}"));
+                self.send_a_button(
+                    external_chat,
+                    &format!("**The agent asks:** {message}"),
+                    "Answer",
+                    &url,
+                )
+                .await;
             } else {
                 self.tell(
                     external_chat,

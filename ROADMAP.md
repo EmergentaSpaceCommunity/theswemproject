@@ -34,14 +34,17 @@ phone's width, and the checks on Linux and on a phone that are marked unverified
 An agent is reached from Telegram today: a bot added on Providers → Channels, the owner known by
 a code, a stranger kept out, the bot in a group and a forum topic, a guest let into a chat, the
 agent's questions answered with a button, files each way within the messenger's limits, and
-deliveries to the door of a Workbench served at an address, a page of the Workbench inside the
-messenger for files of any size - from a laptop through a tunnel from the Store, no key
-(`docs/channels.md`, ADR-0015). Next: a hosted copy of the page named by the product as the
-default; the bot run from a served Workbench with the laptop closed, tried by hand; a keeper
-that knocks from outside on a Workbench that sleeps, as a hosted service with a self-host
-(ADR-0015); secrets a package declares, when a package needs one (a named tunnel); another
-messenger as a package of the same kind. Debt: the page inside the messenger (`web/mini-app`)
-is not scanned by the genericity test, which reads crates only.
+deliveries to the door of a Workbench served at an address, and the Workbench's own page inside
+the messenger - the owner's agent with its files, questions and the chat, a guest's own chats,
+a file of any size - from a laptop through a tunnel from the Store, no key (`docs/channels.md`,
+ADR-0015, ADR-0016), with the Apps the agent's servers bring on the page's Apps tab, offered by
+the bot when a tool brings one. Next: the bot run from a served Workbench with the laptop
+closed, tried by hand; a
+keeper that knocks from outside on a Workbench that sleeps, as a hosted service with a
+self-host (ADR-0015); secrets a package declares, when a package needs one (a named tunnel);
+another messenger as a package of the same kind. Debt: who asks reaches the door and the chat
+routes; the other handlers still act as the owner, and the door refuses a messenger session
+the rest until they take it too (ADR-0016).
 
 ## Teams of agents
 
