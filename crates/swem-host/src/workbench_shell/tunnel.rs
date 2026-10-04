@@ -24,6 +24,26 @@ use super::{WorkbenchShellError, WorkbenchShellState};
 use crate::chat_ledger::now_ms;
 use crate::workbench_apps::{AppAttachmentEntry, call_tool_of, discover_server};
 
+/// The gate's listener: the Workbench's own router, told that every
+/// request came through the gate. Erased to `dyn`, so that the router -
+/// which opens tunnels, which start this - does not contain itself.
+fn gate_loop(
+    state: Arc<WorkbenchShellState>,
+    listener: tokio::net::TcpListener,
+    told: tokio::sync::oneshot::Receiver<()>,
+) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+    Box::pin(super::accept_until_told(
+        listener,
+        None,
+        told,
+        move |mut request| {
+            let state = Arc::clone(&state);
+            request.extensions_mut().insert(super::door::Through::Gate);
+            async move { Box::pin(super::route_shell(&state, request)).await }
+        },
+    ))
+}
+
 /// How long a tunnel stays open with nobody using it.
 pub const IDLE: Duration = Duration::from_mins(30);
 
@@ -339,16 +359,7 @@ impl WorkbenchShellState {
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
             .port();
         let (told, told_rx) = tokio::sync::oneshot::channel();
-        let state = Arc::clone(self);
-        tokio::spawn(super::accept_until_told(
-            listener,
-            None,
-            told_rx,
-            move |request| {
-                let state = Arc::clone(&state);
-                async move { super::door::route_the_gate(&state, request).await }
-            },
-        ));
+        tokio::spawn(gate_loop(Arc::clone(self), listener, told_rx));
         let (entry, origin) = match standing_at(&package, stdio, port).await {
             Ok(stood) => stood,
             Err(error) => {
@@ -450,6 +461,7 @@ impl WorkbenchShellState {
         let Some(mut tunnel) = taken else {
             return;
         };
+        self.forget_messenger_sessions();
         let _ = call_tool_of(&tunnel.entry, tunnel::CLOSE, json!({})).await;
         if let Some(told) = tunnel.gate.take() {
             let _ = told.send(());

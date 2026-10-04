@@ -50,7 +50,7 @@ pub mod workbench_shell;
 
 pub use access::{
     Access, AccessError, Begun, CODES_MADE, CameBy, CameIn, CodesLeft, Device, Happened, May,
-    Principal, Token,
+    Principal, Scope, Token,
 };
 pub use chat_ledger::*;
 pub use chat_work::*;

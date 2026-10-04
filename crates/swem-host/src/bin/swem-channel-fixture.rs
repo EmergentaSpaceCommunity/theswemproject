@@ -74,9 +74,43 @@ struct FetchFileParams {
     file: String,
 }
 
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+struct VerifyAppParams {
+    init_data: String,
+}
+
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
 struct Sent {
     reference: String,
+}
+
+/// HMAC-SHA256, for the fixture's own way of signing who opened its page.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    let mut block = [0_u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&sha2::Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let inner: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
+    let outer: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&inner);
+    hasher.update(message);
+    let inner_hash = hasher.finalize();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&outer);
+    hasher.update(inner_hash);
+    hasher.finalize().to_vec()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 #[derive(Debug)]
@@ -84,6 +118,9 @@ struct Channel {
     inbox: PathBuf,
     outbox: PathBuf,
     sent: Mutex<u64>,
+    /// The bot's key, as the harness hands it: what the fixture's page
+    /// data is signed with.
+    key: String,
     tool_router: ToolRouter<Self>,
 }
 
@@ -140,8 +177,45 @@ impl Channel {
         Json(json!({
             "id": "bot-1",
             "username": "fixture_bot",
-            "name": "Fixture"
+            "name": "Fixture",
+            "app_data_fragment": "appData"
         }))
+    }
+
+    /// The fixture's page data is `user=<json>&hash=<hex>`, the hash an
+    /// HMAC-SHA256 of `user=<json>` under the bot's key - the shape of a
+    /// messenger's signed data, and nobody's messenger.
+    #[tool(description = "Who opened the page inside the messenger, from signed data")]
+    fn verify_app(
+        &self,
+        Parameters(params): Parameters<VerifyAppParams>,
+    ) -> Result<Json<Value>, String> {
+        let mut user = None;
+        let mut hash = None;
+        for pair in params.init_data.split('&') {
+            match pair.split_once('=') {
+                Some(("user", value)) => user = Some(value),
+                Some(("hash", value)) => hash = Some(value),
+                _ => {}
+            }
+        }
+        let (Some(user), Some(hash)) = (user, hash) else {
+            return Err("the data names no user, or carries no hash".into());
+        };
+        let expected = hex(&hmac_sha256(
+            self.key.as_bytes(),
+            format!("user={user}").as_bytes(),
+        ));
+        if expected != hash {
+            return Err("the data is not signed for this bot".into());
+        }
+        let person: Value = serde_json::from_str(user).map_err(|error| error.to_string())?;
+        self.record("verify_app", &json!({ "id": person["id"] }))?;
+        Ok(Json(json!({
+            "id": person["id"].as_str().map_or_else(|| person["id"].to_string(), str::to_owned),
+            "name": person["name"].as_str().unwrap_or_default(),
+            "username": person["username"].as_str().unwrap_or_default(),
+        })))
     }
 
     #[tool(description = "The next inbound events, waiting up to wait_s for one")]
@@ -274,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inbox,
         outbox: home.join("outbox").join("calls.jsonl"),
         sent: Mutex::new(0),
+        key: std::env::var("SWEM_CHANNEL_KEY").unwrap_or_default(),
         tool_router: Channel::tool_router(),
     }
     .serve(rmcp::transport::stdio())

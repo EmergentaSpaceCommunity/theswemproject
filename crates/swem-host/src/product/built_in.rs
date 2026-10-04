@@ -72,9 +72,9 @@ impl Answering {
         Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let mut request = asked(request);
-        request.extensions_mut().insert(SaidBy(Principal {
-            by: CameBy::Embedder,
-        }));
+        request
+            .extensions_mut()
+            .insert(SaidBy(Principal::owner_by(CameBy::Embedder)));
         Box::pin(route_shell(&self.state, request)).await
     }
 }

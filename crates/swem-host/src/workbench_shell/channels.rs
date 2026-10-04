@@ -145,6 +145,18 @@ pub struct ChangeChannelBody {
     pub agent: Option<String>,
 }
 
+/// Somebody who opened the page inside the messenger, as the door learns
+/// them at the exchange: who they are here, and the bot's agent.
+pub(super) struct MessengerPerson {
+    pub participant: crate::Participant,
+    /// The messenger's id for them.
+    pub external_id: String,
+    pub is_owner: bool,
+    /// The bot's agent, by profile and as a participant.
+    pub agent_profile: String,
+    pub agent_id: String,
+}
+
 /// Who opened a channel's Mini App, and what is theirs here.
 struct AppPerson {
     participant: crate::Participant,
@@ -474,6 +486,69 @@ impl WorkbenchShellState {
         Ok(shown)
     }
 
+    /// Who opened the page inside the messenger, by the messenger's
+    /// signature: the channel package says who, the ledger says who that is
+    /// here. Somebody the bot never met has nothing here.
+    ///
+    /// # Errors
+    ///
+    /// The channel does not run or does not answer `verify_app`; the data
+    /// is not the messenger's; the person is not known here; no agent
+    /// answers for the bot yet.
+    pub(super) async fn messenger_person(
+        self: &Arc<Self>,
+        id: &str,
+        init_data: &str,
+    ) -> Result<MessengerPerson, WorkbenchShellError> {
+        let channels = self.channels()?;
+        let document = channels.read(id)?;
+        let entry = channels
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|run| Arc::clone(&run.entry))
+            .ok_or_else(|| WorkbenchShellError::NotFound(format!("no channel {id} runs")))?;
+        let person: Person = call_tool_of(
+            &entry,
+            channel::VERIFY_APP,
+            json!({ "init_data": init_data }),
+        )
+        .await
+        .and_then(|answer| serde_json::from_value(answer).map_err(|error| error.to_string()))
+        .map_err(WorkbenchShellError::Forbidden)?;
+        let agent_profile = document
+            .agent
+            .clone()
+            .ok_or_else(|| WorkbenchShellError::Invalid("no agent answers here yet".into()))?;
+        let (channel, external, profile) =
+            (id.to_owned(), person.id.clone(), agent_profile.clone());
+        let found = self
+            .with_ledger(move |ledger| {
+                let Some(participant) = ledger.participant_of_identity(&channel, &external)? else {
+                    return Ok(None);
+                };
+                let owner = ledger.owner()?;
+                let is_owner = participant.participant_id == owner.participant_id;
+                let agent = ledger.agent_of_profile(&profile)?;
+                Ok(Some((participant, is_owner, agent.participant_id)))
+            })
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        let Some((participant, is_owner, agent_id)) = found else {
+            return Err(WorkbenchShellError::Forbidden(
+                "write to the bot first; then this page knows you".into(),
+            ));
+        };
+        Ok(MessengerPerson {
+            participant,
+            external_id: person.id,
+            is_owner,
+            agent_profile,
+            agent_id,
+        })
+    }
+
     /// Who opened a channel's Mini App, by the messenger's signature, and
     /// the chat they have through the bot.
     ///
@@ -495,10 +570,14 @@ impl WorkbenchShellState {
             .get(id)
             .map(|run| Arc::clone(&run.entry))
             .ok_or_else(|| WorkbenchShellError::NotFound(format!("no channel {id} runs")))?;
-        let person: Person = call_tool_of(&entry, "verify_app", json!({ "init_data": init_data }))
-            .await
-            .and_then(|answer| serde_json::from_value(answer).map_err(|error| error.to_string()))
-            .map_err(WorkbenchShellError::Forbidden)?;
+        let person: Person = call_tool_of(
+            &entry,
+            channel::VERIFY_APP,
+            json!({ "init_data": init_data }),
+        )
+        .await
+        .and_then(|answer| serde_json::from_value(answer).map_err(|error| error.to_string()))
+        .map_err(WorkbenchShellError::Forbidden)?;
         let (channel, external) = (id.to_owned(), person.id.clone());
         // The chat the page is about: the one they have with the bot alone,
         // else a chat through this bot they are in. Somebody in none of them

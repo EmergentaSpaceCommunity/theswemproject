@@ -62,3 +62,13 @@ session. The harness maps the person to the identity bound through the channel a
 they have through the bot; the channel alone checks the signature, with the token only it
 holds. The bot offers the page with a `web_app` button, which the channel's `send` takes as an
 optional `app` beyond the shape.
+
+**Declared, and exchanged once** (added 2026-10-04, with ADR-0016). `verify_app` and the
+`app {label, url}` button on `send` are named in the SDK (`channel::VERIFY_APP`,
+`channel::AppButton`) as what a channel answers beyond the shape when it has a page inside the
+messenger, as `receive` is; `take_back {chat, reference}` beside them, for a button to a page
+whose address closed; and `look` names in `app_data_fragment` where the messenger puts the
+signed data in the page's address. The signed data is no longer carried per call: the page
+exchanges it once at `POST /api/access/by-channel/<id>` for a session of the Workbench's own
+door, and who asks from then on is a participant - the owner within the bot's agent, or a
+guest within their chats (ADR-0016). The paragraph above describes what stood until then.

@@ -50,6 +50,23 @@ pub const FETCH_FILE: &str = "fetch_file";
 /// channel that answers it can be reached at a door, one that does not
 /// pulls.
 pub const RECEIVE: &str = "receive";
+/// Who opened the page inside the messenger: `verify_app {init_data} ->
+/// Person`. Not in the shape: a channel that answers it has a page inside
+/// the messenger, opened by the bot's button and let in by the messenger's
+/// signature on who opened it.
+pub const VERIFY_APP: &str = "verify_app";
+/// Take back a button the bot sent: `take_back {chat, reference}`. Not in
+/// the shape: a channel that answers it withdraws the button to a page
+/// whose address closed.
+pub const TAKE_BACK: &str = "take_back";
+
+/// A button that opens a page inside the messenger, on `send`: `app
+/// {label, url}`. A channel that has no such thing ignores it.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AppButton {
+    pub label: String,
+    pub url: String,
+}
 
 /// The shape every channel answers to, as a document.
 pub const CHANNEL_SHAPE: &str = r#"{
@@ -109,6 +126,11 @@ pub struct Bot {
     /// given in [`Settings::door`], or why the door could not be used.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reach: String,
+    /// Where in the page's address the messenger puts the signed data on
+    /// who opened it: the name of the fragment's parameter. Empty when the
+    /// channel has no page inside the messenger.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_data_fragment: String,
 }
 
 /// Somebody on the messenger's side.

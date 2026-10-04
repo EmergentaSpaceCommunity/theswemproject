@@ -852,6 +852,8 @@ pub struct WorkbenchShellState {
     /// Where the product hosts a copy of the page a bot opens inside the
     /// messenger, if it does.
     app_hosted_at: std::sync::OnceLock<String>,
+    /// The sessions of people who came through a messenger: for a while.
+    messenger_sessions: std::sync::Mutex<door::MessengerSessions>,
     /// A tunnel that is open, and where tunnels keep their files.
     tunnel: std::sync::Mutex<Option<tunnel::Tunnel>>,
     tunnel_root: std::sync::OnceLock<PathBuf>,
@@ -1080,6 +1082,7 @@ impl WorkbenchShellState {
             keepers: std::sync::OnceLock::new(),
             channels: std::sync::OnceLock::new(),
             app_hosted_at: std::sync::OnceLock::new(),
+            messenger_sessions: std::sync::Mutex::new(door::MessengerSessions::default()),
             tunnel: std::sync::Mutex::new(None),
             tunnel_root: std::sync::OnceLock::new(),
             keep_time_command: std::sync::OnceLock::new(),
@@ -4209,8 +4212,9 @@ pub(crate) async fn route_shell(
         Ok(said) => said,
         Err(refused) => return *refused,
     };
+    let through = door::Through::of(&request);
     let who = if segments.first() == Some(&"api") {
-        match state.let_in(&method, &segments, request.headers(), &from, said) {
+        match state.let_in(&method, &segments, request.headers(), &from, said, through) {
             Ok(who) => who,
             Err(refused) => return *refused,
         }
@@ -4228,17 +4232,31 @@ pub(crate) async fn route_shell(
         &segments,
         query.as_deref(),
         request,
+        who.as_ref(),
     ))
     .await
     {
         Ok(response) => return response,
         Err(request) => request,
     };
+    // Somebody who came through a messenger reaches an agent's files only
+    // within the bot's agent.
+    if let (Some(who), ["api", "profiles", profile_id, ..]) = (who.as_ref(), segments.as_slice())
+        && who.through_a_messenger()
+    {
+        match state.scope_of(Some(who)).await {
+            Ok(scope) if scope.reaches_agent(profile_id) => {}
+            Ok(_) => {
+                return respond_json(StatusCode::FORBIDDEN, &json!({ "error": "forbidden" }));
+            }
+            Err(error) => return error_response(&error),
+        }
+    }
     match (&method, segments.as_slice()) {
         // A channel's Mini App: one static page, served here so a bot has
         // somewhere to point by default; hosted anywhere else just as well.
         (&Method::GET, ["channels", channel_id, "app"]) => {
-            if !state.is_served_at_an_address() {
+            if !state.is_served_at_an_address() && through != door::Through::Gate {
                 return respond(
                     StatusCode::NOT_FOUND,
                     "text/plain;charset=utf-8",
@@ -4258,8 +4276,11 @@ pub(crate) async fn route_shell(
             let handover = match state.session_token() {
                 None => None,
                 // Served at an address, the page is what anybody gets and
-                // says nothing; what is behind it opens by sign-in.
-                Some(_) if state.is_served_at_an_address() => None,
+                // says nothing; what is behind it opens by sign-in. Through
+                // the gate the same: it opens by the messenger's signature.
+                Some(_) if state.is_served_at_an_address() || through == door::Through::Gate => {
+                    None
+                }
                 Some(token) if offered.as_deref() == Some(token) => Some(format!(
                     "{}={token}; Path=/; SameSite=Strict; HttpOnly",
                     session_cookie_name(request.headers())

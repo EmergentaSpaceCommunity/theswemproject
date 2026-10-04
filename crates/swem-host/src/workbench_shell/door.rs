@@ -6,6 +6,7 @@
 //! There is one place where a request is let in, and it is here; what is
 //! behind it is a terminal and a person's keys.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,11 +22,86 @@ use super::{
     AskedBody, ShellBody, WorkbenchShellState, carries_the_secret, from_the_workbenchs_own_page,
     read_json, respond_json,
 };
-use crate::{Access, AccessError, CameBy, May, Principal};
+use crate::{Access, AccessError, CameBy, May, Principal, Scope};
 
 /// Where a request came from, as the listener saw it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CameFrom(pub SocketAddr);
+
+/// Which listener a request came through: the Workbench's own, or the gate
+/// a tunnel points at. Set by the listener, nothing a caller can send.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Through {
+    #[default]
+    Main,
+    Gate,
+}
+
+impl Through {
+    pub(super) fn of<Body>(request: &Request<Body>) -> Self {
+        request
+            .extensions()
+            .get::<Self>()
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// How long somebody who came through a messenger stays in: the messenger
+/// hands the page fresh signed data on every open, so a day is plenty.
+const A_MESSENGER_SESSION_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// What the door keeps of somebody who came through a messenger.
+struct MessengerSession {
+    principal: Principal,
+    expires_ms: i64,
+}
+
+/// What the door knows of somebody's reach, from the exchange: the bot's
+/// agent, and whether they are the owner. Whether they may speak is asked
+/// of the ledger each time, since the owner may change it.
+#[derive(Clone)]
+struct MessengerReach {
+    participant_id: String,
+    agent_id: String,
+    agent_profile: String,
+    owner: bool,
+}
+
+/// The sessions of people who came through a messenger: in memory, for a
+/// while, beside the tunnel - a restart or a closed tunnel ends them, and
+/// the page exchanges fresh data the next time the bot's button is pressed.
+#[derive(Default)]
+pub(super) struct MessengerSessions {
+    /// By the digest of what the browser holds.
+    by_cookie: BTreeMap<String, MessengerSession>,
+    /// The same signed data answers the same session: by its digest, what
+    /// the browser was handed.
+    by_data: BTreeMap<String, String>,
+    /// By channel and the messenger's id for the person.
+    reach: BTreeMap<(String, String), MessengerReach>,
+}
+
+/// The cookie somebody who came through a messenger is kept in: bound to
+/// TLS where the browser sees it (the tunnel's or the served address), else
+/// plain - the fixture tunnel answers `http`.
+fn messenger_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        "__Host-swem_in_messenger"
+    } else {
+        "swem_in_messenger"
+    }
+}
+
+fn digest(of: &str) -> String {
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(of.as_bytes()))
+}
+
+#[derive(Deserialize)]
+struct ByChannelBody {
+    init_data: String,
+}
 
 /// Who asks, as the product the harness is built into said when it handed
 /// the request over. Only that product's own code can say it: it travels
@@ -228,39 +304,47 @@ fn open_to_anybody(method: &Method, segments: &[&str]) -> bool {
                 &Method::POST,
                 ["api", "access", "register" | "sign-in", "begin" | "finish"]
                     | ["api", "access", "come-back" | "sign-out"]
+                    | ["api", "access", "by-channel", _]
                     | ["api", "channels", _, "receive"]
             )
     )
 }
 
-/// The gate: what a tunnel points at. An allow-list, never a delegation: a
-/// channel's app page and its API, which authorise by the messenger's
-/// signature on every call, and 404 to everything else - no page of the
-/// Workbench's, no sign-in, no stream, no secret of a run, no webhook
-/// door. It reads no cookie and trusts no header about where a request
-/// came from. Kept here, beside `let_in`, so who may come in stays in one
-/// file.
-pub(super) async fn route_the_gate(
-    state: &Arc<WorkbenchShellState>,
-    request: Request<AskedBody>,
-) -> Response<ShellBody> {
-    let method = request.method().clone();
-    let query = request.uri().query().map(str::to_owned);
-    let path = request.uri().path().to_owned();
-    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let not_found = || respond_json(StatusCode::NOT_FOUND, &json!({ "error": "not found" }));
-    match (&method, segments.as_slice()) {
-        (&Method::GET, ["channels", channel_id, "app"]) => super::mini_app_page(channel_id),
-        (_, ["api", "channels", _, "app"] | ["api", "channels", _, "app", ..])
-            if open_to_an_app(&method, &segments) =>
-        {
-            match super::route_the_app(state, &method, &segments, query.as_deref(), request).await {
-                Ok(response) => response,
-                Err(_) => not_found(),
-            }
-        }
-        _ => not_found(),
-    }
+/// What anybody may ask on the gate: the exchange of a messenger's signed
+/// data for a session, and where they stand. Not the passkey ceremonies,
+/// not a channel's webhook door: a tunnel's address is for a while.
+fn open_on_the_gate(method: &Method, segments: &[&str]) -> bool {
+    matches!(
+        (method, segments),
+        (&Method::GET, ["api", "access"])
+            | (
+                &Method::POST,
+                ["api", "access", "by-channel", _] | ["api", "access", "sign-out"]
+            )
+    )
+}
+
+/// What somebody who came through a messenger may ask: their chats, what
+/// they say and hand in, the agent's questions and files (the owner's,
+/// checked by scope), and the stream of it. Nothing of the Workbench's
+/// setting up: no terminal, no provider, no key, no Store, no access.
+pub(super) fn open_to_a_messenger(method: &Method, segments: &[&str]) -> bool {
+    matches!(
+        (method, segments),
+        (
+            &Method::GET,
+            ["api", "stream" | "people" | "access"]
+                | ["api", "chats" | "questions" | "content", _]
+                | ["api", "profiles", _, "tree" | "file" | "files"]
+                | ["api", "profiles", _, "files", _, _]
+        ) | (
+            &Method::POST,
+            ["api", "content"]
+                | ["api", "access", "sign-out"]
+                | ["api", "chats", _, "messages" | "stop"]
+                | ["api", "questions", _, "answer"]
+        )
+    )
 }
 
 /// What a channel's Mini App asks, from wherever it is hosted: its page,
@@ -340,6 +424,7 @@ impl WorkbenchShellState {
         headers: &HeaderMap,
         from: &str,
         said: Option<Principal>,
+        through: Through,
     ) -> Result<Option<Principal>, Refused> {
         // Nothing about the route: a caller that is not let in learns
         // neither which routes exist nor what they wanted.
@@ -349,6 +434,25 @@ impl WorkbenchShellState {
                 &json!({"error": "forbidden"}),
             ))
         };
+        if through == Through::Gate {
+            // The gate: the run's secret, a passkey and a token are not
+            // principals here. Only somebody who came through a messenger
+            // is, and only for what the door opens to them.
+            if !from_the_workbenchs_own_page(headers) {
+                return Err(forbidden());
+            }
+            if open_to_an_app(method, segments) {
+                return Ok(None);
+            }
+            let who = self.messenger_who(headers, through);
+            if open_on_the_gate(method, segments) {
+                return Ok(who);
+            }
+            return match who {
+                Some(who) if open_to_a_messenger(method, segments) => Ok(Some(who)),
+                _ => Err(forbidden()),
+            };
+        }
         if self.built_under.get().is_some() {
             // Who a person is, the product said. Which page asks is still
             // asked here: another site's page is no more this Workbench's
@@ -382,7 +486,8 @@ impl WorkbenchShellState {
         }
         let who = served
             .who(headers, from)
-            .map_err(|error| Box::new(refusal(&error)))?;
+            .map_err(|error| Box::new(refusal(&error)))?
+            .or_else(|| self.messenger_who(headers, through));
         if open_to_anybody(method, segments) {
             return Ok(who);
         }
@@ -392,6 +497,18 @@ impl WorkbenchShellState {
                 &json!({"error": "sign in"}),
             )));
         };
+        if who.through_a_messenger() {
+            if open_to_a_messenger(method, segments) {
+                return Ok(Some(who));
+            }
+            let _ = served.access.note(
+                &format!("Refused: {} asked for what it may not", who.named()),
+                true,
+                &who.named(),
+                from,
+            );
+            return Err(forbidden());
+        }
         let may = who.may(May::Everything)
             || (matches!(who.by, CameBy::Code) && open_to_a_code(method, segments))
             || (who.may(May::SayWhatIsDue) && open_to_a_knock(method, segments));
@@ -403,6 +520,213 @@ impl WorkbenchShellState {
             from,
         );
         Err(forbidden())
+    }
+
+    /// Whether the page somebody opens through this listener is at an
+    /// `https` address, as their browser sees it: the tunnel's origin, or
+    /// the served one.
+    fn messenger_cookie_is_secure(&self, through: Through) -> bool {
+        match through {
+            Through::Gate => self
+                .app_origin()
+                .is_some_and(|origin| origin.starts_with("https://")),
+            Through::Main => self.is_served_over_tls(),
+        }
+    }
+
+    /// Who came through a messenger, by the cookie they hold.
+    fn messenger_who(&self, headers: &HeaderMap, through: Through) -> Option<Principal> {
+        let name = messenger_cookie_name(self.messenger_cookie_is_secure(through));
+        let held = cookie(headers, name)?;
+        let mut sessions = self
+            .messenger_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = crate::chat_ledger::now_ms();
+        sessions
+            .by_cookie
+            .retain(|_, session| session.expires_ms > now);
+        sessions
+            .by_cookie
+            .get(&digest(held))
+            .map(|session| session.principal.clone())
+    }
+
+    /// What this principal may: everything, unless they came through a
+    /// messenger - then what is theirs within the bot's agent, with whether
+    /// they may speak asked of the ledger now.
+    ///
+    /// # Errors
+    ///
+    /// The ledger cannot be read; a messenger session the door no longer
+    /// knows.
+    pub(super) async fn scope_of(
+        &self,
+        who: Option<&Principal>,
+    ) -> Result<Scope, super::WorkbenchShellError> {
+        let Some(Principal {
+            by:
+                CameBy::Messenger {
+                    channel_id,
+                    external_id,
+                    ..
+                },
+            ..
+        }) = who
+        else {
+            return Ok(Scope::Everything);
+        };
+        let reach = self
+            .messenger_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reach
+            .get(&(channel_id.clone(), external_id.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                super::WorkbenchShellError::Forbidden("open the page from the bot again".into())
+            })?;
+        let may_speak = if reach.owner {
+            true
+        } else {
+            let (channel, external) = (channel_id.clone(), external_id.clone());
+            self.with_ledger(move |ledger| ledger.identity_of(&channel, &external))
+                .await
+                .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))?
+                .is_some_and(|identity| identity.may_speak)
+        };
+        Ok(Scope::Within {
+            participant_id: reach.participant_id,
+            agent_id: reach.agent_id,
+            agent_profile: reach.agent_profile,
+            owner: reach.owner,
+            may_speak,
+        })
+    }
+
+    /// Somebody came through a messenger: the signed data the messenger
+    /// opened the page with, exchanged once for a session. The same data
+    /// answers the same session. What comes back is who they are and the
+    /// cookie to keep.
+    ///
+    /// # Errors
+    ///
+    /// The channel does not run or does not answer `verify_app`; the data
+    /// is not the messenger's; the person is not known here.
+    pub(super) async fn came_in_through_a_messenger(
+        self: &Arc<Self>,
+        channel_id: &str,
+        init_data: &str,
+        through: Through,
+        from: &str,
+    ) -> Result<(Principal, HeaderValue), super::WorkbenchShellError> {
+        let secure = self.messenger_cookie_is_secure(through);
+        let name = messenger_cookie_name(secure);
+        let kept = |value: &str| {
+            let secure = if secure { "; Secure" } else { "" };
+            HeaderValue::from_str(&format!(
+                "{name}={value}; Path=/; Max-Age={}; SameSite=Strict; HttpOnly{secure}",
+                A_MESSENGER_SESSION_MS / 1000
+            ))
+            .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))
+        };
+        let data = digest(init_data);
+        {
+            let sessions = self
+                .messenger_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(value) = sessions.by_data.get(&data)
+                && let Some(session) = sessions.by_cookie.get(&digest(value))
+                && session.expires_ms > crate::chat_ledger::now_ms()
+            {
+                return Ok((session.principal.clone(), kept(value)?));
+            }
+        }
+        let person = match self.messenger_person(channel_id, init_data).await {
+            Ok(person) => person,
+            Err(error) => {
+                if let Some(served) = self.served_at.get() {
+                    let _ = served.access.note(
+                        "Refused: not the messenger's signature, or nobody the bot met",
+                        true,
+                        "",
+                        from,
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let principal = Principal {
+            by: CameBy::Messenger {
+                channel_id: channel_id.to_owned(),
+                external_id: person.external_id.clone(),
+                name: person.participant.name.clone(),
+            },
+            participant: Some(person.participant.participant_id.clone()),
+        };
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes)
+            .map_err(|error| super::WorkbenchShellError::Failed(error.to_string()))?;
+        let value = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        };
+        {
+            let mut sessions = self
+                .messenger_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.by_cookie.insert(
+                digest(&value),
+                MessengerSession {
+                    principal: principal.clone(),
+                    expires_ms: crate::chat_ledger::now_ms() + A_MESSENGER_SESSION_MS,
+                },
+            );
+            sessions.by_data.insert(data, value.clone());
+            sessions.reach.insert(
+                (channel_id.to_owned(), person.external_id.clone()),
+                MessengerReach {
+                    participant_id: person.participant.participant_id.clone(),
+                    agent_id: person.agent_id,
+                    agent_profile: person.agent_profile,
+                    owner: person.is_owner,
+                },
+            );
+        }
+        if let Some(served) = self.served_at.get() {
+            let _ = served.access.note(
+                "Came in through a messenger",
+                false,
+                &principal.named(),
+                from,
+            );
+        }
+        Ok((principal, kept(&value)?))
+    }
+
+    /// Whoever holds this messenger cookie is out.
+    fn end_messenger_session(&self, headers: &HeaderMap, through: Through) {
+        let name = messenger_cookie_name(self.messenger_cookie_is_secure(through));
+        if let Some(held) = cookie(headers, name) {
+            let mut sessions = self
+                .messenger_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let held = digest(held);
+            sessions.by_cookie.remove(&held);
+            sessions.by_data.retain(|_, value| digest(value) != held);
+        }
+    }
+
+    /// Everybody who came through a messenger is out: the tunnel closed,
+    /// and its address may be somebody else's tomorrow.
+    pub(super) fn forget_messenger_sessions(&self) {
+        *self
+            .messenger_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = MessengerSessions::default();
     }
 
     /// The name of the person this Workbench is: what a passkey shows for
@@ -544,17 +868,57 @@ impl WorkbenchShellState {
         self.served_at.get().is_some_and(ServedAt::over_tls)
     }
 
-    fn door_standing(&self, who: Option<&Principal>) -> Value {
+    fn door_standing(&self, who: Option<&Principal>, through: Through) -> Value {
         let called = self.called.get().map_or("SWEM", String::as_str);
-        match self.served_at.get() {
-            None => json!({"at": null, "claimed": true, "who": who, "called": called}),
-            Some(served) => json!({
+        // Somebody who came through a messenger: the bot's agent, as the
+        // page draws itself around it.
+        let messenger = match who {
+            Some(Principal {
+                by:
+                    CameBy::Messenger {
+                        channel_id,
+                        external_id,
+                        ..
+                    },
+                ..
+            }) => self
+                .messenger_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reach
+                .get(&(channel_id.clone(), external_id.clone()))
+                .map(|reach| {
+                    json!({
+                        "channel": channel_id,
+                        "agent": reach.agent_profile,
+                        "agent_id": reach.agent_id,
+                        "owner": reach.owner,
+                    })
+                }),
+            _ => None,
+        };
+        match (self.served_at.get(), through) {
+            (Some(served), Through::Main) => json!({
                 "at": served.access.address().origin().ascii_serialization(),
                 "name": served.access.address().host_str(),
                 "claimed": served.access.claimed().unwrap_or(true),
                 "who": who,
                 "called": called,
+                "messenger": messenger,
             }),
+            // Through the gate the page is at the tunnel's address, and
+            // nothing of sign-in is there to be shown.
+            (_, Through::Gate) => json!({
+                "at": self.app_origin(),
+                "claimed": true,
+                "who": who,
+                "called": called,
+                "messenger": messenger,
+                "gate": true,
+            }),
+            (None, Through::Main) => {
+                json!({"at": null, "claimed": true, "who": who, "called": called, "messenger": messenger})
+            }
         }
     }
 
@@ -623,8 +987,51 @@ pub(super) async fn route_door(
     if !matches!(segments, ["api", "access", ..]) {
         return Err(request);
     }
+    let through = Through::of(&request);
     if matches!((method, segments), (&Method::GET, ["api", "access"])) {
-        return Ok(respond_json(StatusCode::OK, &state.door_standing(who)));
+        return Ok(respond_json(
+            StatusCode::OK,
+            &state.door_standing(who, through),
+        ));
+    }
+    if let (&Method::POST, ["api", "access", "by-channel", channel_id]) = (method, segments) {
+        let channel_id = (*channel_id).to_owned();
+        let body = match body_of::<ByChannelBody>(request).await {
+            Ok(body) => body,
+            Err(response) => return Ok(*response),
+        };
+        return Ok(
+            match state
+                .came_in_through_a_messenger(&channel_id, &body.init_data, through, from)
+                .await
+            {
+                Ok((who, kept)) => {
+                    let mut response = respond_json(StatusCode::OK, &json!({"who": who}));
+                    response
+                        .headers_mut()
+                        .insert(hyper::header::SET_COOKIE, kept);
+                    response
+                }
+                Err(error) => super::error_response(&error),
+            },
+        );
+    }
+    if matches!(
+        (method, segments),
+        (&Method::POST, ["api", "access", "sign-out"])
+    ) && who.is_some_and(Principal::through_a_messenger)
+    {
+        state.end_messenger_session(request.headers(), through);
+        let mut response = respond_json(StatusCode::OK, &json!({"who": null}));
+        let name = messenger_cookie_name(state.messenger_cookie_is_secure(through));
+        if let Ok(forgotten) = HeaderValue::from_str(&format!(
+            "{name}=; Path=/; Max-Age=0; SameSite=Strict; HttpOnly"
+        )) {
+            response
+                .headers_mut()
+                .insert(hyper::header::SET_COOKIE, forgotten);
+        }
+        return Ok(response);
     }
     let Some(served) = state.served_at.get() else {
         // On the machine a person sits at there is nobody to let in.

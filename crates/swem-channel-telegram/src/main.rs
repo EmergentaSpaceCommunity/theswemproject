@@ -589,6 +589,7 @@ impl Channel {
                 .unwrap_or_default()
                 .to_owned(),
             reach: self.reach.lock().await.clone(),
+            app_data_fragment: "tgWebAppData".to_owned(),
         };
         *self.bot.lock().await = Some(bot.clone());
         Ok(Json(bot))

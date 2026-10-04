@@ -153,19 +153,26 @@ async fn a_tunnel_opens_the_app_and_nothing_else() {
         "/api/channels/some-bot/app/files",
     );
     assert_eq!(status, 204);
+    // The Workbench's own page is what the gate serves, for somebody who
+    // came through a messenger to open; behind it, without a session of
+    // theirs, nothing - and no word of sign-in, the run's secret, a knock
+    // or a channel's webhook door.
+    for path in ["/", "/workbench.js", "/api/access"] {
+        let (status, _) = ask_the_gate(&opened.origin, "GET", path);
+        assert_eq!(status, 200, "GET {path} through the gate");
+    }
     for (method, path) in [
-        ("GET", "/"),
-        ("GET", "/workbench.js"),
         ("GET", "/api/chats"),
-        ("GET", "/api/access"),
         ("POST", "/api/time/due"),
         ("GET", "/api/stream"),
         ("GET", "/api/profiles"),
         ("POST", "/api/channels/some-bot/receive"),
+        ("POST", "/api/access/register/begin"),
+        ("POST", "/api/access/sign-in/begin"),
         ("GET", "/api/reach"),
     ] {
         let (status, body) = ask_the_gate(&opened.origin, method, path);
-        assert_eq!(status, 404, "{method} {path} through the gate: {body}");
+        assert_eq!(status, 403, "{method} {path} through the gate: {body}");
         assert!(
             !body.contains("sign"),
             "{method} {path} says something: {body}"

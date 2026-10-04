@@ -164,13 +164,24 @@ pub enum CameBy {
     },
     /// The word of the product this harness is built into.
     Embedder,
+    /// The page a bot opened inside a messenger, by the messenger's
+    /// signature on who opened it - exchanged once for a session. Somebody
+    /// the bot has met: the owner, or a guest.
+    Messenger {
+        channel_id: String,
+        external_id: String,
+        name: String,
+    },
 }
 
-/// Who asks. Found before anything is answered.
+/// Who asks. Found before anything is answered: the participant, and by
+/// what they came. No participant is the owner, who every old way lets in.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Principal {
     #[serde(flatten)]
     pub by: CameBy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant: Option<String>,
 }
 
 impl Principal {
@@ -178,6 +189,16 @@ impl Principal {
     pub fn of_this_run() -> Self {
         Self {
             by: CameBy::ThisRun,
+            participant: None,
+        }
+    }
+
+    /// The owner, by this way in.
+    #[must_use]
+    pub fn owner_by(by: CameBy) -> Self {
+        Self {
+            by,
+            participant: None,
         }
     }
 
@@ -187,10 +208,17 @@ impl Principal {
         match &self.by {
             CameBy::ThisRun | CameBy::Device { .. } | CameBy::Embedder => true,
             // A code lets a person in to register a device; the routes that
-            // do that ask for nothing here.
-            CameBy::Code => false,
+            // do that ask for nothing here. A messenger session reaches the
+            // routes the door opens to it, each checked by its scope.
+            CameBy::Code | CameBy::Messenger { .. } => false,
             CameBy::Token { may, .. } => may.contains(&May::Everything) || may.contains(&what),
         }
+    }
+
+    /// Whether they came through a messenger.
+    #[must_use]
+    pub fn through_a_messenger(&self) -> bool {
+        matches!(self.by, CameBy::Messenger { .. })
     }
 
     /// Who it was, in the words of what was done.
@@ -202,6 +230,77 @@ impl Principal {
             CameBy::Code => "a code to come back with".into(),
             CameBy::Token { name, .. } => format!("token {name}"),
             CameBy::Embedder => "the product".into(),
+            CameBy::Messenger { name, .. } => format!("{name}, through a messenger"),
+        }
+    }
+}
+
+/// What a principal may: everything, or what is theirs within one agent's
+/// reach. Derived once from who asks; handlers ask it about rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Scope {
+    Everything,
+    /// Somebody who came through a messenger: the owner of this Workbench
+    /// with the reach of the bot's agent, or a guest with their own chats.
+    Within {
+        participant_id: String,
+        /// The bot's agent, as a participant.
+        agent_id: String,
+        /// The bot's agent, by profile.
+        agent_profile: String,
+        owner: bool,
+        /// Whether the agent takes a turn on what they say.
+        may_speak: bool,
+    },
+}
+
+impl Scope {
+    /// Whether a chat is within reach: for the owner, one the bot's agent
+    /// is in; for a guest, one they are a live member of.
+    #[must_use]
+    pub fn admits(&self, chat: &crate::Chat) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Within {
+                participant_id,
+                agent_id,
+                owner,
+                ..
+            } => {
+                let member = |id: &str| {
+                    chat.members
+                        .iter()
+                        .any(|member| member.participant_id == id && !member.retired)
+                };
+                if *owner {
+                    member(agent_id)
+                } else {
+                    member(participant_id)
+                }
+            }
+        }
+    }
+
+    /// Whether the agent's own things - its questions, its files - are
+    /// theirs: the owner's, within the bot's agent.
+    #[must_use]
+    pub fn is_the_owner(&self) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Within { owner, .. } => *owner,
+        }
+    }
+
+    /// Whether this agent, by profile, is within reach.
+    #[must_use]
+    pub fn reaches_agent(&self, profile_id: &str) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Within {
+                agent_profile,
+                owner,
+                ..
+            } => *owner && agent_profile == profile_id,
         }
     }
 }
@@ -624,12 +723,10 @@ impl Access {
             )?;
             change.commit()?;
         }
-        let principal = Principal {
-            by: CameBy::Device {
-                device_id: device_id.clone(),
-                name: name.clone(),
-            },
-        };
+        let principal = Principal::owner_by(CameBy::Device {
+            device_id: device_id.clone(),
+            name: name.clone(),
+        });
         let codes = if first {
             self.write_down("This Workbench was made yours", false, &name, from)?;
             Some(self.new_codes(&principal, from)?)
@@ -728,9 +825,7 @@ impl Access {
         let session = self.session_for(Some(&device_id), from)?;
         Ok(CameIn {
             session,
-            principal: Principal {
-                by: CameBy::Device { device_id, name },
-            },
+            principal: Principal::owner_by(CameBy::Device { device_id, name }),
             codes: None,
         })
     }
@@ -757,7 +852,7 @@ impl Access {
         let session = self.session_for(None, from)?;
         Ok(CameIn {
             session,
-            principal: Principal { by: CameBy::Code },
+            principal: Principal::owner_by(CameBy::Code),
             codes: None,
         })
     }
@@ -804,7 +899,7 @@ impl Access {
                 params![now, session],
             )?;
         }
-        Ok(Some(Principal { by }))
+        Ok(Some(Principal::owner_by(by)))
     }
 
     /// Who came with this token, if it is one that was made and not
@@ -832,13 +927,11 @@ impl Access {
                 )?;
                 let may = serde_json::from_str(&may)
                     .map_err(|error| AccessError::Book(error.to_string()))?;
-                Ok(Some(Principal {
-                    by: CameBy::Token {
-                        token_id,
-                        name,
-                        may,
-                    },
-                }))
+                Ok(Some(Principal::owner_by(CameBy::Token {
+                    token_id,
+                    name,
+                    may,
+                })))
             }
             Some((_, name, _, Some(_))) => {
                 self.write_down("Refused: a token that was withdrawn", true, &name, from)?;
@@ -1136,6 +1229,22 @@ impl Access {
     /// The book cannot be written.
     pub fn refused(&self, what: &str, from: &str) -> Result<(), AccessError> {
         self.write_down(what, true, "", from)
+    }
+
+    /// Write down something the door did beside the book's own: somebody
+    /// came in through a messenger, or was refused there.
+    ///
+    /// # Errors
+    ///
+    /// The book cannot be written.
+    pub fn note(
+        &self,
+        what: &str,
+        refused: bool,
+        who: &str,
+        from: &str,
+    ) -> Result<(), AccessError> {
+        self.write_down(what, refused, who, from)
     }
 
     fn write_down(

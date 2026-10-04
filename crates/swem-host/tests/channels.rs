@@ -10,9 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use swem_host::{
-    AddChannelBody, AttachmentBinding, AttachmentTransport, GuestPolicy, IntegrationKind,
+    AddChannelBody, AttachmentBinding, AttachmentTransport, GuestPolicy, IntegrationKind, Kind,
     LaunchCommand, PersonalAgentProfile, PersonalAgentProfileStore, ResolvedDirectAgentConnection,
-    WorkbenchShellState,
+    StoreInstallBody, StorePlanBody, WorkbenchShellState, registry_platform,
 };
 
 fn fixture_root(label: &str) -> PathBuf {
@@ -1336,4 +1336,460 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();
     let _ = api.wait();
+}
+
+/// The tunnel fixture, installed from a file catalog as one bare executable,
+/// so that a tunnel opens at the gate: what the page inside the messenger
+/// is reached through from a laptop.
+fn with_the_tunnel_fixture(root: &Path, state: &Arc<WorkbenchShellState>) {
+    fn sha256_of(path: &Path) -> String {
+        use sha2::Digest as _;
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(fs::read(path).expect("read the file"))
+        )
+    }
+    state
+        .enable_installs(root.join("installed"))
+        .expect("installs");
+    state
+        .enable_tunnels(&root.join("tunnels"))
+        .expect("tunnels");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem-tunnel-fixture"));
+    let platform = registry_platform().expect("a platform this test runs on");
+    let catalog = swem_host::Catalog::parse(
+        format!(
+            r#"{{"schema":"swem:catalog@0.2","name":"Tunnels for the test","entries":[
+              {{"kind":"swem/tunnel@1","id":"nowhere","name":"A tunnel to nowhere","version":"0.1.0",
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./swem-tunnel-nowhere"}}}}}}}}]}}"#,
+            fixture.display(),
+            sha256_of(&fixture)
+        )
+        .as_bytes(),
+    )
+    .expect("a catalog");
+    state
+        .enable_store(&root.join("indexes"), vec![catalog])
+        .expect("the store");
+    let kind = Kind::parse("swem/tunnel@1").expect("a kind");
+    let planned = state
+        .store_plan(&StorePlanBody {
+            kind: kind.clone(),
+            id: "nowhere".into(),
+        })
+        .expect("a plan");
+    state
+        .store_install(&StoreInstallBody {
+            kind,
+            id: "nowhere".into(),
+            plan_id: planned.plan.plan_id,
+        })
+        .expect("installed");
+}
+
+/// What the fixture channel takes as the messenger's signed data on who
+/// opened its page: `user=<json>&hash=<hmac under the bot's key>`.
+fn fixture_app_data(user: &Value, key: &str) -> String {
+    let user = user.to_string();
+    let hash = hmac_sha256(key.as_bytes(), format!("user={user}").as_bytes())
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    format!("user={user}&hash={hash}")
+}
+
+/// One HTTP/1.1 request to the gate, by hand, with a cookie and a body:
+/// the status, the cookie set if one was, and the body.
+fn ask_the_gate(
+    origin: &str,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<&str>,
+) -> (u16, Option<String>, String) {
+    use std::io::{Read as _, Write as _};
+    let host = origin.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(host).expect("the gate listens");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("a timeout");
+    let body = body.unwrap_or_default();
+    let cookie = cookie.map_or(String::new(), |cookie| format!("Cookie: {cookie}\r\n"));
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{cookie}Connection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write the request");
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    let status: u16 = answer
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status in {answer:?}"));
+    let (head, body) = answer.split_once("\r\n\r\n").expect("a body");
+    let set = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("set-cookie").then(|| {
+            value
+                .trim()
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+    });
+    (status, set, body.to_owned())
+}
+
+/// The first frame of the stream: the state whole, as the page is given it.
+fn first_state_of_the_stream(origin: &str, cookie: &str) -> Value {
+    use std::io::{Read as _, Write as _};
+    let host = origin.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(host).expect("the gate listens");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a timeout");
+    write!(
+        stream,
+        "GET /api/stream HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n"
+    )
+    .expect("write the request");
+    let mut read = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let text = String::from_utf8_lossy(&read).to_string();
+        if let Some(at) = text.find("event: state\ndata: ")
+            && let Some(end) = text[at..].find("\n\n")
+        {
+            let line = &text[at + "event: state\ndata: ".len()..at + end];
+            return serde_json::from_str(line).expect("the state is json");
+        }
+        let n = stream.read(&mut chunk).expect("read the stream");
+        assert!(n > 0, "the stream ended before the state: {text}");
+        read.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// Somebody who opens the page inside the messenger is known as themself:
+/// the owner's session reaches what this bot's agent is and nothing of the
+/// Workbench's setting up; a guest's reaches their own chats only; the same
+/// signed data is the same session, a forged one is nobody; closing the
+/// tunnel puts everybody out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over one door: the owner, a guest, what each reaches, the tunnel closed"
+)]
+async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() {
+    let root = fixture_root("messenger-page");
+    let state = shell_with_one_agent(&root);
+    with_the_tunnel_fixture(&root, &state);
+    let key = "fixture-key";
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "The fixture bot".into(),
+            package: None,
+            program: Some(env!("CARGO_BIN_EXE_swem-channel-fixture").into()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Nobody,
+            settings: swem_sdk::channel::Settings::default(),
+            app_at: None,
+            key: Some(key.into()),
+        })
+        .await
+        .expect("the channel is added");
+    assert!(shown.running, "{}", shown.said);
+    let code = shown.document.pairing_code.clone().expect("a code to say");
+    let channel_id = shown.document.id.clone();
+    let home = root.join("channels").join(&channel_id);
+
+    // The owner pairs and opens the bot's chat; Bob writes and is met,
+    // silent.
+    arrives(
+        &home,
+        "001",
+        &message("dm-ada", &person("u-1", "Ada"), &code, "upd-1"),
+    );
+    until("the welcome", || {
+        calls(&home)
+            .into_iter()
+            .find(|call| call["tool"] == "send" && call["arguments"]["chat"] == "dm-ada")
+    })
+    .await;
+    arrives(
+        &home,
+        "002",
+        &message("dm-ada", &person("u-1", "Ada"), "hello there", "upd-2"),
+    );
+    until("the agent's answer to the owner", || {
+        calls(&home)
+            .into_iter()
+            .find(|call| call["tool"] == "stream_end" && call["arguments"]["chat"] == "dm-ada")
+    })
+    .await;
+    arrives(
+        &home,
+        "003",
+        &message("dm-bob", &person("u-2", "Bob"), "hi", "upd-3"),
+    );
+    until("Bob is told", || {
+        calls(&home)
+            .into_iter()
+            .find(|call| call["tool"] == "send" && call["arguments"]["chat"] == "dm-bob")
+    })
+    .await;
+    let ada_chat = state.chats().await.expect("chats")[0].chat_id.clone();
+    let people = state.chat_people().await.expect("people");
+    let owner_id = people["owner"]["participant_id"]
+        .as_str()
+        .expect("the owner")
+        .to_owned();
+    let bob_id = state.channels_shown().await.expect("channels")[0]
+        .people
+        .iter()
+        .find(|one| one.name == "Bob")
+        .expect("Bob was met")
+        .participant_id
+        .clone();
+
+    // A tunnel: the gate is where the page is reached from a laptop.
+    let origin = state.open_tunnel(None).await.expect("a tunnel").origin;
+    let exchange = |data: &str| {
+        ask_the_gate(
+            &origin,
+            "POST",
+            &format!("/api/access/by-channel/{channel_id}"),
+            None,
+            Some(&json!({ "init_data": data }).to_string()),
+        )
+    };
+
+    // The owner comes in by the messenger's signature: a session for a
+    // while; the same data again is the same session; a forged one is
+    // nobody.
+    let ada_data = fixture_app_data(&json!({"id": "u-1", "name": "Ada"}), key);
+    let (status, cookie, body) = exchange(&ada_data);
+    assert_eq!(status, 200, "{body}");
+    let ada = cookie.expect("a cookie for Ada");
+    assert!(ada.starts_with("swem_in_messenger="), "{ada}");
+    let who: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(who["who"]["by"], "messenger", "{who}");
+    assert_eq!(who["who"]["participant"], owner_id, "{who}");
+    let (status, again, _) = exchange(&ada_data);
+    assert_eq!(status, 200);
+    assert_eq!(
+        again.as_deref(),
+        Some(ada.as_str()),
+        "the same data, the same session"
+    );
+    let (status, none, _) = exchange(&fixture_app_data(
+        &json!({"id": "u-1", "name": "Ada"}),
+        "another-key",
+    ));
+    assert_eq!(status, 403);
+    assert!(none.is_none());
+
+    // The owner's session: this bot's agent and the chats it is in, its
+    // files to read; nothing of the Workbench's setting up.
+    let (status, _, standing) = ask_the_gate(&origin, "GET", "/api/access", Some(&ada), None);
+    assert_eq!(status, 200);
+    let standing: Value = serde_json::from_str(&standing).expect("json");
+    assert_eq!(standing["messenger"]["agent"], "coder", "{standing}");
+    assert_eq!(standing["messenger"]["owner"], true, "{standing}");
+    assert_eq!(standing["gate"], true, "{standing}");
+    for (method, path, expected) in [
+        ("GET", format!("/api/chats/{ada_chat}"), 200),
+        ("GET", "/api/people".to_owned(), 200),
+        ("GET", "/api/profiles/coder/tree".to_owned(), 200),
+        ("GET", "/api/profiles/coder/files".to_owned(), 200),
+        ("GET", "/api/profiles".to_owned(), 403),
+        ("GET", "/api/reach".to_owned(), 403),
+        ("GET", "/api/access/standing".to_owned(), 403),
+        ("GET", "/api/chats".to_owned(), 403),
+        ("PUT", "/api/profiles/coder/file".to_owned(), 403),
+        ("POST", "/api/time/due".to_owned(), 403),
+        ("POST", "/api/reach/tunnel".to_owned(), 403),
+    ] {
+        let (status, _, body) = ask_the_gate(&origin, method, &path, Some(&ada), None);
+        assert_eq!(status, expected, "{method} {path} as the owner: {body}");
+    }
+    // Nobody: the page and its script, the door's standing; nothing else -
+    // not the passkey ceremonies, not a channel's webhook door, and no
+    // word of sign-in.
+    for (method, path, expected) in [
+        ("GET", "/", 200),
+        ("GET", "/workbench.js", 200),
+        ("GET", "/api/access", 200),
+        ("GET", "/api/chats", 403),
+        ("GET", "/api/stream", 403),
+        ("POST", "/api/access/register/begin", 403),
+        ("POST", "/api/access/sign-in/begin", 403),
+        ("POST", "/api/channels/some-bot/receive", 403),
+        ("POST", "/api/time/due", 403),
+    ] {
+        let (status, _, body) = ask_the_gate(&origin, method, path, None, None);
+        assert_eq!(status, expected, "{method} {path} as nobody: {body}");
+        assert!(
+            !body.contains("sign in"),
+            "{method} {path} says something: {body}"
+        );
+    }
+    let ada_state = first_state_of_the_stream(&origin, &ada);
+    assert_eq!(ada_state["you"], owner_id);
+    assert_eq!(
+        ada_state["chats"].as_array().map(Vec::len),
+        Some(1),
+        "{ada_state}"
+    );
+
+    // Bob: met, silent, with no chat of his own yet - he reaches nothing of
+    // the owner's. Then allowed, his chat opens, and he reaches that.
+    let bob_data = fixture_app_data(&json!({"id": "u-2", "name": "Bob"}), key);
+    let (status, cookie, body) = exchange(&bob_data);
+    assert_eq!(status, 200, "{body}");
+    let bob = cookie.expect("a cookie for Bob");
+    assert_ne!(bob, ada);
+    for (method, path) in [
+        ("GET", format!("/api/chats/{ada_chat}")),
+        ("GET", "/api/profiles/coder/tree".to_owned()),
+        ("GET", "/api/questions/q-1".to_owned()),
+        ("POST", format!("/api/chats/{ada_chat}/messages")),
+    ] {
+        let (status, _, body) = ask_the_gate(
+            &origin,
+            method,
+            &path,
+            Some(&bob),
+            Some(&json!({ "text": "mine?" }).to_string()),
+        );
+        assert_eq!(status, 403, "{method} {path} as Bob: {body}");
+    }
+    let bob_state = first_state_of_the_stream(&origin, &bob);
+    assert_eq!(bob_state["you"], bob_id);
+    assert_eq!(
+        bob_state["chats"].as_array().map(Vec::len),
+        Some(0),
+        "{bob_state}"
+    );
+    assert!(bob_state["owner"].is_null(), "{bob_state}");
+    let (status, _, people) = ask_the_gate(&origin, "GET", "/api/people", Some(&bob), None);
+    assert_eq!(status, 200);
+    assert!(
+        !people.contains("Ada"),
+        "Bob is told of the owner: {people}"
+    );
+
+    state
+        .allow_guest_at(&channel_id, &bob_id, true)
+        .await
+        .expect("allowed");
+    arrives(
+        &home,
+        "004",
+        &message("dm-bob", &person("u-2", "Bob"), "now I may", "upd-4"),
+    );
+    until("the agent's answer to Bob", || {
+        calls(&home)
+            .into_iter()
+            .find(|call| call["tool"] == "stream_end" && call["arguments"]["chat"] == "dm-bob")
+    })
+    .await;
+    let bob_state = first_state_of_the_stream(&origin, &bob);
+    let bob_chats = bob_state["chats"].as_array().cloned().unwrap_or_default();
+    assert_eq!(bob_chats.len(), 1, "{bob_state}");
+    let bob_chat = bob_chats[0]["chat_id"].as_str().expect("a chat").to_owned();
+    assert_ne!(bob_chat, ada_chat);
+    let (status, _, body) = ask_the_gate(
+        &origin,
+        "GET",
+        &format!("/api/chats/{bob_chat}"),
+        Some(&bob),
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    // Said from the page as Bob, through the messenger's channel, and
+    // answered as anything he says is.
+    let ended = calls(&home)
+        .into_iter()
+        .filter(|call| call["tool"] == "stream_end" && call["arguments"]["chat"] == "dm-bob")
+        .count();
+    let (status, _, body) = ask_the_gate(
+        &origin,
+        "POST",
+        &format!("/api/chats/{bob_chat}/messages"),
+        Some(&bob),
+        Some(&json!({ "text": "from the page" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+    until("the agent's answer to what Bob said from the page", || {
+        (calls(&home)
+            .into_iter()
+            .filter(|call| call["tool"] == "stream_end" && call["arguments"]["chat"] == "dm-bob")
+            .count()
+            > ended)
+            .then_some(())
+    })
+    .await;
+    let page = state
+        .chat_page(&bob_chat, None, 100)
+        .await
+        .expect("Bob's page");
+    let said = page
+        .messages
+        .iter()
+        .find(|message| message.text == "from the page")
+        .expect("said in the chat");
+    assert_eq!(said.sender_id, bob_id);
+    assert_eq!(said.channel, format!("channel:{channel_id}"));
+    // Forbidden again, what he says from the page is for the record: no turn.
+    state
+        .allow_guest_at(&channel_id, &bob_id, false)
+        .await
+        .expect("forbidden");
+    let begun = calls(&home)
+        .into_iter()
+        .filter(|call| call["tool"] == "stream_begin" && call["arguments"]["chat"] == "dm-bob")
+        .count();
+    let (status, _, body) = ask_the_gate(
+        &origin,
+        "POST",
+        &format!("/api/chats/{bob_chat}/messages"),
+        Some(&bob),
+        Some(&json!({ "text": "for the record" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        calls(&home)
+            .into_iter()
+            .filter(|call| call["tool"] == "stream_begin" && call["arguments"]["chat"] == "dm-bob")
+            .count(),
+        begun,
+        "a forbidden guest made the agent speak"
+    );
+
+    // The tunnel closed, everybody is out: a new tunnel does not know the
+    // old cookie.
+    state.close_tunnel().await;
+    let origin = state
+        .open_tunnel(None)
+        .await
+        .expect("a tunnel again")
+        .origin;
+    let (status, _, _) = ask_the_gate(
+        &origin,
+        "GET",
+        &format!("/api/chats/{ada_chat}"),
+        Some(&ada),
+        None,
+    );
+    assert_eq!(status, 403, "the old session outlived the tunnel");
+    state.close_tunnel().await;
+    state.remove_channel(&channel_id).await.expect("removed");
 }
