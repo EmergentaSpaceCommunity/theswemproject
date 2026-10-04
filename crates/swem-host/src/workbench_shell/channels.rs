@@ -395,6 +395,22 @@ impl WorkbenchShellState {
         })
     }
 
+    /// The address of the page a bot opens inside the messenger, for this
+    /// Workbench at `origin`: the host the person named for the bot, else
+    /// the product's own copy, else the Workbench's page itself.
+    fn app_url_for(&self, document: &ChannelDocument, origin: &str) -> String {
+        match document
+            .app_at
+            .clone()
+            .or_else(|| self.app_hosted_at().map(str::to_owned))
+        {
+            // Hosted elsewhere: the page is told where this Workbench is and
+            // which channel.
+            Some(at) => format!("{at}/?at={origin}&channel={}", document.id),
+            None => format!("{origin}/channels/{}/app", document.id),
+        }
+    }
+
     /// Where a messenger delivers for a channel, when this Workbench is
     /// served at an address.
     fn door_of(&self, id: &str) -> Option<String> {
@@ -969,8 +985,21 @@ impl WorkbenchShellState {
             })?;
         document.bot = Some(bot);
         channels.write(&document)?;
+        // Served at an address that stays, the page inside the messenger is
+        // put one tap away, where the channel can; through a tunnel the
+        // address changes, and /app is the way.
+        let mut menu_button_said = String::new();
+        if let Some(origin) = self.served_origin()
+            && listed.iter().any(|tool| tool.name == channel::SET_APP)
+        {
+            let url = self.app_url_for(&document, &origin);
+            if let Err(error) = call_tool_of(&entry, channel::SET_APP, json!({ "url": url })).await
+            {
+                menu_button_said = format!("the menu button could not be set: {error}");
+            }
+        }
         let stop = Arc::new(tokio::sync::Notify::new());
-        let said = Arc::new(Mutex::new(String::new()));
+        let said = Arc::new(Mutex::new(menu_button_said));
         channels
             .running
             .lock()
@@ -1205,18 +1234,13 @@ impl Runner {
         };
         // The host the person named for this bot, else the product's own
         // copy, else the Workbench's page itself.
-        let hosted = self
+        let url = match self
             .state
             .channels()
             .and_then(|channels| channels.read(&self.id))
-            .ok()
-            .and_then(|document| document.app_at)
-            .or_else(|| self.state.app_hosted_at().map(str::to_owned));
-        let url = match hosted {
-            // Hosted elsewhere: the page is told where this Workbench is and
-            // which channel.
-            Some(at) => format!("{at}/?at={origin}&channel={}", self.id),
-            None => format!("{origin}/channels/{}/app", self.id),
+        {
+            Ok(document) => self.state.app_url_for(&document, &origin),
+            Err(_) => format!("{origin}/channels/{}/app", self.id),
         };
         let _ = self
             .call(

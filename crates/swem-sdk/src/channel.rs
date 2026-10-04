@@ -50,6 +50,11 @@ pub const FETCH_FILE: &str = "fetch_file";
 /// channel that answers it can be reached at a door, one that does not
 /// pulls.
 pub const RECEIVE: &str = "receive";
+/// The page the harness answers inside the messenger, put where the
+/// messenger shows it one tap away (a menu button): `set_app {url}`. Not in
+/// the shape: a channel that answers it is told the page's address when
+/// the harness has one that stays.
+pub const SET_APP: &str = "set_app";
 
 /// The shape every channel answers to, as a document.
 pub const CHANNEL_SHAPE: &str = r#"{

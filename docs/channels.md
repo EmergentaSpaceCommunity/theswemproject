@@ -117,7 +117,9 @@ address, which has one already.
 
 The bot answers `/status` with how things stand (what the agent is doing, the chat, how
 updates arrive), `/stop`, and `/app`; while the agent works, the message being answered wears
-👀 and the bot is seen typing.
+👀 and the bot is seen typing. On a Workbench served at an address the page is also the bot's
+menu button, one tap away (the channel sets it when it starts); through a tunnel the address
+changes, and `/app` is the way. No domain has to be registered with the messenger for this.
 
 ## Where the bot lives
 
