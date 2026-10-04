@@ -18,18 +18,26 @@ messenger; the agent's answer is drafted in the messenger while it is written an
 is done, with the formatting the messenger shows (bold, code, lists, quotes, links; a table as
 code). `/stop` stops the turn. A message longer than the messenger allows arrives in pieces.
 
-## Who else may write to the bot
+## The people a bot meets
 
-- **Nobody** (the default): the bot answers you only; anybody else gets one line saying so.
-- **By invitation**: somebody who writes to the bot alone is told to wait. The bot's row on the
-  Channels page says who waits; **Let in** puts them into the chat you have with the bot. From
-  then on what they write to the bot is said there, with their name, you see it on your side,
-  and the agent's answers reach them where they wrote from. A chat of several offers the same
-  under **Add someone**. Taking them out of the chat ends it.
-- **Anyone**: whoever writes gets a chat of their own with the bot's agent.
+Everybody the bot meets - whoever writes to it alone, whoever speaks in a group it is in - is a
+person here: a guest, named as the messenger names them, in the chat they were met in. Being
+met is not being allowed: the agent takes a turn only on what the owner says and on what those
+the owner **allowed** say. The bot's row on the Channels page lists whom it has met, each with
+**Allow** or **Forbid**; "Who else may write to it" when adding the bot is only the default for
+the next new person (nobody, or anyone).
+
+Somebody who may not speak is heard where the room is shared - their words in a group are in the
+chat, so the agent knows who said what when it is next spoken to - and is told once, alone with
+the bot, that its owner has to allow them; never again, and never in a group. Allowed, they get
+a chat of their own with the agent when they write to the bot alone (named after them), and
+their word in a group the bot is in. Letting somebody into a chat of several, under **Add
+someone**, allows them as well.
 
 A guest is a participant like anybody else: what they said is theirs on the page, and the agent
-is told who is speaking and that they are a guest, not you.
+is told who is speaking and that they are a guest, not the owner. The page inside the messenger
+is theirs too, but only for their own chats: what the agent put out is the owner's; the commands
+`/app` and `/status` answer only those who may speak; only the owner's `/app` opens a tunnel.
 
 ## Groups and topics
 
@@ -46,7 +54,11 @@ its own, named after the group and the topic's number; rename it on the page.
 
 When the agent asks before doing something, the question arrives in the messenger as buttons
 with the agent's own options; the one pressed is the answer, as if it had been pressed on the
-page. What only the page can answer - a form, a link to open - is said to be so.
+page. When it asks for a form or a link, the question arrives in words with an **Answer**
+button that opens the page inside the messenger at that question: its fields drawn from what
+the agent asked for, **Answer**, **Not this**, or something else said instead - declining the
+form and saying the words in the chat, where the agent reads them as the answer. The page also
+says words into the chat at any time. Only the owner answers the agent's questions.
 
 ## Files
 
@@ -117,9 +129,9 @@ address, which has one already.
 
 The bot answers `/status` with how things stand (what the agent is doing, the chat, how
 updates arrive), `/stop`, and `/app`; while the agent works, the message being answered wears
-👀 and the bot is seen typing. On a Workbench served at an address the page is also the bot's
-menu button, one tap away (the channel sets it when it starts); through a tunnel the address
-changes, and `/app` is the way. No domain has to be registered with the messenger for this.
+👀 and the bot is seen typing. The page inside the messenger is opened by the button the bot sends in
+answer to `/app` - to whoever asks and may - so nobody sees a menu button they cannot use; no
+domain has to be registered with the messenger for this.
 
 ## Where the bot lives
 

@@ -117,6 +117,8 @@ pub(crate) const CHANNELS_SCHEMA: &str = "
     name TEXT NOT NULL,
     bound_ms INTEGER NOT NULL,
     direct_chat TEXT,
+    may_speak INTEGER NOT NULL DEFAULT 0,
+    told_ms INTEGER,
     PRIMARY KEY(channel_id, external_id)
   );
   CREATE INDEX IF NOT EXISTS identities_participant ON identities(participant_id);
@@ -128,6 +130,30 @@ pub(crate) const CHANNELS_SCHEMA: &str = "
     PRIMARY KEY(channel_id, external_chat)
   );
   CREATE INDEX IF NOT EXISTS channel_chats_chat ON channel_chats(chat_id);";
+
+const IDENTITY_COLUMNS: &str =
+    "channel_id, external_id, participant_id, name, bound_ms, direct_chat, may_speak, told_ms";
+
+fn identity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Identity> {
+    Ok(Identity {
+        channel_id: row.get(0)?,
+        external_id: row.get(1)?,
+        participant_id: row.get(2)?,
+        name: row.get(3)?,
+        bound_ms: row.get(4)?,
+        direct_chat: row.get(5)?,
+        may_speak: row.get::<_, i32>(6)? != 0,
+        told_ms: row.get(7)?,
+    })
+}
+
+/// Columns of `identities` that came later, with how they are added to a
+/// ledger whose table predates them.
+pub(crate) const IDENTITY_COLUMNS_ADDED: [(&str, &str); 3] = [
+    ("direct_chat", "TEXT"),
+    ("may_speak", "INTEGER NOT NULL DEFAULT 0"),
+    ("told_ms", "INTEGER"),
+];
 
 /// The channel a message came through when it was typed into the Workbench.
 pub const CHANNEL_WORKBENCH: &str = "workbench";
@@ -157,6 +183,11 @@ pub struct Identity {
     /// The chat on the messenger's side where they and the bot talk alone,
     /// when known: where a guest is reached once they are let into a chat.
     pub direct_chat: Option<String>,
+    /// Whether the agent takes a turn on what they say: the owner always;
+    /// a guest when the owner allowed it, or the channel's default did.
+    pub may_speak: bool,
+    /// When a guest who may not speak was told so, if ever: once is enough.
+    pub told_ms: Option<i64>,
 }
 
 /// A chat on a messenger's side that is a chat here.
@@ -1031,21 +1062,76 @@ impl RoutingLedger {
     ///
     /// The ledger could not be read.
     pub fn identities_of(&self, participant_id: &str) -> Result<Vec<Identity>, RoutingError> {
-        let mut statement = self.connection.prepare(
-            "SELECT channel_id, external_id, participant_id, name, bound_ms, direct_chat
-             FROM identities WHERE participant_id = ?1 ORDER BY bound_ms",
-        )?;
-        let rows = statement.query_map([participant_id], |row| {
-            Ok(Identity {
-                channel_id: row.get(0)?,
-                external_id: row.get(1)?,
-                participant_id: row.get(2)?,
-                name: row.get(3)?,
-                bound_ms: row.get(4)?,
-                direct_chat: row.get(5)?,
-            })
-        })?;
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {IDENTITY_COLUMNS} FROM identities WHERE participant_id = ?1 ORDER BY bound_ms"
+        ))?;
+        let rows = statement.query_map([participant_id], identity_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Who somebody on a messenger's side is here, with how they stand.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn identity_of(
+        &self,
+        channel_id: &str,
+        external_id: &str,
+    ) -> Result<Option<Identity>, RoutingError> {
+        self.connection
+            .query_row(
+                &format!("SELECT {IDENTITY_COLUMNS} FROM identities WHERE channel_id = ?1 AND external_id = ?2"),
+                params![channel_id, external_id],
+                identity_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Everybody a channel has met, the owner first.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub fn identities_at(&self, channel_id: &str) -> Result<Vec<Identity>, RoutingError> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {IDENTITY_COLUMNS} FROM identities WHERE channel_id = ?1 ORDER BY bound_ms"
+        ))?;
+        let rows = statement.query_map([channel_id], identity_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Whether a guest may speak to the agent through a channel, as the
+    /// owner decides.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be written.
+    pub fn let_speak(
+        &mut self,
+        channel_id: &str,
+        participant_id: &str,
+        may_speak: bool,
+    ) -> Result<(), RoutingError> {
+        self.connection.execute(
+            "UPDATE identities SET may_speak = ?3 WHERE channel_id = ?1 AND participant_id = ?2",
+            params![channel_id, participant_id, i32::from(may_speak)],
+        )?;
+        Ok(())
+    }
+
+    /// A guest who may not speak was told so now.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be written.
+    pub fn told(&mut self, channel_id: &str, external_id: &str) -> Result<(), RoutingError> {
+        self.connection.execute(
+            "UPDATE identities SET told_ms = ?3 WHERE channel_id = ?1 AND external_id = ?2",
+            params![channel_id, external_id, now_ms()],
+        )?;
+        Ok(())
     }
 
     /// Where a guest is reached alone on a messenger's side: the direct
@@ -1090,11 +1176,11 @@ impl RoutingLedger {
         self.participant(participant_id)?;
         let bound_ms = now_ms();
         self.connection.execute(
-            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms, direct_chat)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms, direct_chat, may_speak)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
              ON CONFLICT(channel_id, external_id)
              DO UPDATE SET participant_id = excluded.participant_id, name = excluded.name,
-                           bound_ms = excluded.bound_ms,
+                           bound_ms = excluded.bound_ms, may_speak = 1,
                            direct_chat = COALESCE(excluded.direct_chat, identities.direct_chat)",
             params![channel_id, external_id, participant_id, name, bound_ms, direct_chat],
         )?;
@@ -1105,29 +1191,9 @@ impl RoutingLedger {
             name: name.to_owned(),
             bound_ms,
             direct_chat: direct_chat.map(str::to_owned),
+            may_speak: true,
+            told_ms: None,
         })
-    }
-
-    /// The guests who wrote to a channel's bot alone and are in no chat
-    /// through it: waiting to be let in.
-    ///
-    /// # Errors
-    ///
-    /// The ledger could not be read.
-    pub fn guests_waiting_at(&self, channel_id: &str) -> Result<Vec<Participant>, RoutingError> {
-        let mut statement = self.connection.prepare(
-            "SELECT i.participant_id FROM identities i
-             JOIN participants p ON p.participant_id = i.participant_id
-             WHERE i.channel_id = ?1 AND p.kind = 'guest' AND p.retired_ms IS NULL
-               AND i.direct_chat IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM channel_chats c
-                               WHERE c.channel_id = i.channel_id AND c.external_chat = i.direct_chat)
-             ORDER BY i.bound_ms",
-        )?;
-        let ids: Vec<String> = statement
-            .query_map([channel_id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        ids.iter().map(|id| self.participant(id)).collect()
     }
 
     /// The guest somebody on a messenger's side is here: the one they were
@@ -1142,6 +1208,7 @@ impl RoutingLedger {
         external_id: &str,
         name: &str,
         direct_chat: Option<&str>,
+        may_speak: bool,
     ) -> Result<Participant, RoutingError> {
         if let Some(known) = self.participant_of_identity(channel_id, external_id)? {
             if let Some(direct_chat) = direct_chat {
@@ -1173,9 +1240,9 @@ impl RoutingLedger {
             ],
         )?;
         transaction.execute(
-            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms, direct_chat)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![channel_id, external_id, guest, name, now_ms(), direct_chat],
+            "INSERT INTO identities(channel_id, external_id, participant_id, name, bound_ms, direct_chat, may_speak)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![channel_id, external_id, guest, name, now_ms(), direct_chat, i32::from(may_speak)],
         )?;
         transaction.commit()?;
         self.participant(&guest)

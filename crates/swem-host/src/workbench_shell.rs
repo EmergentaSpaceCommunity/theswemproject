@@ -83,7 +83,7 @@ mod store;
 mod tunnel;
 pub use channels::{
     AddChannelBody, CHANNEL_SCHEMA, ChangeChannelBody, ChannelDocument, ChannelPackage,
-    ChannelShown, ChannelsStanding, GuestPolicy, GuestWaiting, Reach,
+    ChannelShown, ChannelsStanding, GuestPolicy, GuestSeen, Reach,
 };
 pub use keepers::{ChooseKeeperBody, KeeperShown, TurnOnBody};
 pub use tunnel::{IDLE as TUNNEL_IDLE, ReachStanding, TunnelPackage, TunnelShown};
@@ -3714,6 +3714,62 @@ async fn route_the_app(
                 Err(error) => error_response(&error),
             })
         }
+        (
+            &Method::GET,
+            [
+                "api",
+                "channels",
+                channel_id,
+                "app",
+                "questions",
+                question_id,
+            ],
+        ) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            for_an_app(json_result(
+                state
+                    .app_question(&channel_id, &init_data, question_id)
+                    .await,
+            ))
+        }
+        (
+            &Method::POST,
+            [
+                "api",
+                "channels",
+                channel_id,
+                "app",
+                "questions",
+                question_id,
+                "answer",
+            ],
+        ) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            let question_id = (*question_id).to_owned();
+            for_an_app(match read_json(request).await {
+                Ok(answer) => json_result(
+                    state
+                        .app_answer(&channel_id, &init_data, &question_id, answer)
+                        .await,
+                ),
+                Err(error) => error_response(&error),
+            })
+        }
+        (&Method::POST, ["api", "channels", channel_id, "app", "messages"]) => {
+            let (channel_id, init_data) = ((*channel_id).to_owned(), app_data_of(&request));
+            for_an_app(match read_json(request).await {
+                Ok(body) => {
+                    let text = body
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned();
+                    json_result(state.app_say(&channel_id, &init_data, &text).await)
+                }
+                Err(error) => error_response(&error),
+            })
+        }
         _ => return Err(request),
     };
     Ok(response)
@@ -4610,10 +4666,23 @@ pub(crate) async fn route_shell(
         }
         // A guest who wrote to the bot is let into the chat the owner has
         // with it.
-        (&Method::POST, ["api", "channels", channel_id, "guests", guest, "let-in"]) => {
+        (
+            &Method::POST,
+            [
+                "api",
+                "channels",
+                channel_id,
+                "guests",
+                guest,
+                allowed @ ("allow" | "forbid"),
+            ],
+        ) => {
             let (channel_id, guest) = ((*channel_id).to_owned(), (*guest).to_owned());
-            match state.let_guest_in_at(&channel_id, &guest).await {
-                Ok(_) => json_result(state.channels_standing().await),
+            match state
+                .allow_guest_at(&channel_id, &guest, *allowed == "allow")
+                .await
+            {
+                Ok(()) => json_result(state.channels_standing().await),
                 Err(error) => error_response(&error),
             }
         }

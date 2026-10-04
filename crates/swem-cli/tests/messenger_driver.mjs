@@ -60,7 +60,7 @@ step("the agent answered on the messenger and on the page alike");
 await written(STRANGER, "hello, can you help me too?");
 await b.waitFor("the stranger gets a line", async () => sentTo(await sent(), STRANGER.id).length > 0, 150);
 const line = sentTo(await sent(), STRANGER.id)[0];
-if (!String(line.body.text).includes("owner only")) cleanup(1, `the stranger got something else: ${JSON.stringify(line.body)}`);
+if (!String(line.body.text).includes("allow you to speak")) cleanup(1, `the stranger got something else: ${JSON.stringify(line.body)}`);
 await sleep(1500);
 if (sentTo(await sent(), STRANGER.id).length !== 1) cleanup(1, "the stranger got more than one line");
 if (sentTo(await sent(), STRANGER.id, "sendMessageDraft").length !== 0) cleanup(1, "the agent answered the stranger");

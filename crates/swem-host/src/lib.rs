@@ -107,7 +107,7 @@ pub use workbench_shell::{
     ACP_REGISTRY_CACHE, AddChannelBody, AddIndexBody, AmendProfileBody, ArchiveDistribution,
     BinaryDistribution, BindModelContextBody, CATALOG_SCHEMA, CHANNEL_SCHEMA, Catalog,
     CatalogDistribution, CatalogEntry, ChannelDocument, ChannelShown, ChatPage,
-    DeclareMcpServerBody, GuestPolicy, GuestWaiting, INDEX_SCHEMA, IndexFile, InstalledSkill,
+    DeclareMcpServerBody, GuestPolicy, GuestSeen, INDEX_SCHEMA, IndexFile, InstalledSkill,
     Listening, McpServerOrigin, McpServerView, ModelContext, ModelContextBlock, NamedValue,
     NpxDistribution, ObservedAppOpen, OpenTerminalBody, ReachStanding, RegistryStatus,
     ResolvedAgentConnection, ResolvedAgentEnvironment, ResolvedDirectAgentConnection, SaidInChat,

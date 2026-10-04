@@ -11,7 +11,7 @@ import { fetchJson } from "../http.ts";
 import { ChatSign, Globe, Plug, Prompt } from "./icons.tsx";
 import { Standing } from "./standing.tsx";
 
-export type GuestPolicy = "nobody" | "by_invitation" | "anyone";
+export type GuestPolicy = "nobody" | "anyone";
 
 export interface ChannelShown {
   id: string;
@@ -28,7 +28,7 @@ export interface ChannelShown {
   keyed: boolean;
   paired: boolean;
   said?: string;
-  waiting?: { participant_id: string; name: string }[];
+  people?: { participant_id: string; name: string; may_speak: boolean; alone: boolean }[];
   reach: "pull" | "door";
   door_offered: boolean;
   door?: string;
@@ -62,9 +62,8 @@ const send = (method: string, body?: unknown): RequestInit => ({
 });
 
 const GUESTS: { id: GuestPolicy; words: string }[] = [
-  { id: "nobody", words: "Nobody: the bot answers you only" },
-  { id: "by_invitation", words: "By invitation: whom you join to a chat" },
-  { id: "anyone", words: "Anyone: a chat of their own with the agent" },
+  { id: "nobody", words: "Nobody new: you allow each person the bot meets" },
+  { id: "anyone", words: "Anyone new: whoever writes may speak to the agent" },
 ];
 
 function AddBot({ packages, hostedAt, onAdded, onClose }: { packages: ChannelPackage[]; hostedAt?: string; onAdded: (shown: ChannelShown) => void; onClose: () => void }) {
@@ -265,9 +264,9 @@ export function Channels() {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
   };
-  const letIn = async (channel: ChannelShown, guest: string) => {
+  const allow = async (channel: ChannelShown, guest: string, may: boolean) => {
     try {
-      setStanding(await fetchJson<ChannelsStanding>(`/api/channels/${encodeURIComponent(channel.id)}/guests/${encodeURIComponent(guest)}/let-in`, send("POST")));
+      setStanding(await fetchJson<ChannelsStanding>(`/api/channels/${encodeURIComponent(channel.id)}/guests/${encodeURIComponent(guest)}/${may ? "allow" : "forbid"}`, send("POST")));
     } catch (failure) {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
@@ -342,11 +341,15 @@ export function Channels() {
                 </button>
               ) : null}
             </span>
-            {(channel.waiting ?? []).map((guest) => (
-              <span className="k-inline w-tight" key={guest.participant_id} data-waiting={guest.participant_id}>
-                <span className="k-caption">{guest.name} wrote to the bot and waits to be let in.</span>
-                <button type="button" className="k-btn k-quiet" onClick={() => void letIn(channel, guest.participant_id)}>
-                  Let in
+            {(channel.people ?? []).length > 0 ? <span className="k-caption">People the bot has met:</span> : null}
+            {(channel.people ?? []).map((guest) => (
+              <span className="k-inline w-tight" key={guest.participant_id} data-guest={guest.participant_id} data-may-speak={guest.may_speak ? "true" : "false"}>
+                <span className="k-caption">
+                  {guest.name} - {guest.may_speak ? "may speak to the agent" : "is heard, may not speak to the agent"}
+                  {guest.alone ? "" : " (seen in a group only)"}
+                </span>
+                <button type="button" className="k-btn k-quiet" onClick={() => void allow(channel, guest.participant_id, !guest.may_speak)}>
+                  {guest.may_speak ? "Forbid" : "Allow"}
                 </button>
               </span>
             ))}

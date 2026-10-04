@@ -472,6 +472,19 @@ impl RoutingLedger {
         ledger
             .connection
             .execute_batch(crate::chat_ledger::CHANNELS_SCHEMA)?;
+        // Columns that came to the identities table after it was first
+        // made, added to a ledger that already has the table.
+        for (column, definition) in crate::chat_ledger::IDENTITY_COLUMNS_ADDED {
+            let present: bool = ledger
+                .connection
+                .prepare("SELECT 1 FROM pragma_table_info('identities') WHERE name = ?1")?
+                .exists([column])?;
+            if !present {
+                ledger.connection.execute_batch(&format!(
+                    "ALTER TABLE identities ADD COLUMN {column} {definition};"
+                ))?;
+            }
+        }
         Ok(ledger)
     }
 

@@ -58,13 +58,7 @@ const profile = await b.makeAgent("hands");
 await addBotAndPair(b, api, profile, {guests: "nobody", tg});
 await b.goTo("#/providers/channels");
 await b.waitFor("the bot asks the messenger", async () => b.exists('.channel-row [data-reach="pull"]'), 100);
-// Served at an address that stays, the page inside the messenger was put
-// one tap away: the bot's menu button points at it.
-const menu = (await sent()).find((call) => call.method === "setChatMenuButton");
-if (!menu) cleanup(1, `the bot's menu button was not set on a served Workbench; the messenger saw: ${[...new Set((await sent()).map((call) => call.method))].join(", ")}; the row says: ${await b.evaluate(`document.querySelector('.channel-row')?.innerText ?? ""`)}`);
-const menuUrl = String(menu.body.menu_button?.web_app?.url ?? "");
-if (!menuUrl.includes("/channels/") && !menuUrl.includes("channel=")) cleanup(1, `the menu button points somewhere strange: ${JSON.stringify(menu.body)}`);
-step("the bot is added, asks the messenger for what is new, and its menu button opens the page");
+step("the bot is added, and asks the messenger for what is new");
 
 // --- Switched to the door --------------------------------------------------
 if (!(await b.pressText('.channel-row [data-reach="pull"] button', "Have it delivered"))) cleanup(1, "the door is not offered on a served Workbench");

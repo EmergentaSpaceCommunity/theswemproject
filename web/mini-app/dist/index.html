@@ -609,6 +609,25 @@ colour would not. */
     <h1>SWEM</h1>
     <span class="k-caption" id="why">This page is opened from a bot in your messenger, which says who you are.</span>
   </section>
+  <section class="k-card" id="ask" hidden>
+    <span class="k-eyebrow">The agent asks</span>
+    <span id="asked"></span>
+    <form id="fields" class="k-stack"></form>
+    <div class="k-inline">
+      <button class="k-btn k-primary" id="answer" type="button">Answer</button>
+      <button class="k-btn" id="decline" type="button">Not this</button>
+    </div>
+    <span class="k-caption">Or say something else instead - the agent reads it as your answer:</span>
+    <input class="k-field" id="instead" placeholder="Something else">
+    <button class="k-btn" id="say-instead" type="button">Say it</button>
+    <span class="k-caption" id="answered"></span>
+  </section>
+  <section class="k-card" id="say" hidden>
+    <span class="k-eyebrow">Say something in the chat</span>
+    <input class="k-field" id="words-to-say" placeholder="What to say">
+    <button class="k-btn" id="say-it" type="button">Say it</button>
+    <span class="k-caption" id="said"></span>
+  </section>
   <section class="k-card" id="send" hidden>
     <span class="k-eyebrow">A file to the agent, of any size</span>
     <input type="file" id="file">
@@ -648,7 +667,8 @@ colour would not. */
   const when = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
   const show = (standing) => {
     $("nobody").hidden = true;
-    for (const id of ["who", "send", "handed", "chat"]) $(id).hidden = false;
+    for (const id of ["who", "say", "send", "chat"]) $(id).hidden = false;
+    $("handed").hidden = standing.files.length === 0 && !standing.owner;
     $("title").textContent = standing.bot && standing.bot.name ? standing.bot.name : standing.chat.title;
     $("you").textContent = `You are ${standing.you.name} here; ${standing.agent} answers.`;
     const files = $("files");
@@ -713,6 +733,145 @@ colour would not. */
     }
     show(await response.json());
   };
+  // A question the agent asks, when the page was opened to answer one.
+  const question = query.get("question") || "";
+  // The choices a property offers: `enum`, or `oneOf`/`anyOf` of consts with
+  // titles; for a list, the same on its items.
+  const choicesOf = (d) => {
+    if (!d) return null;
+    if (Array.isArray(d.enum)) return d.enum.map((value) => ({ value, title: String(value) }));
+    const options = d.oneOf || d.anyOf;
+    if (Array.isArray(options)) return options.filter((one) => one && "const" in one).map((one) => ({ value: one.const, title: one.title || String(one.const) }));
+    return null;
+  };
+  const fieldsOf = (schema) => Object.entries((schema && schema.properties) || {}).map(([name, d]) => ({
+    name,
+    label: d.title || name,
+    type: d.type || "string",
+    choices: d.type === "array" ? choicesOf(d.items) : choicesOf(d),
+    required: Array.isArray(schema.required) && schema.required.includes(name),
+    description: d.description || "",
+  }));
+  let fields = [];
+  const say = async (text) => {
+    const response = await fetch(`${api}/messages`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    return response.ok;
+  };
+  const answer = async (body) => {
+    const response = await fetch(`${api}/questions/${encodeURIComponent(question)}/answer`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const said = await response.json().catch(() => ({}));
+    $("answered").textContent = response.ok ? "Answered." : said.error || `Not answered (${response.status}).`;
+    if (response.ok) $("answered").dataset.answered = body.action;
+    for (const id of ["answer", "decline", "say-instead"]) $(id).disabled = response.ok;
+  };
+  const readQuestion = async () => {
+    if (!question || !initData) return;
+    const response = await fetch(`${api}/questions/${encodeURIComponent(question)}`, { headers });
+    if (!response.ok) {
+      const said = await response.json().catch(() => ({}));
+      $("ask").hidden = false;
+      $("asked").textContent = said.error || "This question is no longer waiting.";
+      for (const id of ["answer", "decline", "say-instead"]) $(id).disabled = true;
+      return;
+    }
+    const asked = await response.json();
+    $("ask").hidden = false;
+    $("asked").textContent = asked.message || "";
+    fields = asked.mode === "form" ? fieldsOf(asked.requestedSchema) : [];
+    const form = $("fields");
+    form.replaceChildren();
+    for (const field of fields) {
+      const label = document.createElement("label");
+      label.className = "k-stack";
+      const caption = document.createElement("span");
+      caption.className = "k-caption";
+      caption.textContent = field.label + (field.required ? "" : " (if you like)");
+      let input;
+      if (field.type === "array" && field.choices) {
+        // Several of a list: a box each.
+        input = document.createElement("span");
+        input.className = "k-inline";
+        for (const choice of field.choices) {
+          const one = document.createElement("label");
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.value = String(choice.value);
+          box.dataset.choiceOf = field.name;
+          one.append(box, document.createTextNode(` ${choice.title}`));
+          input.append(one);
+        }
+      } else if (field.choices) {
+        input = document.createElement("select");
+        if (!field.required) input.append(document.createElement("option"));
+        for (const choice of field.choices) {
+          const option = document.createElement("option");
+          option.value = String(choice.value);
+          option.textContent = choice.title;
+          input.append(option);
+        }
+      } else if (field.type === "boolean") {
+        input = document.createElement("input");
+        input.type = "checkbox";
+      } else {
+        input = document.createElement("input");
+        input.type = field.type === "number" || field.type === "integer" ? "number" : "text";
+      }
+      if (input.tagName !== "SPAN") input.className = "k-field";
+      input.dataset.field = field.name;
+      label.append(caption, input);
+      if (field.description) {
+        const hint = document.createElement("span");
+        hint.className = "k-caption";
+        hint.textContent = field.description;
+        label.append(hint);
+      }
+      form.append(label);
+    }
+    if (asked.mode === "url" && asked.url) {
+      $("answer").textContent = "Open it";
+      $("asked").textContent = `${asked.message || ""} It opens ${asked.url}.`;
+      $("answer").dataset.url = asked.url;
+    }
+  };
+  $("answer").addEventListener("click", () => {
+    if ($("answer").dataset.url) window.open($("answer").dataset.url, "_blank", "noopener");
+    const content = {};
+    for (const field of fields) {
+      const input = document.querySelector(`[data-field="${CSS.escape(field.name)}"]`);
+      if (!input) continue;
+      if (field.type === "array") {
+        const picked = [...document.querySelectorAll(`[data-choice-of="${CSS.escape(field.name)}"]`)].filter((box) => box.checked).map((box) => box.value);
+        if (picked.length > 0 || field.required) content[field.name] = picked;
+      } else if (field.type === "boolean") content[field.name] = input.checked;
+      else if (input.value === "") continue;
+      else if (field.type === "number") content[field.name] = Number(input.value);
+      else if (field.type === "integer") content[field.name] = Math.trunc(Number(input.value));
+      else content[field.name] = input.value;
+    }
+    void answer(fields.length > 0 ? { action: "accept", content } : { action: "accept" });
+  });
+  $("decline").addEventListener("click", () => void answer({ action: "decline" }));
+  $("say-instead").addEventListener("click", async () => {
+    const text = $("instead").value.trim();
+    if (!text) return;
+    await answer({ action: "decline" });
+    if (await say(text)) $("answered").textContent = "Declined, and said instead.";
+  });
+  $("say-it").addEventListener("click", async () => {
+    const text = $("words-to-say").value.trim();
+    if (!text) return;
+    $("said").textContent = (await say(text)) ? "Said." : "Not said.";
+    if ($("said").textContent === "Said.") $("words-to-say").value = "";
+    await read();
+  });
   const readOrSay = async () => {
     try {
       await read();
@@ -748,6 +907,7 @@ colour would not. */
   // again with other data, the page starts over.
   window.addEventListener("hashchange", () => location.reload());
   void readOrSay();
+  void readQuestion();
   setInterval(() => void readOrSay(), 5000);
 })();
 </script>

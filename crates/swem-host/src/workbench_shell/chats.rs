@@ -294,7 +294,10 @@ impl WorkbenchShellState {
                 )));
             }
             let chat = ledger.join_chat(&chat_id, &guest_id)?;
+            // Let into a chat, they may speak, and what they write to the
+            // bot alone is said here.
             for identity in ledger.identities_of(&guest_id)? {
+                ledger.let_speak(&identity.channel_id, &guest_id, true)?;
                 if let Some(direct) = identity.direct_chat {
                     ledger.bind_channel_chat(&identity.channel_id, &direct, &chat_id)?;
                 }

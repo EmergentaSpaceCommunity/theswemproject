@@ -69,12 +69,6 @@ struct AppButton {
     url: String,
 }
 
-/// Where the Workbench's page inside the messenger is, to be one tap away.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
-struct SetAppParams {
-    url: String,
-}
-
 /// What a Mini App sends to be known: the messenger's signed `initData`.
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 struct VerifyAppParams {
@@ -664,22 +658,6 @@ impl Channel {
                 .map(Value::to_string)
                 .unwrap_or_default(),
         }))
-    }
-
-    #[tool(
-        description = "The Workbench's page inside the messenger, one tap away: the bot's menu button"
-    )]
-    async fn set_app(
-        &self,
-        Parameters(params): Parameters<SetAppParams>,
-    ) -> Result<Json<channel::Sent>, String> {
-        self.api
-            .call(
-                "setChatMenuButton",
-                json!({ "menu_button": { "type": "web_app", "text": "Workbench", "web_app": { "url": params.url } } }),
-            )
-            .await?;
-        Ok(Json(channel::Sent::default()))
     }
 
     #[tool(description = "Who opened a Mini App: the person behind signed initData, or a refusal")]

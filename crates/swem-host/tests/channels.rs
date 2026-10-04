@@ -297,11 +297,26 @@ async fn the_owner_pairs_with_a_code_talks_to_their_agent_and_a_stranger_gets_on
         refused["arguments"]["markdown"]
             .as_str()
             .unwrap_or_default()
-            .contains("owner only"),
+            .contains("allow you to speak"),
         "{refused}"
     );
     let chats = state.chats().await.expect("chats");
     assert_eq!(chats.len(), 1, "a stranger opened no chat");
+    // Writing again, the stranger is not told again: once is enough.
+    arrives(
+        &home,
+        "005",
+        &message("dm-bo", &person("u-2", "Bo"), "hello??", "upd-4"),
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        calls(&home)
+            .iter()
+            .filter(|call| call["tool"] == "send" && call["arguments"]["chat"] == "dm-bo")
+            .count(),
+        1,
+        "the stranger was told twice"
+    );
 
     // Removed: the program stops, the key is forgotten, the chat stays.
     state
@@ -538,7 +553,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
             program: Some(program.display().to_string()),
             args: Vec::new(),
             agent: Some("coder".into()),
-            guests: GuestPolicy::ByInvitation,
+            guests: GuestPolicy::Nobody,
             settings: swem_sdk::channel::Settings {
                 api_root: Some(address.clone()),
                 door: None,
@@ -598,7 +613,7 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
     assert!(
         told["body"]["text"]
             .as_str()
-            .is_some_and(|text| text.contains("let you into a chat")),
+            .is_some_and(|text| text.contains("allow you to speak")),
         "{told}"
     );
     let chats = state.chats().await.expect("chats");
@@ -678,31 +693,29 @@ async fn a_guest_is_let_into_a_chat_and_reached_there() {
         "the guest's words are not in the chat as theirs"
     );
 
-    // Taken out, the guest is told to wait again.
+    // Taken out and forbidden, the guest is not answered - and not told
+    // again either: once was enough.
     state
         .take_out_of_chat(&chat_id, &guest)
         .await
         .expect("the guest is taken out");
+    state
+        .allow_guest_at(&channel_id, &guest, false)
+        .await
+        .expect("forbidden");
+    let before = sent(&address).len();
     fixture_call(
         &address,
         "POST",
         "/_fixture/updates",
         Some(&telegram_update((9, "Bob"), 9, "still there?")),
     );
-    until("the guest is told to wait again", || {
-        let waits = sent(&address)
-            .into_iter()
-            .filter(|call| {
-                call["method"] == "sendMessage"
-                    && call["body"]["chat_id"] == "9"
-                    && call["body"]["text"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("let you into a chat"))
-            })
-            .count();
-        (waits >= 2).then_some(())
-    })
-    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let since: Vec<Value> = sent(&address).into_iter().skip(before).collect();
+    assert!(
+        since.iter().all(|call| call["method"] == "getUpdates"),
+        "a forbidden guest got an answer: {since:?}"
+    );
 
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();
@@ -997,12 +1010,26 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
             .any(|message| message.text == "just talking among ourselves"),
         "what the owner said in the group is not in the chat"
     );
+    // Somebody else in the group is met: a person in the chat, their words
+    // there as theirs, and no right to make the agent speak.
+    let bob = page
+        .chat
+        .members
+        .iter()
+        .find(|member| member.name == "Bob")
+        .expect("Bob is in the group's chat");
     assert!(
-        !page
-            .messages
+        page.messages
             .iter()
-            .any(|message| message.text == "me too, not to the bot"),
-        "a stranger's words are in the chat"
+            .any(|message| message.text == "me too, not to the bot"
+                && message.sender_id == bob.participant_id),
+        "Bob's words are not in the chat as his"
+    );
+    let shown = state.channels_shown().await.expect("channels");
+    let met = &shown[0].people;
+    assert!(
+        met.iter().any(|one| one.name == "Bob" && !one.may_speak),
+        "Bob is not listed as met and silent: {met:?}"
     );
 
     // A reply to the bot: a turn.
@@ -1016,6 +1043,295 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         (answers(&address) >= 2).then_some(())
     })
     .await;
+
+    // Bob speaks to the bot: he may not, so nothing - not even a line in the
+    // group. Allowed by the owner, he is answered.
+    let bob_id = page
+        .chat
+        .members
+        .iter()
+        .find(|member| member.name == "Bob")
+        .expect("Bob")
+        .participant_id
+        .clone();
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group(
+            (9, "Bob"),
+            "@swem_fixture_bot /status please",
+            false,
+        )),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        answers(&address),
+        2,
+        "the agent answered somebody who may not speak"
+    );
+    state
+        .allow_guest_at(&channel_id, &bob_id, true)
+        .await
+        .expect("allowed");
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group(
+            (9, "Bob"),
+            "@swem_fixture_bot /status now",
+            false,
+        )),
+    );
+    until("the agent answers Bob once allowed", || {
+        (answers(&address) >= 3).then_some(())
+    })
+    .await;
+
+    state.remove_channel(&channel_id).await.expect("removed");
+    let _ = api.kill();
+    let _ = api.wait();
+}
+
+/// HMAC-SHA256, as the messenger signs what a page inside it is opened
+/// with.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    let mut block = [0_u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&sha2::Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let inner: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
+    let outer: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&inner);
+    hasher.update(message);
+    let inner_hash = hasher.finalize();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&outer);
+    hasher.update(inner_hash);
+    hasher.finalize().to_vec()
+}
+
+/// What the messenger would hand the page for somebody, signed for a bot.
+fn signed_init_data(user: &Value, token: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let user = user.to_string();
+    let check = format!("auth_date={now}\nuser={user}");
+    let secret = hmac_sha256(b"WebAppData", token.as_bytes());
+    let hash =
+        hmac_sha256(&secret, check.as_bytes())
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+    let encoded = user.bytes().fold(String::new(), |mut out, byte| {
+        use std::fmt::Write as _;
+        if byte.is_ascii_alphanumeric() {
+            out.push(byte as char);
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+        out
+    });
+    format!("user={encoded}&auth_date={now}&hash={hash}")
+}
+
+/// The agent asks for a form: the question reaches the messenger in words,
+/// and the owner answers it from the page inside the messenger - fields,
+/// or declining and saying something else. A guest cannot answer it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over one question: asked, read, refused to a guest, answered"
+)]
+async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
+    let Some(program) = telegram_channel() else {
+        eprintln!(
+            "skipped: build the Telegram channel first: cargo build -p swem-channel-telegram"
+        );
+        return;
+    };
+    let root = fixture_root("telegram-form");
+    let mut api = std::process::Command::new(env!("CARGO_BIN_EXE_swem-telegram-api-fixture"))
+        .arg("--files")
+        .arg(root.join("files"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the Bot API fixture");
+    let address = {
+        use std::io::BufRead as _;
+        let stdout = api.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        lines
+            .next()
+            .expect("the fixture prints its address")
+            .expect("a line")
+    };
+    let state = shell_with_one_agent(&root);
+    let token = "123456:fixture";
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "Telegram".into(),
+            package: None,
+            program: Some(program.display().to_string()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Anyone,
+            settings: swem_sdk::channel::Settings {
+                api_root: Some(address.clone()),
+                door: None,
+            },
+            app_at: None,
+            key: Some(token.into()),
+        })
+        .await
+        .expect("the channel is added");
+    let code = shown.document.pairing_code.clone().expect("a code");
+    let channel_id = shown.document.id.clone();
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((7, "Ada"), 7, &code)),
+    );
+    until("the welcome", || {
+        sent(&address)
+            .into_iter()
+            .find(|call| call["method"] == "sendMessage" && call["body"]["chat_id"] == "7")
+    })
+    .await;
+
+    // The owner asks the agent for something it answers with a form.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update(
+            (7, "Ada"),
+            7,
+            &json!({"fixture": "elicitation-form-v0.1"}).to_string(),
+        )),
+    );
+    let asked = until("the question reaches the messenger", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "7"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("The agent asks"))
+        })
+    })
+    .await;
+    assert!(
+        asked["body"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("composition")),
+        "the question's words are not the agent's: {asked}"
+    );
+    let question_id = until("the question in the ledger", || {
+        let state = Arc::clone(&state);
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            handle.block_on(async {
+                let chats = state.chats().await.ok()?;
+                for chat in chats {
+                    let page = state.chat_page(&chat.chat_id, None, 100).await.ok()?;
+                    if let Some(question) = page.questions.first() {
+                        return Some(question.question_id.clone());
+                    }
+                }
+                None
+            })
+        })
+        .join()
+        .ok()
+        .flatten()
+    })
+    .await;
+
+    // Somebody else who opens the page cannot answer the owner's agent.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&telegram_update((9, "Bob"), 9, "hi")),
+    );
+    // Bob is met (the agent, busy with the owner's question, answers him
+    // later).
+    until("Bob is met", || {
+        let state = Arc::clone(&state);
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            handle.block_on(async {
+                let shown = state.channels_shown().await.ok()?;
+                shown
+                    .first()?
+                    .people
+                    .iter()
+                    .any(|one| one.name == "Bob")
+                    .then_some(())
+            })
+        })
+        .join()
+        .ok()
+        .flatten()
+    })
+    .await;
+    let bob = signed_init_data(&json!({"id": 9, "first_name": "Bob"}), token);
+    let refused = state
+        .app_question(&channel_id, &bob, &question_id)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("owner"), "{refused}");
+
+    // The owner reads it, with its fields, and answers it.
+    let ada = signed_init_data(&json!({"id": 7, "first_name": "Ada"}), token);
+    let read = state
+        .app_question(&channel_id, &ada, &question_id)
+        .await
+        .expect("the owner reads the question");
+    assert_eq!(read["mode"], "form", "{read}");
+    assert!(
+        read["requestedSchema"]["properties"]["strategy"].is_object(),
+        "{read}"
+    );
+    state
+        .app_answer(
+            &channel_id,
+            &ada,
+            &question_id,
+            json!({"action": "accept", "content": {
+                "strategy": "bold", "iterations": 2, "stems": ["voice"]
+            }}),
+        )
+        .await
+        .expect("the owner answers");
+    // The agent went on: its answer reaches the messenger.
+    until("the agent says it was accepted", || {
+        sent(&address).into_iter().find(|call| {
+            call["method"] == "sendMessage"
+                && call["body"]["chat_id"] == "7"
+                && call["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("accept"))
+        })
+    })
+    .await;
+
+    // And words said from the page are said in the chat, as the owner's.
+    state
+        .app_say(&channel_id, &ada, "and one more thing")
+        .await
+        .expect("said from the page");
 
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();

@@ -27,7 +27,7 @@ const answersIn = (calls, chat, saying = USAGE) => sentTo(calls, chat).filter((c
 
 step("the product opens");
 const profile = await b.makeAgent("hands");
-await addBotAndPair(b, api, profile, {guests: "by_invitation", tg});
+await addBotAndPair(b, api, profile, {guests: "nobody", tg});
 step("the bot is added and the person is known to it");
 
 // --- A group the bot is in is a chat of several ---------------------------
@@ -35,13 +35,18 @@ await written(OWNER, "@swem_fixture_bot hello group", {chat: GROUP});
 await b.openAgent(profile);
 await b.waitFor("the group's chat on the agent's page", async () => b.pressText(".k-rail-item", "Studio"), 150, 200);
 await b.waitFor("the agent answers in the group", async () => answersIn(await sent(), GROUP.id).length >= 1, 200, 200);
-// Somebody else in the group writes to the bot, and is in the chat.
+// Somebody else in the group writes to the bot: met, in the chat, heard -
+// and, not allowed to speak to the agent, not answered, not told anything.
+const groupAnswers = answersIn(await sent(), GROUP.id).length;
 await written(GUEST, "@swem_fixture_bot hi from the group", {chat: GROUP});
 await b.waitFor("the guest is among the members", async () =>
   ((await b.chat())?.chat.members ?? []).some((member) => member.kind === "guest" && member.name === GUEST.first_name), 150);
 await b.waitFor("the list beside says so", async () => (await b.evaluate(`document.querySelector('${beside}')?.innerText ?? ""`)).includes(GUEST.first_name), 100);
-await b.waitFor("the agent answers them in the group", async () => answersIn(await sent(), GROUP.id).length >= 2, 200, 200);
-step("the group is a chat of several, and whoever writes in it is in it");
+await b.waitFor("the guest's words in the chat", async () => ((await b.chat())?.messages ?? []).some((message) => message.text === "hi from the group"), 100);
+await sleep(2000);
+if (answersIn(await sent(), GROUP.id).length !== groupAnswers) cleanup(1, "the agent answered somebody who may not speak to it");
+if (sentTo(await sent(), GROUP.id).some((call) => String(call.body.text).includes("allow you"))) cleanup(1, "the group was told about a person who may not speak");
+step("the group is a chat of several; whoever writes in it is met and heard, and only the allowed are answered");
 
 // --- A forum topic is a chat of its own ------------------------------------
 await written(OWNER, "@swem_fixture_bot in the topic", {chat: GROUP, extra: {is_topic_message: true, message_thread_id: 55}});
@@ -50,31 +55,33 @@ await b.waitFor("the agent answers in the topic", async () =>
   answersIn(await sent(), GROUP.id).some((call) => call.body.message_thread_id === 55), 200, 200);
 step("a topic is a chat of its own, answered in the topic");
 
-// --- A guest alone with the bot waits until let in -------------------------
+// --- Somebody alone with the bot is told once, until allowed --------------
 await written(OWNER, "hello alone");
 await b.waitFor("the bot's own chat", async () => b.pressText(".k-rail-item", "Fixture bot"), 150, 200);
 await b.waitFor("the agent answers alone", async () => answersIn(await sent(), OWNER.id).length >= 1, 200, 200);
 await written(GUEST, "can I talk to it too?");
-await b.waitFor("the guest is told to wait", async () =>
-  sentTo(await sent(), GUEST.id).some((call) => String(call.body.text).includes("let you into a chat")), 150);
-// The bot's row on the Channels page says who waits; one press lets them
-// into the chat the person has with the bot.
+await b.waitFor("the guest is told once", async () =>
+  sentTo(await sent(), GUEST.id).some((call) => String(call.body.text).includes("allow you to speak")), 150);
+await written(GUEST, "please?");
+await sleep(2000);
+if (sentTo(await sent(), GUEST.id).length !== 1) cleanup(1, "the guest was told more than once");
+// The bot's row on the Channels page lists whom the bot met; one press
+// allows them.
 await b.goTo("#/providers/channels");
-await b.waitFor("the guest is shown waiting at the bot", async () => b.exists(".channel-row [data-waiting]"), 100);
-if (!(await b.pressText(".channel-row [data-waiting] button", "Let in"))) cleanup(1, "the guest cannot be let in");
-await b.waitFor("nobody waits any more", async () => !(await b.exists(".channel-row [data-waiting]")), 100);
-await b.openAgent(profile);
-await b.waitFor("the bot's own chat again", async () => b.pressText(".k-rail-item", "Fixture bot"), 150, 200);
-await b.waitFor("the guest is in the chat", async () =>
-  ((await b.chat())?.chat.members ?? []).some((member) => member.kind === "guest"), 100);
-await b.waitFor("who is in the chat is shown beside it", async () => (await b.evaluate(`document.querySelector('${beside}')?.innerText ?? ""`)).includes(GUEST.first_name), 100);
+await b.waitFor("the guest listed as met and silent", async () => b.exists('.channel-row [data-guest][data-may-speak="false"]'), 100);
+if (!(await b.pressText('.channel-row [data-guest][data-may-speak="false"] button', "Allow"))) cleanup(1, "the guest cannot be allowed");
+await b.waitFor("the guest may speak", async () => b.exists('.channel-row [data-guest][data-may-speak="true"]'), 100);
 await written(GUEST, "hello from the guest");
-await b.waitFor("the owner sees the guest's words on their side", async () =>
-  sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("<b>Bob:</b>") && String(call.body.text).includes("hello from the guest")), 150);
 await b.waitFor("the agent's answer reaches the guest", async () => answersIn(await sent(), GUEST.id).length >= 1, 200, 200);
-await b.waitFor("the guest's words on the page as theirs", async () =>
-  ((await b.chat())?.messages ?? []).some((message) => message.text === "hello from the guest"), 100);
-step("a guest was let in from the page, and is reached where they wrote from");
+const theirs = ((await b.ask("/api/chats")).body ?? []).find((chat) => chat.members.some((member) => member.kind === "guest" && member.name === GUEST.first_name) && chat.title === GUEST.first_name);
+if (!theirs) cleanup(1, "the guest has no chat of their own with the agent");
+const ownersAlone = ((await b.ask("/api/chats")).body ?? []).find((chat) => chat.chat_id !== theirs.chat_id && chat.title === "Fixture bot");
+if (!ownersAlone) cleanup(1, "the owner's own chat with the bot is gone");
+if (ownersAlone.members.some((member) => member.kind === "guest")) cleanup(1, "the guest was put into the owner's chat with the bot");
+step("a guest allowed from the page gets a chat of their own with the agent");
+
+await b.openAgent(profile);
+await b.waitFor("back in the bot's own chat", async () => b.pressText(".k-rail-item", "Fixture bot"), 150, 200);
 
 // --- The agent's question, answered with a button ---------------------------
 await written(OWNER, JSON.stringify({ask: "the thing it wants to do"}));
