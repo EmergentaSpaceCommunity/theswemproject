@@ -22,6 +22,7 @@ interface Bridge {
     onStatus(message: string): void;
     onModelContext?(update: ModelContextUpdate): Promise<void>;
     fit?: "content" | "fill";
+    displayMode?: "inline" | "fullscreen";
   }): Promise<Mounted>;
 }
 const post = <T,>(path: string, body: unknown) => fetchJson<T>(path, {
@@ -60,7 +61,7 @@ export function ServerApp({server, uri}: {server: string; uri: string}) {
         if (disposed) { await close(); return; }
         opened = await post<Opened>(`/api/spaces/${encodeURIComponent(server)}/open`, {uri});
         if (disposed) { await close(); return; }
-        mounted = await bridge.mount({container: target, opened, signal: opening.signal, fit: "fill",
+        mounted = await bridge.mount({container: target, opened, signal: opening.signal, fit: "fill", displayMode: "fullscreen",
           relay: message => post(`/api/space-apps/${opened!.app_id}/rpc`, message),
           // The steps of opening are worth a line; a ready App is not.
           onStatus: message => { if (!disposed) setStatus(message === "app ready" ? "" : message); },

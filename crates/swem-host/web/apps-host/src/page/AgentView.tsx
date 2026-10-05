@@ -15,6 +15,7 @@ import { Files } from "./Files.tsx";
 import { Terminals } from "./Terminals.tsx";
 import { go, type AgentTab } from "./place.ts";
 import { Schedules } from "./Schedules.tsx";
+import type { Platform } from "../agent/session.ts";
 import type { Chat, Participant } from "./types.ts";
 import { Avatar, names, StateWord, useDoing, useStanding, when } from "./who.tsx";
 import { act, chatsOf, doing, world } from "./world.ts";
@@ -143,12 +144,15 @@ export function AgentView({
   chat,
   tabs = WORKBENCH_TABS,
   compact = false,
+  platform = "web",
 }: {
   agent: Participant;
   tab: AgentTab;
   chat?: string;
   tabs?: AgentTab[];
   compact?: boolean;
+  /// Where this page is, as the host tells an App.
+  platform?: Platform;
 }) {
   const order = useStore(world, (state) => chatsOf(state, agent.participant_id).map((one) => one.chat_id).join(" "));
   const known = useStore(world, (state) => state.chats);
@@ -171,7 +175,7 @@ export function AgentView({
           {compact ? null : <Chats agent={agent} chats={chats} chosen={chosen?.chat_id ?? null} />}
           <Guard what="The chat">
             {chosen ? (
-              <ChatView chat={chosen} key={chosen.chat_id} />
+              <ChatView chat={chosen} platform={platform} key={chosen.chat_id} />
             ) : (
               <FirstWords agent={agent} key={agent.participant_id} onBegun={(begun) => go({ at: "agent", agent: agent.participant_id, tab: "chat", chat: begun.chat_id })} />
             )}
@@ -182,7 +186,7 @@ export function AgentView({
       {tab === "apps" && chosen ? (
         <div className="w-body w-apps-only">
           <Guard what="The Apps">
-            <ChatView chat={chosen} view="apps" key={`apps:${chosen.chat_id}`} />
+            <ChatView chat={chosen} view="apps" platform={platform} key={`apps:${chosen.chat_id}`} />
           </Guard>
         </div>
       ) : null}

@@ -1880,22 +1880,52 @@ impl Runner {
             "host/app_tool_observed"
                 if event.payload.get("phase").and_then(Value::as_str) == Some("request") =>
             {
-                self.carry_an_app(chat_id, &event.payload, external_chats)
-                    .await;
+                if let Some(agent_id) = event.agent_id.as_deref() {
+                    self.carry_an_app(chat_id, agent_id, &event.payload, external_chats)
+                        .await;
+                }
             }
             _ => {}
         }
     }
 
-    /// An App a tool of the agent brought, offered as a button to the
-    /// page's Apps tab on this chat - where the Workbench has an address;
-    /// elsewhere it is only said.
-    async fn carry_an_app(&self, chat_id: &str, payload: &Value, external_chats: &[String]) {
-        let what = ["title", "name", "tool", "server_name", "server"]
-            .iter()
-            .find_map(|key| payload.get(key).and_then(Value::as_str))
+    /// An App a tool of the agent brought. The messenger is a phone's
+    /// place: the page's Apps tab is offered as a button only for an App
+    /// that declared it works on `mobile`; otherwise the bot says the agent
+    /// brought an App to open on the Workbench, and sends no button. Where
+    /// the Workbench has no address yet, it is only said.
+    async fn carry_an_app(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        payload: &Value,
+        external_chats: &[String],
+    ) {
+        let app = self.app_brought(chat_id, agent_id, payload).await;
+        let name = app
+            .as_ref()
+            .and_then(|app| app.title.clone())
+            .or_else(|| {
+                payload
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .map_or_else(|| "an App".to_owned(), |name| format!("an App: {name}"));
-        let words = format!("The agent brought {what}.");
+        let works_here = app.as_ref().is_some_and(|app| app.works_on("mobile"));
+        if !works_here {
+            for external_chat in external_chats {
+                self.tell(
+                    external_chat,
+                    &format!(
+                        "The agent brought {name} - for the Workbench, not for here. Open it there."
+                    ),
+                )
+                .await;
+            }
+            return;
+        }
+        let words = format!("The agent brought {name}.");
         match self.state.app_origin() {
             Some(origin) => {
                 let url = self.app_url(&origin, "apps", &format!("&chat={chat_id}"));
@@ -1911,6 +1941,33 @@ impl Runner {
                 }
             }
         }
+    }
+
+    /// The App a tool brought, as the agent's servers list it: by the
+    /// resource the observation names, through the session the chat and
+    /// agent have - the same list the page is given.
+    async fn app_brought(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        payload: &Value,
+    ) -> Option<crate::DiscoveredAppResource> {
+        let uri = payload.get("resource_uri").and_then(Value::as_str)?;
+        let server = payload.get("server").and_then(Value::as_str)?;
+        let session = self
+            .state
+            .session_in_chat(chat_id, agent_id, false)
+            .await
+            .ok()?;
+        let connection = session.get("connection_id").and_then(Value::as_str)?;
+        let listed = self.state.apps_list(connection).await.ok()?;
+        // By the server that brought it and the resource: two servers may
+        // list one address each.
+        listed
+            .into_iter()
+            .filter(|attachment| attachment.server_name == server)
+            .flat_map(|attachment| attachment.apps)
+            .find(|app| app.uri == uri)
     }
 
     /// A form or a link the agent asks for: in words, with a button that

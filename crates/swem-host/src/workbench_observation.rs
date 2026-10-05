@@ -305,6 +305,8 @@ impl ObservationIngress {
                             "cursor": cursor,
                             "server": authenticated.stream_server,
                             "tool": event.tool,
+                            // The App the tool brings, for whoever offers it.
+                            "resource_uri": resource_uri,
                             "phase": "request",
                             "request_id_digest": digest_json(&event.request_id),
                             "arguments_digest": digest_json(&event.arguments),

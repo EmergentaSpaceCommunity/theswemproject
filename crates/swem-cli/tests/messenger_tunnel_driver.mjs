@@ -54,10 +54,18 @@ await b.waitFor("the server installable", async () =>
 await b.click('.store-install[data-kind="server"][data-id="notes"]');
 await b.consent();
 await b.waitFor("the server installed", async () => b.exists('.store-entry[data-kind="server"][data-id="notes"][data-installed="true"]'), 600, 500);
+// And its twin that declares nothing of where its App works.
+await b.waitFor("the desk server installable", async () =>
+  b.evaluate(`(() => { const one = document.querySelector('.store-install[data-kind="server"][data-id="notes-desk"]'); return !!one && !one.disabled; })()`), 100);
+await b.click('.store-install[data-kind="server"][data-id="notes-desk"]');
+await b.consent();
+await b.waitFor("the desk server installed", async () => b.exists('.store-entry[data-kind="server"][data-id="notes-desk"][data-installed="true"]'), 600, 500);
 await b.openAgent(profile, "settings");
-await b.waitFor("the servers of the agent", async () => b.exists('.server-attach[data-server="notes"]'), 150);
-await b.click('.server-attach[data-server="notes"]');
-await b.waitFor("the server attached", async () => b.evaluate(`!!document.querySelector('.server-attach[data-server="notes"]')?.checked`), 100);
+for (const server of ["notes", "notes-desk"]) {
+  await b.waitFor(`the server ${server} of the agent`, async () => b.exists(`.server-attach[data-server="${server}"]`), 150);
+  await b.click(`.server-attach[data-server="${server}"]`);
+  await b.waitFor(`the server ${server} attached`, async () => b.evaluate(`!!document.querySelector('.server-attach[data-server="${server}"]')?.checked`), 100);
+}
 step("a server whose tool brings an App is installed and attached to the agent");
 await addBotAndPair(b, api, profile, {guests: "anyone", tg});
 await written(OWNER, "hello from my phone");
@@ -136,7 +144,7 @@ step("the owner's page works through the gate at a phone's width, and the gate r
 
 // --- An App a tool of the agent brought: the bot's button, the Apps tab ----
 await page.laptop();
-await written(OWNER, JSON.stringify({tool: "save_note", arguments: {nonce: "messenger-nonce-1", text: "a note from the phone"}}));
+await written(OWNER, JSON.stringify({tool: "save_note", server: "notes", arguments: {nonce: "messenger-nonce-1", text: "a note from the phone"}}));
 await b.waitFor("the bot offers the App the agent brought", async () =>
   sentTo(await sent(), OWNER.id).some((call) => String(call.body.text).includes("brought an App")
     && (call.body.reply_markup?.inline_keyboard?.flat() ?? []).some((one) => one.web_app?.url?.includes("open=apps"))), 300, 200);
@@ -149,7 +157,20 @@ await b.waitFor("the App the tool brought, drawn through the tunnel's second add
     && (await b.evaluate(`[...document.querySelectorAll('[data-in-messenger] .w-apps:not([hidden]) > .k-caption')].map((one) => one.textContent).join(" ")`)).includes("agent App result delivered"), 600, 300);
 const frameOrigin = await b.evaluate(`(() => { try { return new URL(document.getElementById("app-frame").src).origin; } catch { return ""; } })()`);
 if (!frameOrigin.startsWith("http://127.0.0.1:") || frameOrigin === gate || frameOrigin === origin) cleanup(1, `the App is not drawn at the tunnel's second address: ${frameOrigin}`);
-step("an App the agent brought opens on the page's Apps tab, through the tunnel's second address");
+// The person acknowledges the call from inside the App's own frame; the
+// App says back where the host told it it is.
+await sleep(800);
+for (let attempt = 0; attempt < 6; attempt += 1) {
+  await b.evaluateEverywhere(`(() => { const one = document.getElementById("observed-ack"); if (one && !one.disabled) one.click(); })()`);
+  await sleep(500);
+}
+// Closed, the tab lists what there is: the App that declared nothing of
+// where it works is the Workbench's, with no way to open it here.
+if (!(await b.pressText('[data-in-messenger] .w-apps button', "Close it"))) cleanup(1, "the App cannot be closed");
+await b.waitFor("the desk's App listed as the Workbench's", async () =>
+  (await b.evaluate(`document.querySelector('[data-in-messenger] [data-apps-elsewhere]')?.innerText ?? ""`)).includes("notes-desk"), 100);
+if (await b.evaluate(`[...document.querySelectorAll('[data-in-messenger] .w-apps .k-rail-item')].some((one) => one.innerText.includes("notes-desk"))`)) cleanup(1, "an App that declared nothing is offered on the phone");
+step("an App the agent brought opens on the page's Apps tab, through the tunnel's second address; the other is listed as the Workbench's");
 
 // --- A guest: their chat and nothing else ------------------------------------
 await written(STRANGER, "hello, I am Bob");

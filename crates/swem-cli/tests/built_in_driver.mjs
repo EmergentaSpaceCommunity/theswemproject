@@ -51,7 +51,12 @@ if (!helperWords.startsWith("a helper for Example")) throw new Error(`a helper i
 const cameWith = await b.evaluate(`[...document.querySelectorAll(".store-install")].map((one) => one.textContent).find((words) => words.startsWith("Came with")) ?? ""`);
 if (cameWith && cameWith !== "Came with Example") throw new Error(`what came with the product is said to have come with another: ${cameWith}`);
 
+// The Store still reads its indexes for a moment after listing them; a
+// button is pressed once it is pressable.
+const pressable = (selector) => b.waitFor(`${selector} pressable`, async () =>
+  b.evaluate(`(() => { const one = document.querySelector(${JSON.stringify(selector)}); return !!one && !one.disabled; })()`), 150);
 step("a helper that does not answer the product's shape is refused in the product's words");
+await pressable('.store-install[data-kind="example/helper@1"][data-id="takes"]');
 await b.click('.store-install[data-kind="example/helper@1"][data-id="takes"]');
 await b.consent();
 await b.waitFor("the refusal", async () => /is not a helper for Example/.test(await status()), 600, 500);
@@ -60,6 +65,7 @@ if (!refused.includes("does not answer `echo`")) throw new Error(`the refusal do
 if (await b.exists('.store-entry[data-id="takes"][data-installed="true"]')) throw new Error("a refused helper was installed");
 
 step("a helper that answers the shape is taken, and her agent is given it");
+await pressable('.store-install[data-kind="example/helper@1"][data-id="echoes"]');
 await b.click('.store-install[data-kind="example/helper@1"][data-id="echoes"]');
 const question = await b.consent();
 if (!/^Install a helper for Example echoes 0\.1\.0\?/.test(question)) throw new Error(`the consent question: ${question}`);

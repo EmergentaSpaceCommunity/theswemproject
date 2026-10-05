@@ -20,6 +20,9 @@ interface AppsBridge {
     relay: (message: unknown) => Promise<unknown>;
     observation: unknown;
     onStatus: (text: string) => void;
+    /// Where the App is told it is, and how it is drawn here.
+    platform?: "web" | "desktop" | "mobile";
+    displayMode?: "inline" | "fullscreen";
   }): Promise<MountedApp>;
 }
 

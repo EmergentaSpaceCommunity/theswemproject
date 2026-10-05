@@ -789,6 +789,11 @@ async fn discovery_open_and_the_relay_gate_are_host_side_decisions() {
     assert_eq!(probe.visibility, vec!["model"]);
     assert_eq!(notes.apps.len(), 1);
     assert_eq!(notes.apps[0].uri, NOTES_URI);
+    // The listing's title and where the App works are kept: the fixture
+    // declares all three platforms on its notes App.
+    assert_eq!(notes.apps[0].title.as_deref(), Some("Notes"));
+    assert_eq!(notes.apps[0].platforms, ["web", "desktop", "mobile"]);
+    assert!(notes.apps[0].works_on("mobile"));
     let echo = attachments
         .iter()
         .find(|view| view.server_name == "echo")
@@ -991,6 +996,10 @@ async fn tool_linked_app_opens_when_resources_list_omits_it() {
         notes.apps[0].description.is_none(),
         "an omitted listing must not fabricate resource metadata"
     );
+    // Nor a place it works: unlisted, an App is for the web and the desktop.
+    assert!(notes.apps[0].title.is_none());
+    assert_eq!(notes.apps[0].platforms, ["web", "desktop"]);
+    assert!(!notes.apps[0].works_on("mobile"));
     let opened = state
         .app_open(&connection, "notes", NOTES_URI)
         .await

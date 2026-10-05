@@ -3047,6 +3047,11 @@ impl WorkbenchShellState {
         );
         let event = state.next_event;
         state.next_event += 1;
+        let known = state.entries[entry_index]
+            .apps
+            .iter()
+            .find(|app| app.uri == uri)
+            .cloned();
         drop(apps);
         self.append_app_event(
             &connection,
@@ -3084,6 +3089,11 @@ impl WorkbenchShellState {
             sandbox_origin,
             isolated,
             view_url,
+            title: known.as_ref().and_then(|app| app.title.clone()),
+            platforms: known.map_or_else(
+                || workbench_apps::platforms_declared(None),
+                |app| app.platforms,
+            ),
         })
     }
 

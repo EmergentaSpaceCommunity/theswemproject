@@ -35,6 +35,9 @@ struct SendParams {
     markdown: String,
     #[serde(default)]
     reply_to: Option<String>,
+    /// A button to a page inside the messenger, when the harness sends one.
+    #[serde(default)]
+    app: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
@@ -256,7 +259,7 @@ impl Channel {
     fn send(&self, Parameters(params): Parameters<SendParams>) -> Result<Json<Sent>, String> {
         self.record(
             "send",
-            &json!({ "chat": params.chat, "markdown": params.markdown, "reply_to": params.reply_to }),
+            &json!({ "chat": params.chat, "markdown": params.markdown, "reply_to": params.reply_to, "app": params.app }),
         )
         .map(Json)
     }

@@ -1853,3 +1853,175 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
     state.close_tunnel().await;
     state.remove_channel(&channel_id).await.expect("removed");
 }
+
+/// One agent of the echo engine with the Apps fixture attached as `notes`,
+/// observed, so that a tool it calls is seen to bring an App; `undeclared`
+/// leaves the notes App silent about where it works.
+fn shell_with_an_app(root: &Path, undeclared: bool) -> Arc<WorkbenchShellState> {
+    let inventory = root.join("inventory");
+    let store = PersonalAgentProfileStore::open(&inventory).expect("open profile inventory");
+    let workspace = root.join("coder");
+    let agent_home = root.join("coder-home");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    fs::create_dir_all(&agent_home).expect("create agent home");
+    store
+        .create(
+            &PersonalAgentProfile::new(
+                "coder",
+                "swem-echo-agent",
+                "echo-fixture-distribution",
+                "direct-fixture-environment",
+                swem_host::ASK_EVERY_TIME,
+                &workspace,
+                &agent_home,
+                vec![AttachmentBinding::new(
+                    "notes-attachment",
+                    "notes",
+                    AttachmentTransport::Stdio,
+                )],
+                Vec::new(),
+            )
+            .expect("build fixture profile"),
+        )
+        .expect("persist fixture profile");
+    let supply = root.to_path_buf();
+    let state = WorkbenchShellState::open(
+        &inventory,
+        &root.join("routes.sqlite3"),
+        Duration::from_secs(20),
+        move |_profile| {
+            let executable = PathBuf::from(env!("CARGO_BIN_EXE_swem-echo-agent"));
+            let mut args = vec![
+                "--receipt".to_owned(),
+                supply.join("notes-receipt.json").display().to_string(),
+                "--poison".to_owned(),
+                supply.join("notes-poison.json").display().to_string(),
+            ];
+            if undeclared {
+                args.push("--undeclared".to_owned());
+            }
+            let notes = agent_client_protocol::schema::v1::McpServer::Stdio(
+                agent_client_protocol::schema::v1::McpServerStdio::new(
+                    "notes",
+                    PathBuf::from(env!("CARGO_BIN_EXE_swem-mcp-apps-fixture")),
+                )
+                .args(args),
+            );
+            Ok(ResolvedDirectAgentConnection {
+                launch: LaunchCommand {
+                    executable: executable.display().to_string(),
+                    args: Vec::new(),
+                    integration: IntegrationKind::DirectAcp,
+                },
+                agent_executable: executable,
+                mcp_servers: vec![notes],
+            })
+        },
+    )
+    .expect("open shell state");
+    let state = Arc::new(state);
+    state.set_mcp_observer_command(
+        PathBuf::from(env!("CARGO_BIN_EXE_swem-mcp-observer-fixture")),
+        Vec::new(),
+    );
+    state
+        .enable_provider_keys_kept_by(Arc::new(
+            swem_host::InFiles::at(&root.join("secrets")).expect("a place for keys"),
+        ))
+        .expect("keys");
+    state
+        .enable_channels(&root.join("channels"))
+        .expect("channels");
+    state
+}
+
+/// The bot offers the page's Apps tab for an App a tool brought only when
+/// the App declared it works on a phone; an App that declared nothing is
+/// said to be for the Workbench, with no button.
+async fn an_app_the_agent_brought_is_offered_where_it_works(undeclared: bool) {
+    let root = fixture_root(if undeclared {
+        "app-undeclared"
+    } else {
+        "app-declared"
+    });
+    let state = shell_with_an_app(&root, undeclared);
+    with_the_tunnel_fixture(&root, &state);
+    let shown = state
+        .add_channel(AddChannelBody {
+            name: "The fixture bot".into(),
+            package: None,
+            program: Some(env!("CARGO_BIN_EXE_swem-channel-fixture").into()),
+            args: Vec::new(),
+            agent: Some("coder".into()),
+            guests: GuestPolicy::Nobody,
+            settings: swem_sdk::channel::Settings::default(),
+            key: Some("fixture-key".into()),
+        })
+        .await
+        .expect("the channel is added");
+    assert!(shown.running, "{}", shown.said);
+    let code = shown.document.pairing_code.clone().expect("a code to say");
+    let channel_id = shown.document.id.clone();
+    let home = root.join("channels").join(&channel_id);
+    arrives(
+        &home,
+        "001",
+        &message("dm-ada", &person("u-1", "Ada"), &code, "upd-1"),
+    );
+    until("the welcome", || {
+        calls(&home)
+            .into_iter()
+            .find(|call| call["tool"] == "send" && call["arguments"]["chat"] == "dm-ada")
+    })
+    .await;
+    // An address from outside, so a button could be sent.
+    state.open_tunnel(None).await.expect("a tunnel");
+    // The owner asks for something a tool answers with an App.
+    arrives(
+        &home,
+        "002",
+        &message(
+            "dm-ada",
+            &person("u-1", "Ada"),
+            &json!({"fixture": "mcp-apps-note-v0.1", "server": "notes", "nonce": "n-1", "text": "a note"}).to_string(),
+            "upd-2",
+        ),
+    );
+    let said = until("the bot speaks of the App", || {
+        calls(&home).into_iter().find(|call| {
+            call["tool"] == "send"
+                && call["arguments"]["chat"] == "dm-ada"
+                && call["arguments"]["markdown"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("brought an App"))
+        })
+    })
+    .await;
+    let words = said["arguments"]["markdown"].as_str().unwrap_or_default();
+    if undeclared {
+        assert!(words.contains("for the Workbench"), "{said}");
+        assert!(
+            said["arguments"]["app"].is_null(),
+            "a button for an App that works elsewhere: {said}"
+        );
+    } else {
+        assert!(words.contains("Notes"), "the App by its title: {said}");
+        let url = said["arguments"]["app"]["url"].as_str().unwrap_or_default();
+        assert!(
+            url.contains("open=apps") && url.contains("&chat="),
+            "{said}"
+        );
+    }
+    state.close_tunnel().await;
+    state.remove_channel(&channel_id).await.expect("removed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_declared_for_a_phone_is_offered_by_the_bot() {
+    an_app_the_agent_brought_is_offered_where_it_works(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_that_declared_nothing_is_said_to_be_for_the_workbench() {
+    an_app_the_agent_brought_is_offered_where_it_works(true).await;
+}

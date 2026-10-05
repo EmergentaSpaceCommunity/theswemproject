@@ -160,6 +160,8 @@ document.getElementById("observed-ack").addEventListener("click", async () => {
         input_text: observedInput.text,
         result_nonce: structured.nonce,
         result_count: structured.note_count,
+        platform: hostContext.platform || null,
+        display_mode: hostContext.displayMode || null,
       },
     });
     status("agent call acknowledged");
@@ -168,12 +170,15 @@ document.getElementById("observed-ack").addEventListener("click", async () => {
   }
 });
 
+// Where the host said this App is, kept to be acknowledged with the call.
+let hostContext = {};
 (async () => {
-  await request("ui/initialize", {
+  const initialized = await request("ui/initialize", {
     appInfo: {name: "apps-fixture-notes", version: "0.1"},
     appCapabilities: {},
     protocolVersion: "2026-01-26",
   });
+  hostContext = (initialized && initialized.hostContext) || {};
   notify("ui/notifications/initialized", {});
   status("waiting for tool input…");
 })();

@@ -105,11 +105,28 @@ struct PendingInteraction {
 pub struct DiscoveredAppResource {
     pub uri: String,
     pub mime: String,
+    /// What the server calls it, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub description: Option<String>,
     /// The server's home App: the surface the host shows as a space of its
     /// own, opened without a tool call, marked `_meta["swem/home"]: true`
     /// on the resource (a vendor key inside the specification's metadata).
     pub home: bool,
+    /// Where the App works, as the package declared it on the resource
+    /// (`_meta["swem/platforms"]`, the specification's own `platform`
+    /// words): `web`, `desktop`, `mobile`. Undeclared, an App works on
+    /// `web` and `desktop` - nothing is assumed to fit a phone.
+    pub platforms: Vec<String>,
+}
+
+impl DiscoveredAppResource {
+    /// Whether the App declared it works where a host reports this
+    /// platform.
+    #[must_use]
+    pub fn works_on(&self, platform: &str) -> bool {
+        self.platforms.iter().any(|one| one == platform)
+    }
 }
 
 /// Discovery projection of one attachment for the shell page.
@@ -598,6 +615,42 @@ impl ConnectionApps {
 /// know it sees an ordinary App; it goes when app-only hosts are standardised.
 pub const HOME_APP_MARKER: &str = "swem/home";
 
+/// The vendor marker on an App resource's `_meta` that says where the App
+/// works: a list of the specification's `platform` words. Beside the home
+/// marker, inside the specification's metadata; it goes when a declaration
+/// of the kind is standardised.
+pub const PLATFORMS_MARKER: &str = "swem/platforms";
+
+/// The platforms the specification names, and what an App that declares
+/// none works on.
+pub const PLATFORMS: [&str; 3] = ["web", "desktop", "mobile"];
+const PLATFORMS_UNDECLARED: [&str; 2] = ["web", "desktop"];
+
+/// Where an App works, from its listing's `_meta`: the declared words the
+/// specification knows, else the undeclared default.
+pub(crate) fn platforms_declared(meta: Option<&rmcp::model::MetaObject>) -> Vec<String> {
+    let declared: Vec<String> = meta
+        .and_then(|meta| meta.0.get(PLATFORMS_MARKER))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|word| PLATFORMS.contains(word))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if declared.is_empty() {
+        PLATFORMS_UNDECLARED
+            .iter()
+            .map(|&word| word.to_owned())
+            .collect()
+    } else {
+        declared
+    }
+}
+
 /// Read the MCP Apps `ui` block from a tool/resource `_meta` value: the
 /// nested `"ui"` object is current; the flat `"ui/resourceUri"` key is the
 /// deprecated pre-GA form and stays readable.
@@ -663,12 +716,15 @@ fn discovered_apps(
         // Tool metadata is the primary discovery path. UI-only resources may
         // legally be omitted from resources/list; resources/read validates
         // the exact MIME and URI when the App is opened.
-        apps.entry(uri.clone()).or_insert(DiscoveredAppResource {
-            uri: uri.clone(),
-            mime: MCP_APP_MIME.to_owned(),
-            description: None,
-            home: false,
-        });
+        apps.entry(uri.clone())
+            .or_insert_with(|| DiscoveredAppResource {
+                uri: uri.clone(),
+                mime: MCP_APP_MIME.to_owned(),
+                title: None,
+                description: None,
+                home: false,
+                platforms: platforms_declared(None),
+            });
     }
     for resource in listed {
         if resource.uri.starts_with("ui://") && resource.mime_type.as_deref() == Some(MCP_APP_MIME)
@@ -679,13 +735,19 @@ fn discovered_apps(
                 .and_then(|meta| meta.0.get(HOME_APP_MARKER))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let platforms = platforms_declared(resource.meta.as_ref());
             apps.insert(
                 resource.uri.clone(),
                 DiscoveredAppResource {
                     uri: resource.uri,
                     mime: MCP_APP_MIME.to_owned(),
+                    title: resource
+                        .title
+                        .clone()
+                        .or_else(|| (!resource.name.is_empty()).then(|| resource.name.clone())),
                     description: resource.description,
                     home,
+                    platforms,
                 },
             );
         }
@@ -806,6 +868,11 @@ pub struct OpenedApp {
     pub isolated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_url: Option<String>,
+    /// What the server calls the App, and where it works, as discovered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 /// One App resource as read and resolved: the View's HTML and the metadata

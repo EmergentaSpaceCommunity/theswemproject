@@ -217,10 +217,23 @@ export interface AppTool {
   input_schema: unknown;
 }
 
+/// Where an App works, in the specification's `platform` words: what the
+/// package declared on the resource, or web and desktop when it declared
+/// nothing.
+export type Platform = "web" | "desktop" | "mobile";
+
+export interface AppResource {
+  uri: string;
+  title?: string;
+  description?: string;
+  home: boolean;
+  platforms: Platform[];
+}
+
 export interface AppAttachment {
   server_name: string;
   connection_scope: string;
-  apps: { uri: string }[];
+  apps: AppResource[];
   tools: AppTool[];
 }
 
@@ -229,7 +242,12 @@ export interface OpenedApp {
   server_name: string;
   uri: string;
   permissions: unknown;
+  title?: string;
+  platforms?: Platform[];
 }
+
+/// Whether an App declared it works where the host reports this platform.
+export const fits = (app: { platforms?: Platform[] }, platform: Platform): boolean => (app.platforms ?? ["web", "desktop"]).includes(platform);
 
 /// One kind of secret the host knows how to inject (mirrors `SECRET_TYPES`).
 export interface SecretType {

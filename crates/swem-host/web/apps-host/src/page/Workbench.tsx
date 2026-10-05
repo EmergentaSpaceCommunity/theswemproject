@@ -72,7 +72,7 @@ function InTheMessenger({ agent, owner }: { agent: string; owner: boolean }) {
     <div className="w-shell w-in-messenger" data-in-messenger={owner ? "owner" : "guest"}>
       <div className="w-stage">
         {lost ? <div className="k-notice k-warning w-lost">The Workbench is not answering. What is here is what was last heard; it comes back by itself.</div> : null}
-        {ready && who ? <AgentView agent={who} tab={tab} chat={chat} tabs={tabs} compact key={who.participant_id} /> : <main className="w-main" />}
+        {ready && who ? <AgentView agent={who} tab={tab} chat={chat} tabs={tabs} compact platform="mobile" key={who.participant_id} /> : <main className="w-main" />}
       </div>
     </div>
   );

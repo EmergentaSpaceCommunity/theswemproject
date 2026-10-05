@@ -45,8 +45,9 @@ A library plus test fixtures. It owns:
   at an address, the messenger's signature of who opened the Workbench's page inside it). The
   page inside the messenger is the Workbench's own page, drawn for somebody who came through a
   messenger: the signature is exchanged once at the door for a session, and who asks is a
-  participant with a scope (`access.rs`, `door.rs`). A bot belongs to one harness and its
-  token is one more key. ADR-0013, ADR-0014, ADR-0016.
+  participant with a scope (`access.rs`, `door.rs`). An App reaches the messenger only where
+  its package declared it works (`_meta["swem/platforms"]`, ADR-0017). A bot belongs to one
+  harness and its token is one more key. ADR-0013, ADR-0014, ADR-0016.
 - **Tunnels** (`workbench_shell/tunnel.rs`). An address from outside for a while, for a
   Workbench that is not served at one: a package of kind `swem/tunnel@1` (the twin of a
   channel, `swem_sdk::tunnel`) stands at a public address for the gate - a second loopback

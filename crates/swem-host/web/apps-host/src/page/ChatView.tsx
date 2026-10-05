@@ -24,6 +24,7 @@ import { FieldInput, readRaw } from "../agent/FlatFormFields.tsx";
 import { fieldsOf, valueOf } from "../agent/flatForm.ts";
 import type { ConfigChoice } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
+import type { Platform } from "../agent/session.ts";
 import { ChatApps } from "./ChatApps.tsx";
 import { useOffers } from "./session.ts";
 import { sessionStore, useSession } from "../agent/store.ts";
@@ -665,7 +666,7 @@ function Thread({
 
 /// `view` is what of the chat is drawn: the chat with the Apps beside it,
 /// or the Apps alone, as a tab for a phone.
-export function ChatView({ chat, view = "chat" }: { chat: Chat; view?: "chat" | "apps" }) {
+export function ChatView({ chat, view = "chat", platform = "web" }: { chat: Chat; view?: "chat" | "apps"; platform?: Platform }) {
   const store = chatStore(chat.chat_id);
   const state = useStore(store);
   const owner = useStore(world, (one) => one.you);
@@ -735,6 +736,8 @@ export function ChatView({ chat, view = "chat" }: { chat: Chat; view?: "chat" | 
           shown={appsShown}
           onShow={() => setAppsShown(true)}
           onHide={() => setAppsShown(false)}
+          platform={platform}
+          displayMode={view === "apps" ? "fullscreen" : "inline"}
         />
       ) : null}
     </Handles.Provider>

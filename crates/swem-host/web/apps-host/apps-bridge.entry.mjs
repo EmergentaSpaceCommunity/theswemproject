@@ -65,7 +65,10 @@ function permissionsToAllow(permissions, origin) {
     .join("; ");
 }
 
-export async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content" }) {
+export async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content", platform = "web", displayMode = "inline" }) {
+  // Where the App is told it is: the place the page is drawn in, and how
+  // it is drawn here. Not the width - that is in the container's size.
+  const place = { platform, displayMode };
   signal?.throwIfAborted();
   const status = onStatus || (() => {});
   if (!opened.sandbox_url || !opened.sandbox_origin) {
@@ -114,8 +117,11 @@ export async function mount({ container, opened, relay, observation, onStatus, o
     null,
     { name: "swem-workbench-shell", version: "0.1" },
     capabilities,
-    { hostContext: readHostContext() },
+    { hostContext: readHostContext(container, place) },
   );
+  // The host draws an App one way in each place and says so; a request for
+  // another mode is answered with the mode there is.
+  bridge.onrequestdisplaymode = async () => ({ mode: displayMode });
   // `fit: "content"` (a surface in a rail): the frame grows to the height
   // the App announces. `fit: "fill"` (a workbench under a rail): the
   // container owns the area and the App lays itself out inside it.
@@ -217,8 +223,8 @@ export async function mount({ container, opened, relay, observation, onStatus, o
     clearTimeout(openingTimer);
     signal?.removeEventListener("abort", abortOpening);
   }
-  const stopWatchingTheme = watchHostContext(bridge);
-  bridge.setHostContext(readHostContext());
+  const stopWatchingTheme = watchHostContext(bridge, container, place);
+  bridge.setHostContext(readHostContext(container, place));
   let inputSent = false;
   let terminalSent = false;
   const deliver = async (call) => {

@@ -13,7 +13,7 @@
 // itself.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {hostContextFromStyle, styleKeys} from './theme.mjs';
+import {hostContextFromStyle, hostContextOfPlace, styleKeys} from './theme.mjs';
 import {McpUiHostContextSchema, McpUiHostStylesSchema} from '@modelcontextprotocol/ext-apps';
 import {readFileSync} from 'node:fs';
 
@@ -135,4 +135,22 @@ test('the shell inlines the shared palette and kit rather than restating them', 
   for (const slot of ['__PALETTE_CSS__', '__KIT_CSS__']) {
     assert.ok(css.includes(slot), `the shell no longer reserves a slot for ${slot}`);
   }
+});
+
+// Where an App is told it is: the place, how it is drawn, the room, the
+// device - each in the extension's own words, and validated by its schema.
+test('the host says where an App is, in the standard\'s words', () => {
+  const mobile = hostContextOfPlace({platform: 'mobile', displayMode: 'fullscreen', width: 390, height: 700, touch: true, hover: false});
+  assert.equal(mobile.platform, 'mobile');
+  assert.equal(mobile.displayMode, 'fullscreen');
+  assert.deepEqual(mobile.availableDisplayModes, ['fullscreen']);
+  assert.deepEqual(mobile.containerDimensions, {width: 390, height: 700});
+  assert.deepEqual(mobile.deviceCapabilities, {touch: true, hover: false});
+  const beside = hostContextOfPlace({platform: 'web', displayMode: 'inline', width: 320, height: 500, touch: false, hover: true});
+  assert.deepEqual(beside.containerDimensions, {width: 320, maxHeight: 500});
+  // Nothing of it is outside the standard's own shape.
+  for (const context of [mobile, beside, hostContextOfPlace()]) McpUiHostContextSchema.parse(context);
+  // Undeclared room and device are left out, not invented.
+  assert.equal(hostContextOfPlace().containerDimensions, undefined);
+  assert.equal(hostContextOfPlace().deviceCapabilities, undefined);
 });

@@ -764,6 +764,9 @@ async fn a_real_browser_receives_the_native_agent_call_input_and_result() {
     assert_eq!(app_ack["input_text"], agent_receipt["text"]);
     assert_eq!(app_ack["result_nonce"], agent_receipt["nonce"]);
     assert_eq!(app_ack["result_count"], agent_receipt["note_count"]);
+    // The App was told where it is: on the Workbench's page, beside the chat.
+    assert_eq!(app_ack["platform"], "web");
+    assert_eq!(app_ack["display_mode"], "inline");
 
     let events = events_of(&ledger, route);
     assert_eq!(

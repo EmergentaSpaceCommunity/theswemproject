@@ -2744,14 +2744,26 @@ fn supplies_for_the_messenger_walk(data_root: &Path) -> (PathBuf, &'static str, 
             "name": "Servers for this gate",
             "entries": [
                 {"kind": "server", "id": "notes", "name": "Notes", "version": "0.1.0-gate",
-                 "description": "a note board with an App",
+                 "description": "a note board with an App that works on a phone",
                  "distribution": {"binary": {platform: {
                      "archive": format!("file://{}", archive.display()),
                      "sha256": sha256_of(&archive),
                      "cmd": apps_fixture,
                      "args": ["--receipt", supply.join("notes-receipt.json").display().to_string(),
                               "--poison", supply.join("notes-poison.json").display().to_string(),
-                              "--home"]}}}}
+                              "--observed-receipt", supply.join("notes-observed.json").display().to_string(),
+                              "--home"]}}}},
+                // The same board, declaring nothing of where its App works:
+                // for the Workbench, not for a phone.
+                {"kind": "server", "id": "notes-desk", "name": "Notes for the desk", "version": "0.1.0-gate",
+                 "description": "a note board with an App that declares nothing",
+                 "distribution": {"binary": {platform: {
+                     "archive": format!("file://{}", archive.display()),
+                     "sha256": sha256_of(&archive),
+                     "cmd": apps_fixture,
+                     "args": ["--receipt", supply.join("desk-receipt.json").display().to_string(),
+                              "--poison", supply.join("desk-poison.json").display().to_string(),
+                              "--undeclared"]}}}}
             ]
         }))
         .expect("serialize the catalog"),
@@ -2829,4 +2841,13 @@ fn a_person_opens_the_workbench_inside_the_messenger_from_a_laptop() {
     let arrived = std::fs::read(workspaces.join("hands").join("inbox").join("notes-big.bin"))
         .expect("the big file reached the agent's inbox through the gate");
     assert_eq!(arrived, bytes, "the file arrived changed");
+    // The App, acknowledged from inside its frame on the phone, was told
+    // where it is: on a phone, filling the place.
+    let acknowledged: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(data_root.join("supply").join("notes-observed.json"))
+            .expect("the App acknowledged the call it was brought by"),
+    )
+    .expect("the acknowledgement is json");
+    assert_eq!(acknowledged["platform"], "mobile", "{acknowledged}");
+    assert_eq!(acknowledged["display_mode"], "fullscreen", "{acknowledged}");
 }

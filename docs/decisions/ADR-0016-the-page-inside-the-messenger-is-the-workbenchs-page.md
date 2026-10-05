@@ -56,8 +56,10 @@ rights could exist only outside the door.
   is named in one list, with a test beside it.
 - `verify_app`, `take_back`, the `app` button and `Bot.app_data_fragment` are the SDK's;
   the fixture channel answers them, so the gate walks need no messenger.
-- Threading who asks through every other handler is debt, recorded in `ROADMAP.md`; until then
-  the door refuses a messenger session the rest.
+- The door admits a messenger session to one named list of routes and refuses it the rest -
+  the handlers of setting up never see one, so nobody in a chat can set up the bot. Those
+  handlers taking who asks themselves is the full form of ADR-0011, owed (`ROADMAP.md`), not a
+  hole.
 - Apps the agent answers with reach the messenger as a button and the page's Apps tab; through
   a tunnel the sandbox stands at a second address of the same package, started once more, and
   `app_open` answers the sandbox of the listener the page came through.

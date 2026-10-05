@@ -42,9 +42,10 @@ the bot when a tool brings one. Next: the bot run from a served Workbench with t
 closed, tried by hand; a
 keeper that knocks from outside on a Workbench that sleeps, as a hosted service with a
 self-host (ADR-0015); secrets a package declares, when a package needs one (a named tunnel);
-another messenger as a package of the same kind. Debt: who asks reaches the door and the chat
-routes; the other handlers still act as the owner, and the door refuses a messenger session
-the rest until they take it too (ADR-0016).
+another messenger as a package of the same kind. Owed, not open: the door admits a
+messenger session to one named list of routes and refuses the rest (tested), so nobody but
+the owner reaches the handlers of setting up; those handlers do not yet take who asks
+themselves - the full form of ADR-0011, for when a second kind of principal reaches them.
 
 ## Teams of agents
 

@@ -45,12 +45,46 @@ export function hostContextFromStyle(style) {
   return { theme: style.colorScheme === 'light' ? 'light' : 'dark', styles: { variables } };
 }
 
-export function readHostContext() {
-  return hostContextFromStyle(getComputedStyle(document.documentElement));
+/// Where an App is, in the specification's words: the platform the page is
+/// on (the Workbench is `web`, the page inside a messenger `mobile` - the
+/// place, never the width), how it is drawn, the room it has, and what the
+/// device can do. Width and touch go where the specification puts them.
+export function hostContextOfPlace({ platform = 'web', displayMode = 'inline', width, height, touch, hover } = {}) {
+  const context = { platform, displayMode, availableDisplayModes: [displayMode] };
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0) {
+    context.containerDimensions = displayMode === 'fullscreen' ? { width, height } : { width, maxHeight: height };
+  }
+  if (typeof touch === 'boolean' && typeof hover === 'boolean') context.deviceCapabilities = { touch, hover };
+  return context;
 }
 
-export function watchHostContext(bridge) {
-  const observer = new MutationObserver(() => bridge.setHostContext(readHostContext()));
+function placeOf(container, place) {
+  const room = container ? container.getBoundingClientRect() : null;
+  const can = (query) => typeof matchMedia === 'function' && matchMedia(query).matches;
+  return hostContextOfPlace({
+    ...place,
+    width: room ? Math.round(room.width) : undefined,
+    height: room ? Math.round(place?.displayMode === 'fullscreen' ? room.height : window.innerHeight * 0.6) : undefined,
+    touch: can('(pointer: coarse)'),
+    hover: can('(hover: hover)'),
+  });
+}
+
+/// The whole context the host tells an App: the theme and the style
+/// variables, and where it is.
+export function readHostContext(container, place) {
+  return { ...hostContextFromStyle(getComputedStyle(document.documentElement)), ...placeOf(container, place) };
+}
+
+/// Tell the App again whenever the theme changes or the room it has does.
+export function watchHostContext(bridge, container, place) {
+  const tell = () => bridge.setHostContext(readHostContext(container, place));
+  const observer = new MutationObserver(tell);
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'style', 'class'] });
-  return () => observer.disconnect();
+  const resized = typeof ResizeObserver === 'function' && container ? new ResizeObserver(tell) : null;
+  resized?.observe(container);
+  return () => {
+    observer.disconnect();
+    resized?.disconnect();
+  };
 }

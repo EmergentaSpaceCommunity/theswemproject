@@ -308,6 +308,7 @@ impl WorkbenchShellState {
         } = workbench_apps::read_app(&entry, uri)
             .await
             .map_err(WorkbenchShellError::Conflict)?;
+        let known = entry.apps.iter().find(|app| app.uri == uri).cloned();
         let app_id = {
             let mut open = self.server_apps.open.lock().await;
             let app_id = format!("s{}", open.next_app);
@@ -345,6 +346,11 @@ impl WorkbenchShellState {
             sandbox_origin,
             isolated,
             view_url,
+            title: known.as_ref().and_then(|app| app.title.clone()),
+            platforms: known.map_or_else(
+                || crate::workbench_apps::platforms_declared(None),
+                |app| app.platforms,
+            ),
         })
     }
 

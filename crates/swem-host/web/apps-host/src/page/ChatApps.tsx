@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { loadBridge, type MountedApp } from "../agent/bridge.ts";
-import type { AppAttachment, AppTool, OpenedApp } from "../agent/session.ts";
+import { fits, type AppAttachment, type AppTool, type OpenedApp, type Platform } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
 import { AppForm, forAPerson, toolNamed } from "./AppForm.tsx";
 import { Cross, Tiles } from "./icons.tsx";
@@ -44,6 +44,8 @@ export function ChatApps({
   shown,
   onShow,
   onHide,
+  platform = "web",
+  displayMode = "inline",
 }: {
   chat: string;
   agent: string;
@@ -53,6 +55,12 @@ export function ChatApps({
   shown: boolean;
   onShow: () => void;
   onHide: () => void;
+  /// Where this page is, as the host tells an App: the Workbench is `web`,
+  /// the page inside a messenger `mobile`. Only Apps that declared they
+  /// work here open here.
+  platform?: Platform;
+  /// How an App is drawn here: beside the chat, or filling the place.
+  displayMode?: "inline" | "fullscreen";
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mounted = useRef<{ app: MountedApp; opened: OpenedApp; connection: string } | null>(null);
@@ -80,7 +88,7 @@ export function ChatApps({
     }
     setOpen(opened);
     const relay = (message: unknown) => fetchJson<unknown>(`/api/connections/${part(connection)}/apps/${part(opened.app_id)}/rpc`, post(message));
-    const app = await window.SwemAppsBridge.mount({ container: container.current, opened, relay, observation, onStatus: setStatus });
+    const app = await window.SwemAppsBridge.mount({ container: container.current, opened, relay, observation, onStatus: setStatus, platform, displayMode });
     mounted.current = { app, opened, connection };
     if (observation?.status === "pending" && observation.observation_id) {
       const terminal = await fetchJson<unknown>(
@@ -128,6 +136,11 @@ export function ChatApps({
         // The session counts its calls from one: a call of an earlier
         // session is not this one.
         if (!observed || observed.observation.cursor !== brought.call) return;
+        // An App that did not declare it works here is not opened here.
+        if (!fits(observed.opened, platform)) {
+          setStatus(`${named(observed.opened)} works on the Workbench, not here.`);
+          return;
+        }
         onShow();
         await mount(connection, observed.opened, observed.observation);
       } catch (error) {
@@ -152,8 +165,9 @@ export function ChatApps({
   };
 
   const apps = (attachments ?? []).flatMap((attachment) =>
-    attachment.apps.map((app) => ({ server: attachment.server_name, app, forms: forAPerson(attachment.tools, app.uri) })),
+    attachment.apps.map((app) => ({ server: attachment.server_name, app, forms: forAPerson(attachment.tools, app.uri), here: fits(app, platform) })),
   );
+  const elsewhere = apps.filter((one) => !one.here);
   const formsOf = (server: string, forms: AppTool[]) =>
     forms.map((tool) => (
       <button
@@ -190,18 +204,30 @@ export function ChatApps({
         </>
       ) : (
         <div className="k-rail-group">
-          {apps.map(({ server, app, forms }) => (
-            <div className="k-stack w-close" key={`${server} ${app.uri}`}>
-              <button type="button" className="k-rail-item" title={app.uri} onClick={() => void openApp(server, app.uri)}>
-                <Tiles />
-                <span className="k-two">
-                  <span className="k-name">{named(app)}</span>
-                  <span className="k-caption">{server}</span>
+          {apps
+            .filter((one) => one.here)
+            .map(({ server, app, forms }) => (
+              <div className="k-stack w-close" key={`${server} ${app.uri}`} data-app={app.uri}>
+                <button type="button" className="k-rail-item" title={app.uri} onClick={() => void openApp(server, app.uri)}>
+                  <Tiles />
+                  <span className="k-two">
+                    <span className="k-name">{named(app)}</span>
+                    <span className="k-caption">{server}</span>
+                  </span>
+                </button>
+                {forms.length > 0 ? <div className="k-inline w-tight w-wrap">{formsOf(server, forms)}</div> : null}
+              </div>
+            ))}
+          {elsewhere.length > 0 ? (
+            <div className="k-stack w-close" data-apps-elsewhere="">
+              <span className="k-eyebrow">On the Workbench</span>
+              {elsewhere.map(({ server, app }) => (
+                <span className="k-caption" key={`${server} ${app.uri}`} data-app={app.uri}>
+                  {named(app)} · {server}
                 </span>
-              </button>
-              {forms.length > 0 ? <div className="k-inline w-tight w-wrap">{formsOf(server, forms)}</div> : null}
+              ))}
             </div>
-          ))}
+          ) : null}
           {attachments !== null && apps.length === 0 ? <span className="k-caption">The servers it attaches bring no Apps.</span> : null}
         </div>
       )}

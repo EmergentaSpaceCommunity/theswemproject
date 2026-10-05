@@ -103,14 +103,20 @@ async fn the_fixture_declares_its_app_the_standard_way_and_proves_the_tool_by_re
     assert!(probe_meta.0["ui"].get("resourceUri").is_none());
 
     // Resource discovery: ui:// + mcp-app MIME; listing level deliberately
-    // carries no _meta.ui (the content item is the authority).
+    // carries no _meta.ui (the content item is the authority) - only the
+    // host's own keys beside it: where the App works.
     let resources = client.list_all_resources().await.expect("list resources");
     let notes = resources
         .iter()
         .find(|resource| resource.uri == NOTES_URI)
         .expect("notes App resource listed");
     assert_eq!(notes.mime_type.as_deref(), Some(APP_MIME));
-    assert!(notes.meta.is_none());
+    let listing_meta = notes.meta.as_ref().expect("the listing's own keys");
+    assert!(listing_meta.0.get("ui").is_none());
+    assert_eq!(
+        listing_meta.0["swem/platforms"],
+        serde_json::json!(["web", "desktop", "mobile"])
+    );
 
     // Read: HTML document with content-level _meta.ui.
     let read = client

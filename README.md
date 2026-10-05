@@ -33,7 +33,7 @@ your keys. It is one binary, `swem`, and a page.
 | Put the Workbench on a server of your own and come to it from a laptop with a passkey | works; a phone and Linux are unverified |
 | Run an agent sealed in a container with its key inside | in progress (Podman) |
 | Run an agent on a machine over SSH, or on a cloud machine that sleeps between messages | not yet |
-| Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group, questions as buttons, files each way, guests let in by you | works; the Workbench's own page opens inside the messenger - your agent's files, its questions, its Apps, the chat, a file of any size - from a laptop through a tunnel from the Store (no key), or from a served Workbench, where the messenger delivers directly |
+| Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group, questions as buttons, files each way, guests let in by you | works; the Workbench's own page opens inside the messenger - your agent's files, its questions, the Apps that declared they work on a phone, the chat, a file of any size - from a laptop through a tunnel from the Store (no key), or from a served Workbench, where the messenger delivers directly |
 | Build SWEM into a product of your own, with your people, your name and your servers | works |
 
 `ROADMAP.md` is the order of what comes next.
@@ -107,6 +107,7 @@ neither can forge.
 
 - Put it on a server of your own: [`docs/serving.md`](docs/serving.md).
 - Reach an agent from Telegram: [`docs/channels.md`](docs/channels.md).
+- Write a server with an App, and say where it works: [`docs/apps.md`](docs/apps.md).
 - Build it into a product of your own, in a page of code: [`docs/building-in.md`](docs/building-in.md).
 - Publish a catalog of servers, skills or packages that people add by address:
   [`docs/catalogs.md`](docs/catalogs.md). Nothing is hosted by SWEM; every index is consumed.

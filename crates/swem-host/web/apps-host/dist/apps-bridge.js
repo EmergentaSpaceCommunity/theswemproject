@@ -23486,13 +23486,38 @@ container holding the app. Specify either width or maxWidth, and either height o
     const variables = Object.fromEntries(styleKeys.map((key) => [key, style.getPropertyValue(key).trim()]).filter(([, value]) => value));
     return { theme: style.colorScheme === "light" ? "light" : "dark", styles: { variables } };
   }
-  function readHostContext() {
-    return hostContextFromStyle(getComputedStyle(document.documentElement));
+  function hostContextOfPlace({ platform = "web", displayMode = "inline", width, height, touch, hover } = {}) {
+    const context = { platform, displayMode, availableDisplayModes: [displayMode] };
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0) {
+      context.containerDimensions = displayMode === "fullscreen" ? { width, height } : { width, maxHeight: height };
+    }
+    if (typeof touch === "boolean" && typeof hover === "boolean") context.deviceCapabilities = { touch, hover };
+    return context;
   }
-  function watchHostContext(bridge) {
-    const observer = new MutationObserver(() => bridge.setHostContext(readHostContext()));
+  function placeOf(container, place) {
+    const room = container ? container.getBoundingClientRect() : null;
+    const can = (query) => typeof matchMedia === "function" && matchMedia(query).matches;
+    return hostContextOfPlace({
+      ...place,
+      width: room ? Math.round(room.width) : void 0,
+      height: room ? Math.round(place?.displayMode === "fullscreen" ? room.height : window.innerHeight * 0.6) : void 0,
+      touch: can("(pointer: coarse)"),
+      hover: can("(hover: hover)")
+    });
+  }
+  function readHostContext(container, place) {
+    return { ...hostContextFromStyle(getComputedStyle(document.documentElement)), ...placeOf(container, place) };
+  }
+  function watchHostContext(bridge, container, place) {
+    const tell = () => bridge.setHostContext(readHostContext(container, place));
+    const observer = new MutationObserver(tell);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style", "class"] });
-    return () => observer.disconnect();
+    const resized = typeof ResizeObserver === "function" && container ? new ResizeObserver(tell) : null;
+    resized?.observe(container);
+    return () => {
+      observer.disconnect();
+      resized?.disconnect();
+    };
   }
 
   // apps-bridge.entry.mjs
@@ -23521,7 +23546,8 @@ container holding the app. Specify either width or maxWidth, and either height o
     if (!permissions || typeof permissions !== "object" || !origin) return "";
     return Object.keys(permissions).map((key) => PERMISSION_FEATURES[key]).filter(Boolean).map((feature) => `${feature} ${origin}`).join("; ");
   }
-  async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content" }) {
+  async function mount({ container, opened, relay, observation, onStatus, onModelContext, signal, fit = "content", platform = "web", displayMode = "inline" }) {
+    const place = { platform, displayMode };
     signal?.throwIfAborted();
     const status = onStatus || (() => {
     });
@@ -23546,8 +23572,9 @@ container holding the app. Specify either width or maxWidth, and either height o
       null,
       { name: "swem-workbench-shell", version: "0.1" },
       capabilities,
-      { hostContext: readHostContext() }
+      { hostContext: readHostContext(container, place) }
     );
+    bridge.onrequestdisplaymode = async () => ({ mode: displayMode });
     if (fit === "content") {
       bridge.onsizechange = (size) => {
         const height = Number(size && size.height);
@@ -23621,8 +23648,8 @@ container holding the app. Specify either width or maxWidth, and either height o
       clearTimeout(openingTimer);
       signal?.removeEventListener("abort", abortOpening);
     }
-    const stopWatchingTheme = watchHostContext(bridge);
-    bridge.setHostContext(readHostContext());
+    const stopWatchingTheme = watchHostContext(bridge, container, place);
+    bridge.setHostContext(readHostContext(container, place));
     let inputSent = false;
     let terminalSent = false;
     const deliver = async (call) => {

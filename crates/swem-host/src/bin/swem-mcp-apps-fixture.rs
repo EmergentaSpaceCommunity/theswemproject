@@ -100,6 +100,11 @@ struct AcknowledgeObservedRequest {
     input_text: String,
     result_nonce: String,
     result_count: usize,
+    /// Where the host said the App is, as the App was told at `ui/initialize`.
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    display_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
@@ -161,6 +166,9 @@ struct NotesServer {
     /// `--home`: the notes View is this server's home App, marked on the
     /// resource so a host shows it as a space of its own.
     home: bool,
+    /// `--undeclared`: the notes App says nothing of where it works, so a
+    /// host takes it for the web and the desktop only.
+    undeclared: bool,
     /// `--late-tool <file>`: once the file exists the server declares one
     /// more tool, `late_note` - a server that gains a tool while it runs,
     /// as a hub does when a package is installed through it.
@@ -177,6 +185,10 @@ impl NotesServer {
         clippy::too_many_arguments,
         reason = "one fixture constructor mirrors its command line flag by flag"
     )]
+    #[allow(
+        clippy::fn_params_excessive_bools,
+        reason = "a fixture's switches, one per flag on its command line"
+    )]
     fn new(
         receipt: PathBuf,
         poison: PathBuf,
@@ -187,9 +199,11 @@ impl NotesServer {
         hostile: bool,
         omit_resource_listing: bool,
         home: bool,
+        undeclared: bool,
         late_tool: Option<PathBuf>,
     ) -> Self {
         Self {
+            undeclared,
             receipt,
             poison,
             observed_receipt,
@@ -482,15 +496,21 @@ impl ServerHandler for NotesServer {
         }
         // Deliberately NO `_meta.ui` at listing level: the app metadata lives
         // on the read content item only, exercising the host's spec duty to
-        // check both locations with content winning.
+        // check both locations with content winning. What IS on the listing
+        // is the host's own vendor keys: the home marker, and where the App
+        // works - the notes App everywhere, the probes nowhere declared.
         let mut resource = Resource::new(NOTES_RESOURCE, "notes");
+        resource.title = Some("Notes".into());
         resource.mime_type = Some(APP_MIME.into());
         resource.description = Some("Note board MCP App view".into());
-        if self.home {
-            let mut meta = JsonObject::new();
-            meta.insert("swem/home".into(), json!(true));
-            resource.meta = Some(MetaObject(meta));
+        let mut meta = JsonObject::new();
+        if !self.undeclared {
+            meta.insert("swem/platforms".into(), json!(["web", "desktop", "mobile"]));
         }
+        if self.home {
+            meta.insert("swem/home".into(), json!(true));
+        }
+        resource.meta = Some(MetaObject(meta));
         let mut resources = vec![resource];
         if self.engine_probe {
             let mut probe = Resource::new(PROBE_RESOURCE, "engine-probe");
@@ -644,6 +664,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let hostile = arguments.iter().any(|argument| argument == "--hostile");
     let home = arguments.iter().any(|argument| argument == "--home");
+    let undeclared = arguments.iter().any(|argument| argument == "--undeclared");
     let late_tool = arguments
         .iter()
         .position(|argument| argument == "--late-tool")
@@ -680,6 +701,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hostile,
         omit_resource_listing,
         home,
+        undeclared,
         late_tool,
     )
     .serve(rmcp::transport::stdio())
