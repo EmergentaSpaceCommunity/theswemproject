@@ -116,7 +116,9 @@ A library plus test fixtures. It owns:
   ledger and under a file lock because the editor door is another process; a session is opened
   when a message needs it and let go of when idle; a chat whose engine lost its session goes on
   in a fresh one that is given what was said), and the one stream a page follows every chat by
-  (`stream.rs`, server-sent events from a place in the ledger's order). What an engine is told
+  (`stream.rs`, server-sent events from a place in the ledger's order; a page that hears
+  nothing - a tunnel's edge holds a stream back - asks for the same record, `/api/now` and
+  `/api/happened`, instead). What an engine is told
   about who spoke is one block the host makes per turn (`envelope.rs`). Beside them: the MCP
   catalogue (`mcp_servers.rs`), model providers
   (`model_providers.rs`), terminals, the editor door (`editor_door.rs`: the same chats

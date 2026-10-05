@@ -72,6 +72,7 @@ await b.ask("/api/access/sign-out", {method: "POST", headers: {"content-type": "
 await page.open(appUrl, OWNER);
 await b.waitFor("the page is drawn for the owner from the messenger", async () => b.exists('[data-in-messenger="owner"]'), 150);
 if (await b.exists(".w-rail")) cleanup(1, "the rail is drawn inside the messenger");
+await b.waitFor("the agent's tabs", async () => (await page.tabs()).length > 0, 150);
 await b.waitFor("the Files tab, as the bot pointed", async () => (await page.activeTab()) === "Files", 100);
 if (!(await b.pressText('[data-in-messenger] .k-tab', "Chat"))) cleanup(1, "no Chat tab");
 await b.waitFor("the chat as it stands", async () => page.streamSays("hello from my phone"), 150);

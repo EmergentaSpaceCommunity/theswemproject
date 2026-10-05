@@ -60,8 +60,10 @@ gate** is the listener a tunnel points at.
 
 - The Store gains two kinds the harness takes (`Tunnels`, `Tools`) and one distribution form
   (a bare executable); the shipped catalog names `cloudflared` by release with its digests.
-- CI and the gate never download a tunnel vendor: the fixture tunnel answers `open` with the
-  URL it is handed, so what a walk reaches "through the tunnel" is the gate itself.
+- CI and the gate never download a tunnel vendor: the fixture tunnel stands at a loopback
+  address of its own and passes everything through to the gate whole - holding each answer
+  back until it ends, as a vendor's edge was measured to (ADR-0016), so a walk "through the
+  tunnel" meets what the real road does.
 - The age and replay of the messenger's signed data are the channel package's business
   (ADR-0013); the gate adds no check of its own and none is needed for an app that is read by
   signature per call.

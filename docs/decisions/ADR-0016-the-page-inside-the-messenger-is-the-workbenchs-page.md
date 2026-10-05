@@ -64,6 +64,16 @@ rights could exist only outside the door.
   a tunnel the sandbox stands at a second address of the same package, started once more, and
   `app_open` answers the sandbox of the listener the page came through.
 
+**Through a tunnel the page asks** (added 2026-10-05). Measured: Cloudflare's quick tunnel
+holds a response back until it ends, so the page's one stream (`/api/stream`) never reaches a
+browser through it - the first real test from a phone was a dark screen. The page now listens
+first and, hearing nothing in a few seconds or cut off before it heard anything, asks for the
+same record instead: `GET /api/now` (the state whole, as far as the scope reaches) and `GET
+/api/happened?after=` (the events the stream would have carried, filtered the same way) every
+little while. One record, one reducer on the page, two ways of carrying it - as a channel on a
+laptop asks the messenger and one at an address is delivered to (ADR-0013). The fixture tunnel
+became a proxy that holds every answer back until it ends, so the gate walks go the real road.
+
 ## Links
 
 ADR-0011, ADR-0013, ADR-0015; `docs/channels.md`.

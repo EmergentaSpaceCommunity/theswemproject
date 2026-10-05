@@ -118,6 +118,9 @@ step("/app opened the tunnel and the bot sent a button pointing through it");
 await page.open(offered.web_app.url, OWNER);
 await b.waitFor("the page is drawn for the owner from the messenger", async () => b.exists('[data-in-messenger="owner"]'), 150);
 if (await b.exists(".w-rail")) cleanup(1, "the rail is drawn inside the messenger");
+// Through a tunnel the page hears nothing of its stream and asks instead,
+// a few seconds in: the agent and its tabs come a moment later.
+await b.waitFor("the agent's tabs", async () => (await page.tabs()).length > 0, 150);
 const tabs = await page.tabs();
 if (tabs.join(",") !== "Chat,Files,Apps") cleanup(1, `the owner's tabs: ${tabs.join(",")}`);
 await b.waitFor("the Files tab, as the bot pointed", async () => (await page.activeTab()) === "Files", 100);
@@ -181,6 +184,7 @@ const bobs = (await buttons(STRANGER))[0];
 if (new URL(bobs.web_app.url).searchParams.get("open") !== "chat") cleanup(1, `a guest's button opens ${bobs.web_app.url}`);
 await page.open(bobs.web_app.url, STRANGER);
 await b.waitFor("the page is drawn for a guest", async () => b.exists('[data-in-messenger="guest"]'), 150);
+await b.waitFor("the guest's tabs", async () => (await page.tabs()).length > 0, 150);
 const bobTabs = await page.tabs();
 if (bobTabs.join(",") !== "Chat") cleanup(1, `a guest's tabs: ${bobTabs.join(",")}`);
 await b.waitFor("Bob's own chat", async () => page.streamSays("hello, I am Bob"), 150);

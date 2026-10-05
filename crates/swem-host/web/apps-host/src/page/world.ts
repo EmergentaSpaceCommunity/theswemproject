@@ -148,19 +148,73 @@ let stream: EventSource | null = null;
 
 /// Follow the host. Called once, when the page opens; a stream that went
 /// down comes back by itself, from the place it had reached.
+/// How long the page listens for the state before it asks instead.
+const HEARD_NOTHING_MS = 4000;
+/// How often a page that asks, asks.
+const ASK_EVERY_MS = 1500;
+let asking = false;
+
 export function follow(): void {
-  if (stream) return;
+  if (stream || asking) return;
   stream = new EventSource(at("/api/stream"));
-  const whole = (message: MessageEvent<string>) => stands(JSON.parse(message.data) as Now);
+  let heard = false;
+  const whole = (message: MessageEvent<string>) => {
+    heard = true;
+    stands(JSON.parse(message.data) as Now);
+  };
   stream.addEventListener("state", whole);
   stream.addEventListener("reset", (message) => {
+    heard = true;
     // The record is another one: nothing read from the old one holds.
     opened.clear();
     stands(JSON.parse((message as MessageEvent<string>).data) as Now, true);
   });
   stream.addEventListener("event", (message) => happened(JSON.parse((message as MessageEvent<string>).data) as Happened));
   stream.addEventListener("open", () => world.setState({ lost: false }));
-  stream.addEventListener("error", () => world.setState({ lost: true }));
+  // A proxy in between may hold a stream back until it ends - a vendor's
+  // edge does, through a tunnel. A page that hears nothing in a while, or
+  // is cut off before it heard anything, asks for the same instead.
+  const askInstead = () => {
+    if (heard || !stream) return;
+    stream.close();
+    stream = null;
+    void ask();
+  };
+  stream.addEventListener("error", () => {
+    world.setState({ lost: true });
+    askInstead();
+  });
+  window.setTimeout(askInstead, HEARD_NOTHING_MS);
+}
+
+/// The same record, asked for: the state whole, then what happened after
+/// the place the page reached, every little while.
+async function ask(): Promise<void> {
+  if (asking) return;
+  asking = true;
+  let place = 0;
+  const whole = async (anew: boolean) => {
+    if (anew) opened.clear();
+    const now = await fetchJson<Now>("/api/now");
+    stands(now, anew);
+    place = now.head;
+  };
+  for (;;) {
+    try {
+      if (!world.getState().ready) await whole(false);
+      const got = await fetchJson<{ place?: number; head: number; reset?: boolean; events: Happened[] }>(`/api/happened?after=${place}`);
+      if (got.reset) {
+        await whole(true);
+      } else {
+        for (const event of got.events) happened(event);
+        if (typeof got.place === "number") place = got.place;
+      }
+      world.setState({ lost: false });
+    } catch {
+      world.setState({ lost: true });
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, ASK_EVERY_MS));
+  }
 }
 
 function joined(page: ChatPage): Happened[] {

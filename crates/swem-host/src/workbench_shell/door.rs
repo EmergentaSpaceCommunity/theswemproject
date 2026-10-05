@@ -333,7 +333,7 @@ pub(super) fn open_to_a_messenger(method: &Method, segments: &[&str]) -> bool {
         (method, segments),
         (
             &Method::GET,
-            ["api", "stream" | "people" | "access"]
+            ["api", "stream" | "now" | "happened" | "people" | "access"]
                 | ["api", "chats" | "questions" | "content", _]
                 | ["api", "profiles", _, "tree" | "file" | "files"]
                 | ["api", "profiles", _, "files", _, _]

@@ -1503,33 +1503,13 @@ fn ask_the_gate(
     (status, set, body.to_owned())
 }
 
-/// The first frame of the stream: the state whole, as the page is given it.
-fn first_state_of_the_stream(origin: &str, cookie: &str) -> Value {
-    use std::io::{Read as _, Write as _};
-    let host = origin.trim_start_matches("http://");
-    let mut stream = std::net::TcpStream::connect(host).expect("the gate listens");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("a timeout");
-    write!(
-        stream,
-        "GET /api/stream HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n"
-    )
-    .expect("write the request");
-    let mut read = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    loop {
-        let text = String::from_utf8_lossy(&read).to_string();
-        if let Some(at) = text.find("event: state\ndata: ")
-            && let Some(end) = text[at..].find("\n\n")
-        {
-            let line = &text[at + "event: state\ndata: ".len()..at + end];
-            return serde_json::from_str(line).expect("the state is json");
-        }
-        let n = stream.read(&mut chunk).expect("read the stream");
-        assert!(n > 0, "the stream ended before the state: {text}");
-        read.extend_from_slice(&chunk[..n]);
-    }
+/// The state whole, as a page through a tunnel asks for it: the fixture
+/// tunnel holds a stream back until it ends, as a vendor's edge does, so
+/// a page asks instead of listening.
+fn state_asked_for(origin: &str, cookie: &str) -> Value {
+    let (status, _, body) = ask_the_gate(origin, "GET", "/api/now", Some(cookie), None);
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str(&body).expect("the state is json")
 }
 
 /// Somebody who opens the page inside the messenger is known as themself:
@@ -1699,7 +1679,7 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
             "{method} {path} says something: {body}"
         );
     }
-    let ada_state = first_state_of_the_stream(&origin, &ada);
+    let ada_state = state_asked_for(&origin, &ada);
     assert_eq!(ada_state["you"], owner_id);
     assert_eq!(
         ada_state["chats"].as_array().map(Vec::len),
@@ -1730,7 +1710,7 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
         );
         assert_eq!(status, 403, "{method} {path} as Bob: {body}");
     }
-    let bob_state = first_state_of_the_stream(&origin, &bob);
+    let bob_state = state_asked_for(&origin, &bob);
     assert_eq!(bob_state["you"], bob_id);
     assert_eq!(
         bob_state["chats"].as_array().map(Vec::len),
@@ -1743,6 +1723,18 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
     assert!(
         !people.contains("Ada"),
         "Bob is told of the owner: {people}"
+    );
+    // What happened, asked for - the way a page asks through a tunnel:
+    // nothing of the owner's chat reaches Bob.
+    let (status, _, happened) =
+        ask_the_gate(&origin, "GET", "/api/happened?after=0", Some(&bob), None);
+    assert_eq!(status, 200, "{happened}");
+    let happened: Value = serde_json::from_str(&happened).expect("json");
+    assert!(
+        happened["events"]
+            .as_array()
+            .is_some_and(|events| events.iter().all(|event| event["chat_id"] != ada_chat)),
+        "{happened}"
     );
 
     state
@@ -1760,7 +1752,7 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
             .find(|call| call["tool"] == "stream_end" && call["arguments"]["chat"] == "dm-bob")
     })
     .await;
-    let bob_state = first_state_of_the_stream(&origin, &bob);
+    let bob_state = state_asked_for(&origin, &bob);
     let bob_chats = bob_state["chats"].as_array().cloned().unwrap_or_default();
     assert_eq!(bob_chats.len(), 1, "{bob_state}");
     let bob_chat = bob_chats[0]["chat_id"].as_str().expect("a chat").to_owned();

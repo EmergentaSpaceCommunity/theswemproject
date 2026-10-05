@@ -74,6 +74,19 @@ struct NameBody {
     colour: Option<String>,
 }
 
+/// One event as a page takes it: the event, with the message it is about
+/// when there is one.
+fn event_data(event: &crate::ChatEvent, message: Option<crate::Message>) -> Value {
+    let mut data = serde_json::to_value(event).unwrap_or(Value::Null);
+    if let (Some(message), Value::Object(data)) = (message, &mut data) {
+        data.insert(
+            "message".into(),
+            serde_json::to_value(message).unwrap_or(Value::Null),
+        );
+    }
+    data
+}
+
 fn frame(event: &str, place: Option<u64>, data: &Value) -> Bytes {
     use std::fmt::Write as _;
     let mut text = String::new();
@@ -175,6 +188,49 @@ impl WorkbenchShellState {
                 "deliveries": deliveries,
                 "questions": questions,
             }))
+        })
+        .await
+        .map_err(ledger_refusal)
+    }
+
+    /// What happened after a place, as far as the scope reaches: the same
+    /// events the stream carries, for a page that asks instead of
+    /// listening - where a proxy in between holds a stream back until it
+    /// ends, as a vendor's edge does through a tunnel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkbenchShellError`] when the ledger cannot be read.
+    pub(super) async fn happened_within(
+        &self,
+        scope: &Scope,
+        after: u64,
+        limit: usize,
+    ) -> Result<Value, WorkbenchShellError> {
+        let scope = scope.clone();
+        self.with_ledger(move |ledger| {
+            let head = ledger.head()?;
+            // A place past the end is a place in another record: the page
+            // is told to start over.
+            if after > head {
+                return Ok(json!({ "reset": true, "head": head, "events": [] }));
+            }
+            let admitted = Self::admitted_now(ledger, &scope);
+            let mut place = after;
+            let mut events = Vec::new();
+            for (event, message) in ledger.happened_with_what_was_said(after, limit)? {
+                place = event.sequence;
+                if let Some(admitted) = &admitted
+                    && !event
+                        .chat_id
+                        .as_deref()
+                        .is_some_and(|chat| admitted.contains(chat))
+                {
+                    continue;
+                }
+                events.push(event_data(&event, message));
+            }
+            Ok(json!({ "place": place, "head": head, "events": events }))
         })
         .await
         .map_err(ledger_refusal)
@@ -372,13 +428,7 @@ async fn follow(
             {
                 continue;
             }
-            let mut data = serde_json::to_value(&event).unwrap_or(Value::Null);
-            if let (Some(message), Value::Object(data)) = (message, &mut data) {
-                data.insert(
-                    "message".into(),
-                    serde_json::to_value(message).unwrap_or(Value::Null),
-                );
-            }
+            let data = event_data(&event, message);
             if frames
                 .send(frame("event", Some(place), &data))
                 .await
@@ -590,6 +640,27 @@ async fn route_people(
     }
 }
 
+/// The record, asked for rather than listened to: the state whole, and
+/// what happened after a place.
+async fn route_record(
+    state: &Arc<WorkbenchShellState>,
+    segments: &[&str],
+    query: Option<&str>,
+    scope: &Scope,
+) -> Response<ShellBody> {
+    if segments == ["api", "now"] {
+        return json_result(state.chats_now_within(scope).await);
+    }
+    let after = query_param(query, "after")
+        .and_then(|after| after.parse::<u64>().ok())
+        .unwrap_or(0);
+    let limit = query_param(query, "limit")
+        .and_then(|limit| limit.parse::<usize>().ok())
+        .unwrap_or(AT_ONCE)
+        .clamp(1, AT_ONCE);
+    json_result(state.happened_within(scope, after, limit).await)
+}
+
 pub(super) async fn route_chats(
     state: &Arc<WorkbenchShellState>,
     method: &Method,
@@ -600,7 +671,7 @@ pub(super) async fn route_chats(
 ) -> Result<Response<ShellBody>, Request<AskedBody>> {
     if !matches!(
         segments,
-        ["api", "stream"] | ["api", "people" | "chats" | "questions", ..]
+        ["api", "stream" | "now" | "happened"] | ["api", "people" | "chats" | "questions", ..]
     ) {
         return Err(request);
     }
@@ -611,6 +682,11 @@ pub(super) async fn route_chats(
         Err(error) => return Ok(error_response(&error)),
     };
     Ok(match (method, segments) {
+        // A page that asks instead of listening: the state whole, then what
+        // happened after a place.
+        (&Method::GET, ["api", "now" | "happened"]) => {
+            route_record(state, segments, query, &scope).await
+        }
         (&Method::GET, ["api", "stream"]) => {
             let place = request
                 .headers()

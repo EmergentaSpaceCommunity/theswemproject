@@ -124,7 +124,9 @@ that, `/app` just opens it. What the tunnel reaches is the page, and behind it o
 a messenger - never sign-in, the run's secret, a token, or a channel's webhook door. It closes
 after thirty minutes unused (what keeps it open is the page being used by somebody known), or
 with **Close** on the page; the bot then takes back the buttons it sent through it and says to
-send `/app` again. Cloudflare
+send `/app` again. A quick tunnel holds a stream back until it ends, so through it the page
+asks for what happened every little while instead of listening; it says what it has to say
+a moment later than on the Workbench, and nothing else differs. Cloudflare
 calls a quick tunnel a thing for testing and development: no uptime promise, a new address each
 time - which is what an address for a while is. Webhooks never go through a tunnel; on a laptop
 the bot asks the messenger for what is new, which works behind any network.
