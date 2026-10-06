@@ -1358,7 +1358,19 @@ async fn the_agents_form_is_answered_from_the_page_inside_the_messenger() {
             .to_string(),
         ),
     );
-    assert_eq!(status, 200, "{body}");
+    if status != 200 {
+        // A question that can no longer be answered was ended by its turn:
+        // how every turn ended is what explains the refusal.
+        let mut turns = Vec::new();
+        for chat in state.chats().await.expect("chats") {
+            let page = state
+                .chat_page(&chat.chat_id, None, 100)
+                .await
+                .expect("the chat's page");
+            turns.push(serde_json::to_string(&page.deliveries).unwrap_or_default());
+        }
+        panic!("{body}\n{}", turns.join("\n"));
+    }
     // The agent went on: its answer reaches the messenger.
     until("the agent says it was accepted", || {
         sent(&address).into_iter().find(|call| {
