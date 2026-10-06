@@ -110,7 +110,10 @@ impl Tunnel {
             .append(true)
             .open(&self.calls)
         {
-            let _ = writeln!(file, "{}", json!({ "tool": tool, "params": params }));
+            // One write per line: two tunnels open at once, and a line
+            // written in pieces is interleaved with the other's.
+            let line = format!("{}\n", json!({ "tool": tool, "params": params }));
+            let _ = file.write_all(line.as_bytes());
         }
     }
 }
