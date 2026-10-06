@@ -3280,6 +3280,7 @@ dependencies = [
 name = "swem-tunnel-cloudflare"
 version = "0.1.0-dev"
 dependencies = [
+ "reqwest",
  "rmcp",
  "schemars 1.2.2",
  "serde",

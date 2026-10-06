@@ -298,7 +298,7 @@ impl WorkbenchShellState {
             .await
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))??;
         }
-        self.open_tunnel(Some(&package)).await
+        Box::pin(self.open_tunnel(Some(&package))).await
     }
 
     /// What can open a tunnel: the Store's receipts of the kind, and what
@@ -377,7 +377,9 @@ impl WorkbenchShellState {
         self: &Arc<Self>,
         package: Option<&str>,
     ) -> Result<TunnelShown, WorkbenchShellError> {
-        self.open_tunnel_for(package, IDLE).await
+        // Standing at two addresses is a large piece of work; boxed once,
+        // here, so that whatever opens a tunnel stays small.
+        Box::pin(self.open_tunnel_for(package, IDLE)).await
     }
 
     /// [`Self::open_tunnel`] with how long it stays open unused; a test
@@ -412,18 +414,26 @@ impl WorkbenchShellState {
             .port();
         let (told, told_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(gate_loop(Arc::clone(self), listener, told_rx));
-        let (entry, origin) = match standing_at(&package, stdio, port).await {
+        // The second address, for the sandbox, stands at the same time: the
+        // package once more, at a listener that runs the sandbox's router.
+        // Without it the page works and no App opens through the tunnel.
+        let (stood, sandbox) = tokio::join!(
+            standing_at(&package, stdio, port),
+            self.stand_for_the_sandbox(&package)
+        );
+        let (entry, origin) = match stood {
             Ok(stood) => stood,
             Err(error) => {
                 let _ = told.send(());
+                if let Some(mut sandbox) = sandbox {
+                    let _ = call_tool_of(&sandbox.entry, tunnel::CLOSE, json!({})).await;
+                    if let Some(told) = sandbox.told.take() {
+                        let _ = told.send(());
+                    }
+                }
                 return Err(error);
             }
         };
-
-        // The second address, for the sandbox: the package once more, at a
-        // listener that runs the sandbox's router. Without it the page
-        // works and no App opens through the tunnel.
-        let sandbox = self.stand_for_the_sandbox(&package).await;
         let touched = Arc::new(tokio::sync::Notify::new());
         let shown = TunnelShown {
             package: package.clone(),

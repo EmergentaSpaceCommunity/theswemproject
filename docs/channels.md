@@ -128,7 +128,9 @@ send `/app` again. A quick tunnel holds a stream back until it ends, so through 
 asks for what happened every little while instead of listening; it says what it has to say
 a moment later than on the Workbench, and nothing else differs. Cloudflare
 calls a quick tunnel a thing for testing and development: no uptime promise, a new address each
-time - which is what an address for a while is. Webhooks never go through a tunnel; on a laptop
+time, and some seconds before the edge answers from a fresh one - the bot's button is sent once
+it does, so a tap never meets the edge's own error page - which is what an address for a while
+is. Webhooks never go through a tunnel; on a laptop
 the bot asks the messenger for what is new, which works behind any network.
 
 Any program that answers the tunnel shape (`swem-sdk`, `tunnel`) is a tunnel package: a named

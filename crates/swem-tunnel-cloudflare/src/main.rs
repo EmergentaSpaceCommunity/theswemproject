@@ -59,6 +59,72 @@ fn address_in(line: &str) -> Option<String> {
         .then(|| url.trim_end_matches('/').to_owned())
 }
 
+/// How long the edge may take to answer from the address.
+const ANSWERS_WITHIN: Duration = Duration::from_secs(45);
+
+/// Whether the edge answers a request to this address from what stands
+/// behind the tunnel: Cloudflare answers a name it cannot reach yet with
+/// its own error page (530), and only that is waited out.
+fn edge_answers(status: u16) -> bool {
+    status != 530 && status < 520
+}
+
+/// Where the edge says the name is, asked over DNS-over-HTTPS rather than
+/// this machine's resolver: a fresh name is asked for before it exists,
+/// and a resolver that is asked too early remembers that it did not for
+/// minutes - which would make the address look dead from here while a
+/// phone reaches it.
+async fn edge_address_of(client: &reqwest::Client, host: &str) -> Option<std::net::IpAddr> {
+    // The name is letters and hyphens under the vendor's domain: as it is.
+    let answer: serde_json::Value = client
+        .get(format!(
+            "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+        ))
+        .header("accept", "application/dns-json")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    answer
+        .get("Answer")?
+        .as_array()?
+        .iter()
+        .filter(|record| record.get("type").and_then(serde_json::Value::as_u64) == Some(1))
+        .find_map(|record| record.get("data")?.as_str()?.parse().ok())
+}
+
+/// Ask the address from outside until the edge answers from behind the
+/// tunnel, or the wait is up.
+async fn answers_from_outside(origin: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    else {
+        return false;
+    };
+    let host = origin.trim_start_matches("https://").to_owned();
+    let began = tokio::time::Instant::now();
+    // The name exists a couple of seconds after it is printed; asked for
+    // before that, a resolver remembers for a while that it did not.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    while began.elapsed() < ANSWERS_WITHIN {
+        if let Some(address) = edge_address_of(&client, &host).await
+            && let Ok(resolved) = reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .resolve(&host, std::net::SocketAddr::new(address, 443))
+                .build()
+            && let Ok(answer) = resolved.get(format!("{origin}/")).send().await
+            && edge_answers(answer.status().as_u16())
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    false
+}
+
 #[tool_router]
 impl Tunnel {
     #[tool(description = "Stand at an address from outside for a local URL")]
@@ -105,12 +171,22 @@ impl Tunnel {
         };
         // The rest of its log is read and dropped, so the pipe never fills.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        // The address is printed before the edge can reach it: the fresh
+        // name takes seconds to resolve at the edge (measured: about two
+        // after it is printed). Until a request from outside is answered by
+        // what stands behind the tunnel, the address is not one to send
+        // anybody to.
+        let reached = answers_from_outside(&origin).await;
         let standing = Standing {
             origin,
             url: params.url,
-            said:
+            said: if reached {
                 "a Cloudflare quick tunnel: no account, no uptime promise, a new address each time"
-                    .into(),
+                    .into()
+            } else {
+                "a Cloudflare quick tunnel; the edge has not answered from it yet - a moment more"
+                    .into()
+            },
         };
         *slot = Some(Open {
             program,
@@ -200,6 +276,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    /// Against a live quick tunnel, by hand: `SWEM_TUNNEL_PROBE=https://<words>.trycloudflare.com`
+    /// names one that is open, and the edge is asked from here.
+    #[tokio::test]
+    #[ignore = "asks a live address; run by hand with SWEM_TUNNEL_PROBE set"]
+    async fn the_edge_answers_a_live_address() {
+        let origin = std::env::var("SWEM_TUNNEL_PROBE").expect("SWEM_TUNNEL_PROBE");
+        let began = std::time::Instant::now();
+        let answered = super::answers_from_outside(&origin).await;
+        eprintln!("answered: {answered} after {:?}", began.elapsed());
+        assert!(answered);
+    }
+
+    #[test]
+    fn the_edges_own_error_is_waited_out_and_an_answer_from_behind_is_not() {
+        assert!(!super::edge_answers(530));
+        assert!(!super::edge_answers(522));
+        assert!(super::edge_answers(200));
+        assert!(super::edge_answers(403));
+        assert!(super::edge_answers(404));
+    }
+
     use super::*;
 
     #[test]

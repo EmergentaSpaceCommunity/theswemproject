@@ -64,6 +64,12 @@ gate** is the listener a tunnel points at.
   address of its own and passes everything through to the gate whole - holding each answer
   back until it ends, as a vendor's edge was measured to (ADR-0016), so a walk "through the
   tunnel" meets what the real road does.
+- A fresh quick-tunnel name is printed seconds before the edge can reach it (measured
+  2026-10-05: the edge answers about two seconds after the address is printed; a tap sooner
+  meets Cloudflare's own error page, 1033). The package answers `open` only once a request
+  from outside is answered from behind the tunnel - the name asked for over DNS-over-HTTPS,
+  not this machine's resolver, which would remember a name that did not exist yet for
+  minutes. The harness stands at its two addresses at the same time.
 - The age and replay of the messenger's signed data are the channel package's business
   (ADR-0013); the gate adds no check of its own and none is needed for an app that is read by
   signature per call.

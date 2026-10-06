@@ -13,6 +13,7 @@ name = "swem-tunnel-cloudflare"
 path = "src/main.rs"
 
 [dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

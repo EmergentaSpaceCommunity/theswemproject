@@ -206,8 +206,7 @@ async fn a_tunnel_nobody_uses_closes_by_itself() {
     let root = fixture_root("idle");
     let state = shell_with_the_tunnel_fixture(&root);
     install_the_fixture(&state);
-    let opened = state
-        .open_tunnel_for(Some("nowhere"), Duration::from_millis(1_500))
+    let opened = Box::pin(state.open_tunnel_for(Some("nowhere"), Duration::from_millis(1_500)))
         .await
         .expect("the tunnel opens");
     assert!(state.reach_standing().expect("standing").tunnel.is_some());

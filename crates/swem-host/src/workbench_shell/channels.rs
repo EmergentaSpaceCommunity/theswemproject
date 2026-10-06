@@ -1008,7 +1008,7 @@ impl Runner {
                 }
             };
             for event in events {
-                if let Err(error) = self.arrived(event).await {
+                if let Err(error) = Box::pin(self.arrived(event)).await {
                     self.say(error.to_string());
                 }
             }
@@ -1064,7 +1064,7 @@ impl Runner {
                         return Ok(());
                     };
                     if name == "app" {
-                        self.offer_the_app(&chat.id, is_owner).await;
+                        Box::pin(self.offer_the_app(&chat.id, is_owner)).await;
                     } else {
                         let words = self.status_words(&chat).await;
                         self.tell(&chat.id, &words).await;
@@ -1084,7 +1084,7 @@ impl Runner {
                 option,
                 reference: _,
             } if question == INSTALL_FOR_A_TUNNEL => {
-                self.install_for_a_tunnel(&chat, &person, &option).await
+                Box::pin(self.install_for_a_tunnel(&chat, &person, &option)).await
             }
             Inbound::Answered {
                 chat: _,
@@ -1132,7 +1132,7 @@ impl Runner {
                 .await;
                 return;
             }
-            None => match self.open_a_tunnel_saying_so(external_chat).await {
+            None => match Box::pin(self.open_a_tunnel_saying_so(external_chat)).await {
                 Ok(tunnel) => tunnel.origin,
                 // The tunnel needs something fetched first: one tap of the
                 // owner's is the consent, with what and from where said.
@@ -1252,8 +1252,8 @@ impl Runner {
         }
         self.tell(&chat.id, "Installing, then opening - a moment.")
             .await;
-        match self.state.install_and_open_tunnel().await {
-            Ok(_) => self.offer_the_app(&chat.id, true).await,
+        match Box::pin(self.state.install_and_open_tunnel()).await {
+            Ok(_) => Box::pin(self.offer_the_app(&chat.id, true)).await,
             Err(error) => {
                 self.tell(&chat.id, &format!("It could not be done: {error}"))
                     .await;
@@ -1274,7 +1274,7 @@ impl Runner {
             self.tell(external_chat, "Opening an address from outside; a moment.")
                 .await;
         }
-        self.state.open_tunnel(None).await
+        Box::pin(self.state.open_tunnel(None)).await
     }
 
     /// What the tunnel that would open needs installed first.
@@ -1711,7 +1711,7 @@ impl Runner {
                             .await;
                     }
                     None => {
-                        self.carry_event(&chat_id, &external_chats, &event, &mut streams)
+                        Box::pin(self.carry_event(&chat_id, &external_chats, &event, &mut streams))
                             .await;
                     }
                 }
@@ -1874,7 +1874,7 @@ impl Runner {
                     }
                 }
             }
-            "chat/question" => self.carry_question(&event.payload, external_chats).await,
+            "chat/question" => Box::pin(self.carry_question(&event.payload, external_chats)).await,
             // A tool of the agent brought an App: the messenger cannot draw
             // it, so the bot says so and offers the page's Apps tab.
             "host/app_tool_observed"
@@ -1989,9 +1989,7 @@ impl Runner {
             .unwrap_or_else(|| "The agent asks for something.".to_owned());
         let origin = match self.state.app_origin() {
             Some(origin) => Some(origin),
-            None => self
-                .state
-                .open_tunnel(None)
+            None => Box::pin(self.state.open_tunnel(None))
                 .await
                 .ok()
                 .map(|tunnel| tunnel.origin),

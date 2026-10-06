@@ -4656,7 +4656,7 @@ pub(crate) async fn route_shell(
             let opened = if body.get("install").and_then(Value::as_bool) == Some(true) {
                 state.install_and_open_tunnel().await
             } else {
-                state.open_tunnel(package.as_deref()).await
+                Box::pin(state.open_tunnel(package.as_deref())).await
             };
             match opened {
                 Ok(_) => json_result(state.reach_standing()),
