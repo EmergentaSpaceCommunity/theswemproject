@@ -5164,8 +5164,17 @@ async fn route_upload(
             .header("access-control-max-age", "600")
             .body(Full::new(Bytes::new()).map_err(infallible_to_io).boxed())
             .expect("preflight response"),
-        Method::POST => match state.app_upload_root(connection_id, app_id).await {
-            Ok(root) => match receive_upload(&root, request.into_body()).await {
+        Method::POST => {
+            let Ok(root) = state.app_upload_root(connection_id, app_id).await else {
+                // Read what was sent before refusing it: a connection closed
+                // with a body still unread is reset, and the asker sees no
+                // answer at all instead of the refusal.
+                let _ = http_body_util::Limited::new(request.into_body(), REFUSED_BODY_READ)
+                    .collect()
+                    .await;
+                return cors_json(StatusCode::NOT_FOUND, &json!({"error": "not found"}));
+            };
+            match receive_upload(&root, request.into_body()).await {
                 Ok((workspace_path, byte_length)) => cors_json(
                     StatusCode::OK,
                     &json!({"workspace_path": workspace_path, "byte_length": byte_length}),
@@ -5177,9 +5186,8 @@ async fn route_upload(
                 Err(UploadRefusal::Failed(error)) => {
                     cors_json(StatusCode::INTERNAL_SERVER_ERROR, &json!({"error": error}))
                 }
-            },
-            Err(_) => cors_json(StatusCode::NOT_FOUND, &json!({"error": "not found"})),
-        },
+            }
+        }
         Method::DELETE => {
             let named =
                 query_param(request.uri().query(), "path").map(|value| percent_decode(&value));
@@ -5355,6 +5363,9 @@ pub const UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 /// Where uploads land inside a server's workspace; a name under it is the
 /// only path an App ever learns.
 const UPLOAD_DIRECTORY: &str = "uploads";
+
+/// How much of a refused upload is read so the refusal reaches the asker.
+const REFUSED_BODY_READ: usize = 64 * 1024;
 
 enum UploadRefusal {
     TooLarge,
