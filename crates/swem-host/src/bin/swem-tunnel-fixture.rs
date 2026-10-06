@@ -110,7 +110,11 @@ impl Tunnel {
             .append(true)
             .open(&self.calls)
         {
-            let _ = writeln!(file, "{}", json!({ "tool": tool, "params": params }));
+            // Two instances of this program (the gate's and the sandbox's)
+            // write one file at once: a line is written whole, in one call,
+            // so their lines never run into each other.
+            let line = format!("{}\n", json!({ "tool": tool, "params": params }));
+            let _ = file.write_all(line.as_bytes());
         }
     }
 }
