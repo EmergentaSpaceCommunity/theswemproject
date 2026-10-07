@@ -305,6 +305,185 @@ fn what_a_package_requires_is_installed_first_in_one_plan() {
     );
 }
 
+fn packages(kind: &Kind) -> Arc<Packages> {
+    Arc::new(Packages {
+        kind: kind.clone(),
+        taken: Mutex::default(),
+        removed: Mutex::default(),
+    })
+}
+
+/// One catalog entry of the package kind: `id` at `version`, requiring
+/// `requires` as given (JSON objects, already joined).
+fn package(root: &Path, id: &str, version: &str, requires: &str) -> String {
+    let (url, digest) = archive(
+        root,
+        &format!("{id}-{version}"),
+        &format!(r#"{{"name":"{id}","version":"{version}"}}"#),
+    );
+    format!(
+        r#"{{"kind":"example/package@1","id":"{id}","name":"{id}","version":"{version}",
+            "distribution":{{"archive":{{"url":"{url}","sha256":"{digest}"}}}},
+            "requires":[{requires}]}}"#
+    )
+}
+
+fn requires(id: &str, version: &str) -> String {
+    format!(r#"{{"kind":"example/package@1","id":"{id}","version":"{version}"}}"#)
+}
+
+#[test]
+fn what_a_requirement_requires_comes_first_and_a_shared_one_comes_once() {
+    let root = root("closure");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    // top → mid → base, and top → side → base: a diamond over a chain.
+    store.ship(catalog(
+        &[
+            package(&root, "base", "1.0.0", ""),
+            package(&root, "mid", "1.0.0", &requires("base", "^1")),
+            package(&root, "side", "1.0.0", &requires("base", ">=1")),
+            package(
+                &root,
+                "top",
+                "1.0.0",
+                &format!("{},{}", requires("mid", "^1"), requires("side", "^1")),
+            ),
+        ]
+        .join(","),
+    ));
+    let taker = packages(&kind);
+    store.taken_by(taker.clone());
+    let planned = store.plan(&kind, "top").unwrap();
+    assert_eq!(
+        planned
+            .also
+            .iter()
+            .map(|plan| plan.registry_id.as_str())
+            .collect::<Vec<_>>(),
+        ["base", "mid", "side"],
+        "what is required comes before what requires it, and base is planned once"
+    );
+    let receipts = store
+        .install(&kind, "top", &planned.plan.plan_id, None)
+        .unwrap();
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|r| r.registry_id.as_str())
+            .collect::<Vec<_>>(),
+        ["base", "mid", "side", "top"]
+    );
+    assert_eq!(
+        taker.taken.lock().unwrap().as_slice(),
+        ["base@1.0.0", "mid@1.0.0", "side@1.0.0", "top@1.0.0"]
+    );
+    // Each receipt keeps its own plan, so what was installed is still
+    // recognised as the entry it came from.
+    for id in ["base", "mid", "side", "top"] {
+        let receipt = &store.receipts(&kind)[id];
+        let (entry, index_url) = store.entry(&kind, id).unwrap();
+        assert!(
+            receipt.matches_plan(&swem_store::plan_of(&entry, &index_url).unwrap()),
+            "{id}: the receipt does not match its own plan"
+        );
+    }
+}
+
+#[test]
+fn a_circle_of_requirements_is_refused_by_name() {
+    let root = root("circle");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[
+            package(&root, "a", "1.0.0", &requires("b", "^1")),
+            package(&root, "b", "1.0.0", &requires("c", "^1")),
+            package(&root, "c", "1.0.0", &requires("a", "^1")),
+        ]
+        .join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let refused = store.plan(&kind, "a").unwrap_err().to_string();
+    assert!(refused.contains("in a circle"), "{refused}");
+    assert!(
+        refused.contains(
+            "example/package@1 a → example/package@1 b → example/package@1 c → example/package@1 a"
+        ),
+        "{refused}"
+    );
+}
+
+#[test]
+fn two_requirements_that_do_not_meet_on_a_version_are_refused_together() {
+    let root = root("conflict");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[
+            package(&root, "base", "1.0.0", ""),
+            package(&root, "old", "1.0.0", &requires("base", "^1")),
+            package(&root, "new", "1.0.0", &requires("base", "^2")),
+            package(
+                &root,
+                "top",
+                "1.0.0",
+                &format!("{},{}", requires("old", "^1"), requires("new", "^1")),
+            ),
+        ]
+        .join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let refused = store.plan(&kind, "top").unwrap_err().to_string();
+    assert!(refused.contains("they do not meet"), "{refused}");
+    assert!(
+        refused.contains("new requires example/package@1 base ^2")
+            && refused.contains("example/package@1 old requires it at 1.0.0"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_plan_id_moves_when_a_requirement_changes() {
+    let root = root("closure-id");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let top = package(&root, "top", "1.0.0", &requires("base", "^1"));
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[package(&root, "base", "1.0.0", ""), top.clone()].join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let shown = store.plan(&kind, "top").unwrap();
+    // A newer base is listed before the person confirms: the plan they saw
+    // is not the plan that would run, and the id they confirm says so.
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[package(&root, "base", "1.1.0", ""), top].join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let now = store.plan(&kind, "top").unwrap();
+    assert_eq!(now.also[0].version, "1.1.0");
+    assert_ne!(shown.plan.plan_id, now.plan.plan_id);
+    let refused = store
+        .install(&kind, "top", &shown.plan.plan_id, None)
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("changed since it was shown"), "{refused}");
+    assert!(store.receipts(&kind).is_empty());
+    // With nothing to fetch beside the entry, the id is the entry's own.
+    let base = store.plan(&kind, "base").unwrap();
+    store
+        .install(&kind, "base", &base.plan.plan_id, None)
+        .unwrap();
+    let alone = store.plan(&kind, "top").unwrap();
+    assert!(alone.also.is_empty());
+    let (entry, index_url) = store.entry(&kind, "top").unwrap();
+    assert_eq!(
+        alone.plan.plan_id,
+        swem_store::plan_of(&entry, &index_url).unwrap().plan_id
+    );
+}
+
 #[test]
 fn the_newest_of_several_versions_is_the_newest_and_not_the_last_by_text() {
     let root = root("versions");

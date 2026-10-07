@@ -598,6 +598,37 @@ pub fn plan_of(entry: &CatalogEntry, index_url: &str) -> Result<InstallPlan, Sto
     })
 }
 
+/// What is being planned on one walk of the requirements.
+#[derive(Default)]
+struct Closure {
+    /// Requirements planned so far, in the order they are installed.
+    also: Vec<InstallPlan>,
+    /// Each planned requirement: who first required it, at which version.
+    planned: BTreeMap<(Kind, String), (String, String)>,
+    /// The entries being walked, top first: a requirement found here is a
+    /// circle.
+    path: Vec<String>,
+}
+
+fn label(kind: &Kind, id: &str) -> String {
+    format!("{kind} {id}")
+}
+
+/// The id of a plan with what it requires: the entry's own plan with the
+/// plans of its whole closure, in order, so that consent is to all of it.
+fn closure_id(plan: &InstallPlan, also: &[InstallPlan]) -> String {
+    if also.is_empty() {
+        return plan.plan_id.clone();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(plan.plan_id.as_bytes());
+    for required in also {
+        hasher.update(b"\n");
+        hasher.update(required.plan_id.as_bytes());
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 /// Whether an installed version satisfies what is required of it.
 fn satisfies(installed: &str, required: Option<&str>) -> bool {
     let Some(required) = required else {
@@ -933,13 +964,18 @@ impl Store {
         )))
     }
 
-    /// The exact plan installing one entry would apply, with what it
-    /// requires planned before it where that is not installed yet.
+    /// The exact plan installing one entry would apply, with everything it
+    /// requires, and everything that requires, planned before it where that
+    /// is not installed yet: requirements before what requires them, each
+    /// once. The plan's id is the digest of the whole closure, so a
+    /// requirement that moved since the plan was shown moves the id.
     ///
     /// # Errors
     ///
     /// An entry no index lists, a kind nobody here takes, a distribution
-    /// this machine cannot run, or a requirement nothing lists.
+    /// this machine cannot run, a requirement nothing lists, a requirement
+    /// two entries want at versions that do not meet, or entries that
+    /// require each other in a circle.
     pub fn plan(&self, kind: &Kind, id: &str) -> Result<Planned, StoreError> {
         let (entry, index_url) = self.entry(kind, id)?;
         if let Some(why) = self.why_not(&entry) {
@@ -951,8 +987,56 @@ impl Store {
             ));
         }
         let plan = plan_of(&entry, &index_url)?;
-        let mut also = Vec::new();
+        let mut closure = Closure::default();
+        closure.path.push(label(&entry.kind, &entry.id));
+        self.plan_requirements(&entry, &mut closure)?;
+        let plan_id = closure_id(&plan, &closure.also);
+        Ok(Planned {
+            plan: InstallPlan { plan_id, ..plan },
+            also: closure.also,
+        })
+    }
+
+    /// Plan what `entry` requires, depth first, into `closure`: a
+    /// requirement that is installed or bundled at a version that satisfies
+    /// is left as it is; one already planned on another path is checked
+    /// against this path's version and not planned twice; one on the path
+    /// being walked is a circle.
+    fn plan_requirements(
+        &self,
+        entry: &CatalogEntry,
+        closure: &mut Closure,
+    ) -> Result<(), StoreError> {
         for required in &entry.requires {
+            let key = (required.kind.clone(), required.id.clone());
+            let wanted = required.version.as_deref();
+            if closure.path.contains(&label(&required.kind, &required.id)) {
+                return Err(StoreError::Invalid(format!(
+                    "{} require each other in a circle",
+                    closure
+                        .path
+                        .iter()
+                        .map(String::as_str)
+                        .chain(std::iter::once(
+                            label(&required.kind, &required.id).as_str()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" → ")
+                )));
+            }
+            if let Some((by, version)) = closure.planned.get(&key) {
+                if !satisfies(version, wanted) {
+                    return Err(StoreError::Invalid(format!(
+                        "{} {} requires {} {} {}, and {by} requires it at {version}: they do not meet",
+                        entry.kind,
+                        entry.id,
+                        required.kind,
+                        required.id,
+                        wanted.unwrap_or_default()
+                    )));
+                }
+                continue;
+            }
             let had = self
                 .receipts(&required.kind)
                 .get(&required.id)
@@ -964,11 +1048,7 @@ impl Store {
                 .any(|entry| {
                     entry.kind == required.kind && entry.id == required.id && entry.bundled
                 });
-            if bundled
-                || had
-                    .as_deref()
-                    .is_some_and(|had| satisfies(had, required.version.as_deref()))
-            {
+            if bundled || had.as_deref().is_some_and(|had| satisfies(had, wanted)) {
                 continue;
             }
             let (found, found_url) = self.entry(&required.kind, &required.id).map_err(|_| {
@@ -977,14 +1057,14 @@ impl Store {
                     entry.kind, entry.id, required.kind, required.id
                 ))
             })?;
-            if !satisfies(&found.version, required.version.as_deref()) {
+            if !satisfies(&found.version, wanted) {
                 return Err(StoreError::Invalid(format!(
                     "{} {} requires {} {} {}, and what is listed is {}",
                     entry.kind,
                     entry.id,
                     required.kind,
                     required.id,
-                    required.version.as_deref().unwrap_or_default(),
+                    wanted.unwrap_or_default(),
                     found.version
                 )));
             }
@@ -994,9 +1074,15 @@ impl Store {
                     entry.kind, entry.id, required.kind, required.id
                 )));
             }
-            also.push(plan_of(&found, &found_url)?);
+            closure
+                .planned
+                .insert(key, (label(&entry.kind, &entry.id), found.version.clone()));
+            closure.path.push(label(&found.kind, &found.id));
+            self.plan_requirements(&found, closure)?;
+            closure.path.pop();
+            closure.also.push(plan_of(&found, &found_url)?);
         }
-        Ok(Planned { plan, also })
+        Ok(())
     }
 
     /// Install one entry against the plan the person saw, what it requires
@@ -1020,8 +1106,13 @@ impl Store {
                 planned.plan.plan_id
             )));
         }
+        // Consent was to the closure; what is written beside the entry is
+        // the entry's own plan, so that it still matches once what it
+        // required is installed and planned no more.
+        let (entry, index_url) = self.entry(kind, id)?;
+        let own = plan_of(&entry, &index_url)?;
         let mut receipts = Vec::new();
-        for plan in planned.also.iter().chain(std::iter::once(&planned.plan)) {
+        for plan in planned.also.iter().chain(std::iter::once(&own)) {
             let taker = self
                 .taker(&plan.kind)
                 .ok_or_else(|| StoreError::Invalid(format!("nobody here takes {}", plan.kind)))?;
