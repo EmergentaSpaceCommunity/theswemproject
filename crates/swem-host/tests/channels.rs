@@ -1174,6 +1174,85 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     })
     .await;
 
+    // The chat follows the group: somebody added to it is in the chat,
+    // somebody who leaves is out of it, and what they said stays.
+    let joined = |who: (i64, &str)| {
+        json!({
+            "message": {
+                "message_id": 1,
+                "from": { "id": 7, "is_bot": false, "first_name": "Ada", "username": "ada" },
+                "chat": { "id": -100, "type": "supergroup", "title": "Studio" },
+                "date": 0,
+                "new_chat_members": [
+                    { "id": who.0, "is_bot": false, "first_name": who.1, "username": who.1.to_lowercase() }
+                ]
+            }
+        })
+    };
+    let left = |who: (i64, &str)| {
+        json!({
+            "message": {
+                "message_id": 1,
+                "from": { "id": who.0, "is_bot": false, "first_name": who.1, "username": who.1.to_lowercase() },
+                "chat": { "id": -100, "type": "supergroup", "title": "Studio" },
+                "date": 0,
+                "left_chat_member": { "id": who.0, "is_bot": false, "first_name": who.1, "username": who.1.to_lowercase() }
+            }
+        })
+    };
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&joined((11, "Cy"))),
+    );
+    let members_named = |name: &str| {
+        let chat_id = group.chat_id.clone();
+        let state = state.clone();
+        let name = name.to_owned();
+        async move {
+            state
+                .chat_page(&chat_id, None, 100)
+                .await
+                .expect("the page")
+                .chat
+                .members
+                .iter()
+                .any(|member| member.name == name)
+        }
+    };
+    let mut tries = 0;
+    while !members_named("Cy").await {
+        tries += 1;
+        assert!(
+            tries < 50,
+            "Cy was added to the group and is not in the chat"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&left((9, "Bob"))),
+    );
+    let mut tries = 0;
+    while members_named("Bob").await {
+        tries += 1;
+        assert!(tries < 50, "Bob left the group and is still in the chat");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let page = state
+        .chat_page(&group.chat_id, None, 100)
+        .await
+        .expect("the page");
+    assert!(
+        page.messages
+            .iter()
+            .any(|message| message.text == "me too, not to the bot"),
+        "what Bob said is gone with him"
+    );
+
     state.remove_channel(&channel_id).await.expect("removed");
     let _ = api.kill();
     let _ = api.wait();

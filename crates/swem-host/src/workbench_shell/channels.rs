@@ -1119,8 +1119,48 @@ impl Runner {
                     Ok(())
                 }
             }
-            Inbound::Joined { .. } | Inbound::Left { .. } => Ok(()),
+            Inbound::Joined { chat, person, .. } => {
+                self.composition_changed(&chat, &person, true).await
+            }
+            Inbound::Left { chat, person, .. } => {
+                self.composition_changed(&chat, &person, false).await
+            }
         }
+    }
+
+    /// The chat here follows the group's composition on the messenger's
+    /// side: whoever is added to the group is in the chat, met as what they
+    /// are; whoever leaves is out of it, and what they said stays.
+    async fn composition_changed(
+        &self,
+        chat: &channel::ChatRef,
+        person: &Person,
+        joined: bool,
+    ) -> Result<(), WorkbenchShellError> {
+        if chat.kind == ChatKind::Direct {
+            return Ok(());
+        }
+        let Some(chat_id) = self.bound_chat(&chat.id).await? else {
+            return Ok(());
+        };
+        let known = self.participant_of(person).await?;
+        if joined {
+            if known.is_some_and(|participant| participant.kind == ParticipantKind::Person) {
+                return Ok(());
+            }
+            let document = self.state.channels()?.read(&self.id)?;
+            return self.guest_for(&document, person, chat).await.map(|_| ());
+        }
+        let Some(participant) = known else {
+            return Ok(());
+        };
+        // Whoever started the chat stays in it, and somebody who was never
+        // in it has nothing to leave: neither is an error worth a word.
+        let _ = self
+            .state
+            .with_ledger(move |ledger| ledger.leave_chat(&chat_id, &participant.participant_id))
+            .await;
+        Ok(())
     }
 
     /// The Workbench's page inside the messenger, offered as a button when
