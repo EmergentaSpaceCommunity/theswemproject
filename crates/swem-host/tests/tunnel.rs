@@ -322,13 +322,23 @@ async fn what_a_tunnel_needs_is_installed_with_one_consent() {
         .expect("the store");
     install_the_fixture(&state);
     assert!(state.reach_standing().expect("standing").needs.is_empty());
-    // The tool is taken away: the tunnel needs it again, and says so.
-    state
+    // The Store does not take the tool away while the tunnel requires it,
+    // and says who does.
+    let refused = state
         .store_remove(&swem_host::StoreRemoveBody {
             kind: Kind::TOOL,
             id: "the-tool".into(),
         })
-        .expect("the tool removed");
+        .expect_err("the tool is still required")
+        .to_string();
+    assert!(
+        refused.contains("required by swem/tunnel@1 nowhere"),
+        "{refused}"
+    );
+    // Gone by hand, as a person can make it: the tunnel needs it again, and
+    // says so.
+    std::fs::remove_dir_all(root.join("installed").join("tools").join("the-tool"))
+        .expect("the tool's installation removed by hand");
     let needs = state.reach_standing().expect("standing").needs;
     assert_eq!(needs.len(), 1, "{needs:?}");
     assert_eq!(needs[0].id, "the-tool");
