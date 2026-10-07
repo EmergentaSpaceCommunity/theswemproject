@@ -83,6 +83,26 @@ pub fn load_receipts(
     found
 }
 
+/// Write a receipt over the one at its installation, after what it says
+/// changed: which entry brought it here.
+///
+/// # Errors
+///
+/// The manifest cannot be written.
+pub fn rewrite_receipt(installed_root: &Path, receipt: &InstallReceipt) -> Result<(), SupplyError> {
+    let manifest = installed_root
+        .join(receipt.kind.directory())
+        .join(&receipt.registry_id)
+        .join(&receipt.version)
+        .join(INSTALLATION_MANIFEST);
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(receipt)
+            .map_err(|error| SupplyError::Serialization(error.to_string()))?,
+    )
+    .map_err(|error| SupplyError::Protocol(format!("write manifest: {error}")))
+}
+
 /// Every receipt of every kind under the install root: the built-in kinds
 /// in their order, then whatever other kinds have a directory there.
 #[must_use]
@@ -573,6 +593,7 @@ fn install_archive(
         discovery_method: "archive-sha256-tree".into(),
         installed_at: now_seconds(),
         requires: plan.requires.clone(),
+        because_of: None,
     })
 }
 
@@ -756,6 +777,7 @@ fn install_npx(
         discovery_method: "registry-npx-npm-install-ignore-scripts".into(),
         installed_at: now_seconds(),
         requires: plan.requires.clone(),
+        because_of: None,
     })
 }
 
@@ -836,6 +858,7 @@ fn install_uvx(
         discovery_method: "uv-tool-install-pinned".into(),
         installed_at: now_seconds(),
         requires: plan.requires.clone(),
+        because_of: None,
     })
 }
 
@@ -898,6 +921,7 @@ fn install_binary(
         },
         installed_at: now_seconds(),
         requires: plan.requires.clone(),
+        because_of: None,
     })
 }
 

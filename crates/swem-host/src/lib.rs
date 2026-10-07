@@ -1184,6 +1184,7 @@ mod tests {
             discovery_method: "registry-binary-sha256-exact-entry".into(),
             installed_at: 0,
             requires: Vec::new(),
+            because_of: None,
         };
         let installations = std::collections::BTreeMap::from([("opencode".into(), installation)]);
         let discovered = discover_with_installations(&builtin_catalog(), |_| None, &installations);

@@ -427,13 +427,11 @@ fn what_something_still_requires_is_not_removed_until_that_is() {
     let base = view.entries.iter().find(|e| e.id == "base").unwrap();
     assert!(!base.removable);
     assert_eq!(base.required_by, ["example/package@1 top"]);
-    assert!(
-        view.entries
-            .iter()
-            .find(|e| e.id == "top")
-            .unwrap()
-            .removable
-    );
+    // Base came for top, and says so; top was chosen.
+    assert_eq!(base.because_of.as_deref(), Some("example/package@1 top"));
+    let top = view.entries.iter().find(|e| e.id == "top").unwrap();
+    assert!(top.removable);
+    assert_eq!(top.because_of, None);
     let refused = store.remove(&kind, "base").unwrap_err().to_string();
     assert!(
         refused.contains("still required by example/package@1 top"),
@@ -441,8 +439,12 @@ fn what_something_still_requires_is_not_removed_until_that_is() {
     );
     assert!(taker.removed.lock().unwrap().is_empty());
     assert_eq!(store.receipts(&kind).len(), 2);
-    // Once what required it is gone, it goes.
+    // Once what required it is gone, it is there for nothing, and goes.
     store.remove(&kind, "top").unwrap();
+    let view = store.view().unwrap();
+    let base = view.entries.iter().find(|e| e.id == "base").unwrap();
+    assert!(base.removable && base.required_by.is_empty());
+    assert_eq!(base.because_of.as_deref(), Some("example/package@1 top"));
     store.remove(&kind, "base").unwrap();
     assert_eq!(taker.removed.lock().unwrap().as_slice(), ["top", "base"]);
 

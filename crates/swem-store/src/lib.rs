@@ -298,6 +298,11 @@ pub struct StoreEntry {
     /// What still requires it, installed or bundled, each as `kind id`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_by: Vec<String>,
+    /// The entry whose plan installed it, as `kind id`, when a person did
+    /// not choose it themselves; with nothing in `required_by`, it is here
+    /// for nothing any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because_of: Option<String>,
 }
 
 /// A kind, as a page names it: taken here or not.
@@ -779,13 +784,13 @@ impl Store {
     ///
     /// An index cannot be read.
     pub fn view(&self) -> Result<StoreView, StoreError> {
-        let mut installed: BTreeMap<Kind, BTreeMap<String, InstallReceipt>> = BTreeMap::new();
-        let mut version_of = |kind: &Kind, id: &str| -> Option<String> {
-            installed
-                .entry(kind.clone())
-                .or_insert_with(|| load_receipts(&self.installed, kind))
-                .get(id)
-                .map(|receipt| receipt.version.clone())
+        // Every receipt, read once: each entry shown asks what is
+        // installed of it and what requires it.
+        let receipts = all_receipts(&self.installed);
+        let receipt_of = |kind: &Kind, id: &str| -> Option<&InstallReceipt> {
+            receipts
+                .iter()
+                .find(|receipt| &receipt.kind == kind && receipt.registry_id == id)
         };
         let mut entries = Vec::new();
         let mut registry = RegistryStatus {
@@ -804,8 +809,8 @@ impl Store {
             };
             for entry in found {
                 let reason = self.why_not(&entry);
-                let installed = version_of(&entry.kind, &entry.id);
-                entries.push(self.shown(&entry, &source.name(), reason, installed));
+                let installed = receipt_of(&entry.kind, &entry.id);
+                entries.push(self.shown(&entry, &source.name(), reason, installed, &receipts));
             }
         }
         let mut indexes = Vec::new();
@@ -833,8 +838,8 @@ impl Store {
             });
             for entry in &catalog.entries {
                 let reason = self.why_not(entry);
-                let installed = version_of(&entry.kind, &entry.id);
-                entries.push(self.shown(entry, &catalog.name, reason, installed));
+                let installed = receipt_of(&entry.kind, &entry.id);
+                entries.push(self.shown(entry, &catalog.name, reason, installed, &receipts));
             }
         }
         Ok(StoreView {
@@ -897,8 +902,11 @@ impl Store {
         entry: &CatalogEntry,
         index: &str,
         reason: Option<String>,
-        installed: Option<String>,
+        installed: Option<&InstallReceipt>,
+        receipts: &[InstallReceipt],
     ) -> StoreEntry {
+        let because_of = installed.and_then(|receipt| receipt.because_of.clone());
+        let installed = installed.map(|receipt| receipt.version.clone());
         let newer = installed.as_deref().is_some_and(|had| {
             match (
                 semver::Version::parse(had),
@@ -910,7 +918,7 @@ impl Store {
         });
         let taker = self.taker(&entry.kind);
         let required_by = if installed.is_some() {
-            self.required_by(&entry.kind, &entry.id)
+            self.required_by_among(receipts, &entry.kind, &entry.id)
         } else {
             Vec::new()
         };
@@ -934,6 +942,7 @@ impl Store {
             requires: entry.requires.clone(),
             newer,
             required_by,
+            because_of,
         }
     }
 
@@ -970,13 +979,18 @@ impl Store {
     /// each as `kind id`.
     #[must_use]
     pub fn required_by(&self, kind: &Kind, id: &str) -> Vec<String> {
+        self.required_by_among(&all_receipts(&self.installed), kind, id)
+    }
+
+    /// `required_by`, over receipts already read.
+    fn required_by_among(&self, receipts: &[InstallReceipt], kind: &Kind, id: &str) -> Vec<String> {
         let needs_it = |requires: &[Requirement]| {
             requires
                 .iter()
                 .any(|required| &required.kind == kind && required.id == id)
         };
-        let installed = all_receipts(&self.installed)
-            .into_iter()
+        let installed = receipts
+            .iter()
             .filter(|receipt| needs_it(&receipt.requires))
             .map(|receipt| label(&receipt.kind, &receipt.registry_id));
         let bundled = self
@@ -1207,7 +1221,17 @@ impl Store {
                 .taker(&plan.kind)
                 .ok_or_else(|| StoreError::Invalid(format!("nobody here takes {}", plan.kind)))?;
             let check = |staged: &Path| taker.check(staged, plan).map_err(StoreError::Invalid);
-            let receipt = install::install_checked(plan, true, &self.installed, node, &check)?;
+            // What was there before this plan stays as the person chose it;
+            // what the plan brings in remembers the entry it came for.
+            let was_there = self
+                .receipts(&plan.kind)
+                .get(&plan.registry_id)
+                .is_some_and(|had| had.version == plan.version);
+            let mut receipt = install::install_checked(plan, true, &self.installed, node, &check)?;
+            if !was_there && plan.registry_id != id {
+                receipt.because_of = Some(label(kind, id));
+                install::rewrite_receipt(&self.installed, &receipt)?;
+            }
             taker.after_install(&receipt).map_err(StoreError::Failed)?;
             receipts.push(receipt);
         }

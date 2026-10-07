@@ -125,6 +125,11 @@ pub struct InstallReceipt {
     /// removal asks about before taking another package away.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
+    /// The entry whose plan brought it here, as `kind id`, when it was
+    /// installed as a requirement rather than chosen by a person: what the
+    /// Store says of it once nothing requires it any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because_of: Option<String>,
 }
 
 impl InstallReceipt {
