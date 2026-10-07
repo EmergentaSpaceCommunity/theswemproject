@@ -42,7 +42,8 @@ four and links no package. The binary reads packages and carries none.
 ## Consequences
 
 Consent stays one plan by id, now over everything that will be fetched. The page shows the
-closure as it did (`also`), with nothing to learn. A requirement satisfied by what is already
-installed is not re-checked against a later requirement that wants another range: that is a
-written gap, not a rule. Trust between hosts, and what a plugin may reach on another host, is
+closure as it did (`also`), with nothing to learn. What is installed and relied on stays: a plan
+that would replace an installed package with a version some installed receipt does not allow
+is refused naming that receipt, so an upgrade never breaks what required the old version.
+Trust between hosts, and what a plugin may reach on another host, is
 ADR-0019.

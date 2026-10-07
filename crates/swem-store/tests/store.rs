@@ -526,6 +526,58 @@ fn two_requirements_that_do_not_meet_on_a_version_are_refused_together() {
 }
 
 #[test]
+fn what_is_installed_and_relied_on_is_not_replaced_under_a_dependent() {
+    let root = root("installed-conflict");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[
+            package(&root, "base", "1.0.0", ""),
+            package(&root, "old", "1.0.0", &requires("base", "^1")),
+        ]
+        .join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let planned = store.plan(&kind, "old").unwrap();
+    store
+        .install(&kind, "old", &planned.plan.plan_id, None)
+        .unwrap();
+    // A newer base is listed, and a package wants it while another in the
+    // same plan relies on the installed one: refused, naming both.
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[
+            package(&root, "base", "2.0.0", ""),
+            package(&root, "old", "1.0.0", &requires("base", "^1")),
+            package(&root, "new", "1.0.0", &requires("base", "^2")),
+            package(
+                &root,
+                "top",
+                "1.0.0",
+                &format!("{},{}", requires("old", "^1"), requires("new", "^1")),
+            ),
+        ]
+        .join(","),
+    ));
+    store.taken_by(packages(&kind));
+    let refused = store.plan(&kind, "top").unwrap_err().to_string();
+    assert!(
+        refused.contains("new requires example/package@1 base ^2")
+            && refused.contains("old is installed requiring it at ^1")
+            && refused.contains("2.0.0 does not meet that"),
+        "{refused}"
+    );
+    // Alone, the newer package is refused for the same reason: the one
+    // installed still relies on the base it has.
+    let refused = store.plan(&kind, "new").unwrap_err().to_string();
+    assert!(refused.contains("old is installed"), "{refused}");
+    // Once nothing installed relies on it, the newer base is planned.
+    store.remove(&kind, "old").unwrap();
+    let planned = store.plan(&kind, "new").unwrap();
+    assert_eq!(planned.also[0].version, "2.0.0");
+}
+
+#[test]
 fn the_plan_id_moves_when_a_requirement_changes() {
     let root = root("closure-id");
     let kind = Kind::parse("example/package@1").unwrap();

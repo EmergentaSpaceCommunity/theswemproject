@@ -937,6 +937,34 @@ impl Store {
         }
     }
 
+    /// The first installed package whose receipt requires `id` of `kind` at a
+    /// range that `version` does not satisfy, with that range.
+    fn installed_dependent_not_met(
+        &self,
+        kind: &Kind,
+        id: &str,
+        version: &str,
+    ) -> Option<(String, String)> {
+        all_receipts(&self.installed)
+            .into_iter()
+            .find_map(|receipt| {
+                receipt
+                    .requires
+                    .iter()
+                    .find(|required| {
+                        &required.kind == kind
+                            && required.id == id
+                            && !satisfies(version, required.version.as_deref())
+                    })
+                    .map(|required| {
+                        (
+                            label(&receipt.kind, &receipt.registry_id),
+                            required.version.clone().unwrap_or_default(),
+                        )
+                    })
+            })
+    }
+
     /// What requires `id` of `kind` on this installation: every installed
     /// package whose receipt names it, and every bundled entry that does,
     /// each as `kind id`.
@@ -1082,10 +1110,18 @@ impl Store {
                 .shipped
                 .iter()
                 .flat_map(|catalog| catalog.entries.iter())
-                .any(|entry| {
+                .find(|entry| {
                     entry.kind == required.kind && entry.id == required.id && entry.bundled
-                });
-            if bundled || had.as_deref().is_some_and(|had| satisfies(had, wanted)) {
+                })
+                .map(|entry| entry.version.clone());
+            let present = bundled.or_else(|| had.clone().filter(|had| satisfies(had, wanted)));
+            if let Some(version) = present {
+                // Left as it is, and remembered: a later requirement of the
+                // same walk that this version does not satisfy is a conflict,
+                // not a reason to replace what the first one relies on.
+                closure
+                    .planned
+                    .insert(key, (label(&entry.kind, &entry.id), version));
                 continue;
             }
             let (found, found_url) = self.entry(&required.kind, &required.id).map_err(|_| {
@@ -1109,6 +1145,23 @@ impl Store {
                 return Err(StoreError::Invalid(format!(
                     "{} {} requires {} {}, which cannot be installed here: {why}",
                     entry.kind, entry.id, required.kind, required.id
+                )));
+            }
+            // Replacing what is installed: nothing installed that relies on
+            // it, by its receipt, may be left with a version it did not ask
+            // for.
+            if had.is_some()
+                && let Some((dependent, range)) =
+                    self.installed_dependent_not_met(&required.kind, &required.id, &found.version)
+            {
+                return Err(StoreError::Invalid(format!(
+                    "{} {} requires {} {} {}, and {dependent} is installed requiring it at {range}: {} does not meet that",
+                    entry.kind,
+                    entry.id,
+                    required.kind,
+                    required.id,
+                    wanted.unwrap_or_default(),
+                    found.version
                 )));
             }
             closure
