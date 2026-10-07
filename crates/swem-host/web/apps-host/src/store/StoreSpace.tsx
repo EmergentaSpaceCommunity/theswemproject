@@ -48,6 +48,7 @@ interface StoreEntry {
   requires?: Requirement[];
   newer?: boolean;
   removable?: boolean;
+  required_by?: string[];
 }
 
 interface StoreIndex {
@@ -282,6 +283,7 @@ export function StoreSpace({ hidden }: { hidden: boolean }) {
                   {wordsFor(kinds, entry.kind).one} · {entry.id} · {entry.version} · {entry.index}
                   {entry.needs && entry.needs.length > 0 ? ` · needs ${entry.needs.join(", ")}` : ""}
                   {entry.requires && entry.requires.length > 0 ? ` · requires ${entry.requires.map((one) => one.id).join(", ")}` : ""}
+                  {entry.required_by && entry.required_by.length > 0 ? ` · required by ${entry.required_by.map((one) => one.split(" ").pop()).join(", ")}` : ""}
                 </small>
                 {entry.description ? <span className="k-caption k-muted">{entry.description}</span> : null}
                 {!entry.installable && entry.reason ? <span className="k-caption bad">{entry.reason}</span> : null}

@@ -291,9 +291,13 @@ pub struct StoreEntry {
     /// The index has a newer version than the one installed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub newer: bool,
-    /// Whether what is installed of it can be removed here.
+    /// Whether what is installed of it can be removed here: its kind is
+    /// removed from here, and nothing installed or bundled requires it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removable: bool,
+    /// What still requires it, installed or bundled, each as `kind id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_by: Vec<String>,
 }
 
 /// A kind, as a page names it: taken here or not.
@@ -905,8 +909,14 @@ impl Store {
             }
         });
         let taker = self.taker(&entry.kind);
-        let removable_here =
-            installed.is_some() && taker.as_ref().is_some_and(|taker| taker.removable());
+        let required_by = if installed.is_some() {
+            self.required_by(&entry.kind, &entry.id)
+        } else {
+            Vec::new()
+        };
+        let removable_here = installed.is_some()
+            && required_by.is_empty()
+            && taker.as_ref().is_some_and(|taker| taker.removable());
         StoreEntry {
             kind: entry.kind.clone(),
             id: entry.id.clone(),
@@ -923,7 +933,34 @@ impl Store {
             taken: taker.is_some(),
             requires: entry.requires.clone(),
             newer,
+            required_by,
         }
+    }
+
+    /// What requires `id` of `kind` on this installation: every installed
+    /// package whose receipt names it, and every bundled entry that does,
+    /// each as `kind id`.
+    #[must_use]
+    pub fn required_by(&self, kind: &Kind, id: &str) -> Vec<String> {
+        let needs_it = |requires: &[Requirement]| {
+            requires
+                .iter()
+                .any(|required| &required.kind == kind && required.id == id)
+        };
+        let installed = all_receipts(&self.installed)
+            .into_iter()
+            .filter(|receipt| needs_it(&receipt.requires))
+            .map(|receipt| label(&receipt.kind, &receipt.registry_id));
+        let bundled = self
+            .shipped
+            .iter()
+            .flat_map(|catalog| catalog.entries.iter())
+            .filter(|entry| entry.bundled && needs_it(&entry.requires))
+            .map(|entry| label(&entry.kind, &entry.id));
+        let mut found: Vec<String> = installed.chain(bundled).collect();
+        found.sort();
+        found.dedup();
+        found
     }
 
     /// The catalog entry `id` of `kind`, with the URL of the index it is in.
@@ -1129,8 +1166,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Nothing of it is installed, its taker does not allow it, or the
-    /// files will not go.
+    /// Nothing of it is installed, something installed or bundled still
+    /// requires it, its taker does not allow it, or the files will not go.
     pub fn remove(&self, kind: &Kind, id: &str) -> Result<InstallReceipt, StoreError> {
         let receipt = self
             .receipts(kind)
@@ -1142,6 +1179,13 @@ impl Store {
         if !taker.removable() {
             return Err(StoreError::Invalid(format!(
                 "a {kind} is not removed from here"
+            )));
+        }
+        let required_by = self.required_by(kind, id);
+        if !required_by.is_empty() {
+            return Err(StoreError::Invalid(format!(
+                "{kind} {id} is still required by {}; remove that first",
+                required_by.join(", ")
             )));
         }
         taker.before_remove(&receipt).map_err(StoreError::Invalid)?;

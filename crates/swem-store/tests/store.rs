@@ -405,6 +405,74 @@ fn what_a_requirement_requires_comes_first_and_a_shared_one_comes_once() {
 }
 
 #[test]
+fn what_something_still_requires_is_not_removed_until_that_is() {
+    let root = root("required-by");
+    let kind = Kind::parse("example/package@1").unwrap();
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(
+        &[
+            package(&root, "base", "1.0.0", ""),
+            package(&root, "top", "1.0.0", &requires("base", "^1")),
+        ]
+        .join(","),
+    ));
+    let taker = packages(&kind);
+    store.taken_by(taker.clone());
+    let planned = store.plan(&kind, "top").unwrap();
+    store
+        .install(&kind, "top", &planned.plan.plan_id, None)
+        .unwrap();
+    // The page is told, before a person presses anything.
+    let view = store.view().unwrap();
+    let base = view.entries.iter().find(|e| e.id == "base").unwrap();
+    assert!(!base.removable);
+    assert_eq!(base.required_by, ["example/package@1 top"]);
+    assert!(
+        view.entries
+            .iter()
+            .find(|e| e.id == "top")
+            .unwrap()
+            .removable
+    );
+    let refused = store.remove(&kind, "base").unwrap_err().to_string();
+    assert!(
+        refused.contains("still required by example/package@1 top"),
+        "{refused}"
+    );
+    assert!(taker.removed.lock().unwrap().is_empty());
+    assert_eq!(store.receipts(&kind).len(), 2);
+    // Once what required it is gone, it goes.
+    store.remove(&kind, "top").unwrap();
+    store.remove(&kind, "base").unwrap();
+    assert_eq!(taker.removed.lock().unwrap().as_slice(), ["top", "base"]);
+
+    // What the product itself carries counts as well, though no receipt
+    // names it: a bundled entry that requires an installed package keeps
+    // it there.
+    let mut store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    store.ship(catalog(&[
+        package(&root, "base", "1.0.0", ""),
+        format!(
+            r#"{{"kind":"example/package@1","id":"carried","name":"Carried","version":"1","bundled":true,
+                "distribution":{{"archive":{{"url":"file:///nowhere","sha256":"0"}}}},
+                "requires":[{}]}}"#,
+            requires("base", "^1")
+        ),
+    ]
+    .join(",")));
+    store.taken_by(packages(&kind));
+    let planned = store.plan(&kind, "base").unwrap();
+    store
+        .install(&kind, "base", &planned.plan.plan_id, None)
+        .unwrap();
+    let refused = store.remove(&kind, "base").unwrap_err().to_string();
+    assert!(
+        refused.contains("still required by example/package@1 carried"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn a_circle_of_requirements_is_refused_by_name() {
     let root = root("circle");
     let kind = Kind::parse("example/package@1").unwrap();

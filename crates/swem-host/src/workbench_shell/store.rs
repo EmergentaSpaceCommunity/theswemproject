@@ -573,7 +573,8 @@ impl WorkbenchShellState {
     ///
     /// # Errors
     ///
-    /// Nothing of it is installed, or its kind is not removed from here.
+    /// Nothing of it is installed, something still requires it, or its kind
+    /// is not removed from here.
     pub fn store_remove(
         &self,
         body: &StoreRemoveBody,
