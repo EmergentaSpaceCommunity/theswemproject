@@ -24,6 +24,11 @@ Today an agent runs on the computer SWEM runs on, directly or in a container. Ne
 A kind of machine (a cloud provider) or a kind of keeper of time (a scheduler outside) arrives as
 a package a person installs, like an agent or a server, instead of a list fixed in the code.
 
+## Hosts of one person
+
+A laptop, a server and a cloud machine as hosts that trust each other by one key, the page of
+any seeing all, host to host over iroh: decided as ADR-0019, not built.
+
 ## A Workbench on a server, finished
 
 Sign-in with passkeys works today. Left: a certificate the Workbench gets itself, the page at a

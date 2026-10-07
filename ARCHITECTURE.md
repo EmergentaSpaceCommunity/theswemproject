@@ -170,9 +170,10 @@ A library over the vocabulary that knows no host. The ACP registry and catalogs 
 the installer (`install.rs`): a plan consented to by its exact id, a staged fetch checked against
 the digest the plan named, the taker's check of the staged tree, one rename into place, one
 receipt (`swem:install-receipt@0.1`) under `<data root>/installed/<kind>/<id>/<version>/`;
-distributions `npx`, `uvx`, `binary`, `archive`; `requires` planned as a closure under one consent;
-versions by semver where they parse; update and removal; the delegated taker that calls a server
-through the host. ADR-0004, ADR-0012.
+distributions `npx`, `uvx`, `binary`, `archive`; `requires` planned as the whole closure under one
+consent whose id digests it, recorded in the receipt, and refusing to remove what is still
+required; versions by semver where they parse; update and removal; the delegated taker that calls
+a server through the host. ADR-0004, ADR-0012, ADR-0018.
 
 ### `swem-runner` - what is put on a host
 

@@ -1,6 +1,7 @@
 # ADR-0012 — One Store, many hosts
 
 **Status:** accepted (2026-09-30, roadmap P); amended 2026-10-01: the vocabulary is its own crate.
+Extended by ADR-0018: the closure of `requires`, receipts that record it, removal guarded by it.
 Extends ADR-0004.
 
 ## Context

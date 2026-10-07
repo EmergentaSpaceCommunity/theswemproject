@@ -45,6 +45,18 @@ The harness grows one module (`workbench_shell/channels.rs`), two ledger tables 
 kept as every key is (`channel-<id>`). A channel that needs an address from outside - a webhook,
 a Mini App - asks the harness for a door, which the harness has only when served at an address.
 
+**Bots and the room** (added 2026-10-07). A person on the wire says whether the messenger calls
+them a bot. A bot is a guest like anybody, let in by the owner or the channel's default; what
+it says is answered only while agents have taken fewer than four turns since a person last
+spoke in that chat, then heard for the record until a person speaks, so two bots do not keep
+each other's agents talking. The chat here follows the group's composition: whoever is added
+to a bound group is in the chat, whoever leaves is out of it, and what they said stays. Each
+bot keeps the chat it made of a group; two bots in one group are two chats here. The harness
+knows no "group" of its own: the channel says what kind of chat it is, who is in it and who
+speaks, and the harness makes a chat of it. Decided and not built: the Workbench as the
+built-in channel under the same contract, and the one session an agent has in a group - so
+`/clear` and `/compact` there are everybody's, given by a level the owner holds.
+
 **The door** (added 2026-10-02). A channel that answers `receive` beyond the shape can be reached
 at `POST /api/channels/<id>/receive`, open to anybody while the Workbench is served at an
 address, as the knock for time is. The harness hands what arrived to the channel as it came -

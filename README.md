@@ -28,12 +28,12 @@ your keys. It is one binary, `swem`, and a page.
 | Keep a conversation across restarts and across changes of setup; see who said what | works |
 | Put several agents in one chat; they answer when named and are held before they loop | works |
 | Give an agent schedules; have them kept by SWEM, by the system's scheduler, or by a knock from outside | works |
-| Install agents, MCP servers, skills and packages for whatever stands on SWEM from one Store, with what they require, update and remove them | works |
+| Install agents, MCP servers, skills and packages for whatever stands on SWEM from one Store, with the whole chain of what they require under one consent, update them, and remove them once nothing requires them | works |
 | Hand an agent a file and get one back; watch it run a command; open its terminal and files | works |
 | Put the Workbench on a server of your own and come to it from a laptop with a passkey | works; a phone and Linux are unverified |
 | Run an agent sealed in a container with its key inside | in progress (Podman) |
 | Run an agent on a machine over SSH, or on a cloud machine that sleeps between messages | not yet |
-| Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group, questions as buttons, files each way, guests let in by you | works; the Workbench's own page opens inside the messenger - your agent's files, its questions, the Apps that declared they work on a phone, the chat, a file of any size - from a laptop through a tunnel from the Store (no key), or from a served Workbench, where the messenger delivers directly |
+| Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group that the chat follows as people come and go, questions as buttons, files each way, guests and other bots let in by you, bots answered on a budget | works; the Workbench's own page opens inside the messenger - your agent's files, its questions, the Apps that declared they work on a phone, the chat, a file of any size - from a laptop through a tunnel from the Store (no key), or from a served Workbench, where the messenger delivers directly |
 | Build SWEM into a product of your own, with your people, your name and your servers | works |
 
 `ROADMAP.md` is the order of what comes next.
