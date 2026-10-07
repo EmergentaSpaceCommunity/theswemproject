@@ -1648,11 +1648,19 @@ fn with_the_tunnel_fixture(root: &Path, state: &Arc<WorkbenchShellState>) {
         .expect("tunnels");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_swem-tunnel-fixture"));
     let platform = registry_platform().expect("a platform this test runs on");
+    // The tunnel requires a tool, so that one install brings both and every
+    // package process started after finds the tool in its environment.
+    let tool = PathBuf::from(env!("CARGO_BIN_EXE_swem-channel-fixture"));
     let catalog = swem_host::Catalog::parse(
         format!(
             r#"{{"schema":"swem:catalog@0.2","name":"Tunnels for the test","entries":[
+              {{"kind":"tool","id":"the-tool","name":"The tool","version":"1.0.0",
+                "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./the-tool"}}}}}}}},
               {{"kind":"swem/tunnel@1","id":"nowhere","name":"A tunnel to nowhere","version":"0.1.0",
+                "requires":[{{"kind":"tool","id":"the-tool"}}],
                 "distribution":{{"binary":{{"{platform}":{{"archive":"file://{}","sha256":"{}","cmd":"./swem-tunnel-nowhere"}}}}}}}}]}}"#,
+            tool.display(),
+            sha256_of(&tool),
             fixture.display(),
             sha256_of(&fixture)
         )
@@ -1778,6 +1786,14 @@ async fn somebody_from_the_messenger_is_known_and_reaches_only_what_is_theirs() 
     let code = shown.document.pairing_code.clone().expect("a code to say");
     let channel_id = shown.document.id.clone();
     let home = root.join("channels").join(&channel_id);
+    // The channel's program was handed the tool on hand, as a tunnel's is.
+    let tools: Value =
+        serde_json::from_slice(&fs::read(home.join("tools.json")).expect("the tools handed"))
+            .expect("json");
+    let handed = tools["SWEM_TOOL_THE_TOOL"]
+        .as_str()
+        .expect("the tool is in the channel's environment");
+    assert!(Path::new(handed).is_file(), "{handed}");
 
     // The owner pairs and opens the bot's chat; Bob writes and is met,
     // silent.

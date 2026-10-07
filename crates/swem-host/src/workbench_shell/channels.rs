@@ -843,6 +843,7 @@ impl WorkbenchShellState {
         {
             env.push(EnvVariable::new(channel::KEY_VARIABLE, key.value));
         }
+        env.extend(self.tools_in_environment());
         Ok(
             McpServerStdio::new(document.id.clone(), program.display().to_string())
                 .args(document.args.clone())

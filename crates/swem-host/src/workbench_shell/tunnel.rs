@@ -10,7 +10,6 @@
 //! the person closes it. A served Workbench has an origin already and
 //! refuses to open one.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -352,17 +351,6 @@ impl WorkbenchShellState {
             })
     }
 
-    /// The tools on hand, by id, for a package that drives one.
-    fn tools_on_hand(&self) -> BTreeMap<String, PathBuf> {
-        let Ok(installed) = self.installed_root() else {
-            return BTreeMap::new();
-        };
-        swem_store::load_receipts(installed, &swem_sdk::Kind::TOOL)
-            .into_iter()
-            .filter_map(|(id, receipt)| receipt.launch_path().map(|path| (id, path.to_path_buf())))
-            .collect()
-    }
-
     /// Open a tunnel with a package, or with the one package there is:
     /// the gate is bound, the package started and checked against the
     /// tunnel shape, told the gate's URL, and the origin it answers is kept.
@@ -526,12 +514,7 @@ impl WorkbenchShellState {
             tunnel::HOME_VARIABLE,
             home.display().to_string(),
         )];
-        for (id, path) in self.tools_on_hand() {
-            env.push(EnvVariable::new(
-                tunnel::tool_variable(&id),
-                path.display().to_string(),
-            ));
-        }
+        env.extend(self.tools_in_environment());
         Ok(
             McpServerStdio::new(format!("tunnel-{package}"), program.display().to_string())
                 .env(env),

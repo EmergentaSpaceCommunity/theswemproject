@@ -9,6 +9,8 @@
 //! under the install root for a profile to take a copy. A product the
 //! harness is built into takes kinds of its own the same way.
 use std::path::Path;
+
+use agent_client_protocol::schema::v1::EnvVariable;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -406,6 +408,29 @@ fn answers_the_shape(
     shape
         .check(&listed)
         .map_err(|short| format!("{} is not {what}: it {short}", plan.name))
+}
+
+impl WorkbenchShellState {
+    /// The tools on hand, each under `SWEM_TOOL_<ID>`, for the environment
+    /// of every package process this host starts: a tunnel, a channel.
+    /// What a package requires it finds there, as a program finds a
+    /// database under `DATABASE_URL`, without knowing SWEM.
+    pub(super) fn tools_in_environment(&self) -> Vec<EnvVariable> {
+        let Ok(installed) = self.installed_root() else {
+            return Vec::new();
+        };
+        swem_store::load_receipts(installed, &swem_sdk::Kind::TOOL)
+            .into_iter()
+            .filter_map(|(id, receipt)| {
+                receipt.launch_path().map(|path| {
+                    EnvVariable::new(
+                        swem_sdk::tunnel::tool_variable(&id),
+                        path.display().to_string(),
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 /// The one program a staged binary or archive tree holds, if it is one.

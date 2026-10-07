@@ -19,7 +19,7 @@ be of. The Cycle is built the same way, as its own track.
 
 ## Decision
 
-Three rules, in `swem-store`, with no new mechanism:
+Three rules in `swem-store` and one in the host, with no new mechanism:
 
 - **A plan is the closure.** Planning an entry walks what it requires and what those require,
   from the same indexes. Each package is planned once, before what requires it; one that is
@@ -32,7 +32,14 @@ Three rules, in `swem-store`, with no new mechanism:
   written before this reads as requiring nothing.
 - **What is required is not removed.** Removal asks the receipts and the bundled entries who
   requires the package and refuses naming them; the page shows "required by" where the Remove
-  button would be. What requires it goes first.
+  button would be. What requires it goes first. A requirement a plan brought in remembers the
+  entry it came for in its receipt; once nothing requires it, the page says it is there for
+  nothing, and the person decides.
+- **What is required is handed in the environment.** Every package process the host starts - a
+  tunnel, a channel - finds each tool on hand under `SWEM_TOOL_<ID>` (ADR-0015's variable, from
+  one place in the host). A package finds what it requires as a program finds a database under
+  `DATABASE_URL`, without knowing SWEM. A required *service* - a server package's address and a
+  token for it - is not handed yet; the first package that requires one decides its shape.
 
 A **core plugin** is nothing new to the Store: a server package whose entry says `takes`
 introduces a kind of its own (ADR-0012), and other packages are of that kind and `require`

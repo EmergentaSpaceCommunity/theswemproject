@@ -366,6 +366,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let inbox = home.join("inbox");
     fs::create_dir_all(&inbox)?;
     fs::create_dir_all(home.join("outbox"))?;
+    // The tools the harness handed it, for a test to read.
+    let tools: serde_json::Map<String, serde_json::Value> = std::env::vars()
+        .filter(|(name, _)| name.starts_with("SWEM_TOOL_"))
+        .map(|(name, value)| (name, serde_json::Value::String(value)))
+        .collect();
+    fs::write(home.join("tools.json"), serde_json::to_vec(&tools)?)?;
     Channel {
         inbox,
         outbox: home.join("outbox").join("calls.jsonl"),
