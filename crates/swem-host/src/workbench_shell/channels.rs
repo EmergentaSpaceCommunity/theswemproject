@@ -158,6 +158,9 @@ pub struct GuestSeen {
     pub may_speak: bool,
     /// Whether they have written to the bot alone.
     pub alone: bool,
+    /// The messenger says they are a bot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
 }
 
 /// What can run a channel here: a package the Store installed, or one that
@@ -381,6 +384,7 @@ impl WorkbenchShellState {
                         name: participant.name,
                         may_speak: identity.may_speak,
                         alone: identity.direct_chat.is_some(),
+                        bot: identity.bot,
                     });
                 }
                 Ok((paired, guests))
@@ -978,6 +982,10 @@ type Streams = BTreeMap<(String, String), Turn>;
 
 /// How many origins are remembered.
 const ORIGINS_KEPT: usize = 512;
+/// How many turns agents take in a chat on what bots say there before a
+/// person has to say something again: the budget two bots answering each
+/// other through their agents run out of.
+const BOT_TURNS_BETWEEN_PEOPLE: usize = 4;
 
 impl Runner {
     fn say(&self, words: impl Into<String>) {
@@ -1335,6 +1343,7 @@ impl Runner {
         let (id, external, name) = (self.id.clone(), person.id.clone(), person.name.clone());
         let direct = (chat.kind == ChatKind::Direct).then(|| chat.id.clone());
         let may_speak_by_default = document.guests == GuestPolicy::Anyone;
+        let bot = person.bot;
         let (guest, identity) = self
             .state
             .with_ledger(move |ledger| {
@@ -1344,6 +1353,7 @@ impl Runner {
                     &name,
                     direct.as_deref(),
                     may_speak_by_default,
+                    bot,
                 )?;
                 let identity = ledger
                     .identity_of(&id, &external)?
@@ -1553,6 +1563,17 @@ impl Runner {
             self.open_chat(&chat, &speaker, is_owner, &agent, &document)
                 .await?
         };
+        // A bot's words are answered on a budget: once agents have taken
+        // their turns since a person last spoke in the chat, what a bot says
+        // is heard, for the record, and not answered until a person speaks.
+        let for_the_record = person.bot && {
+            let id = chat_id.clone();
+            self.state
+                .with_ledger(move |ledger| ledger.agent_turns_since_a_person(&id))
+                .await
+                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
+                >= BOT_TURNS_BETWEEN_PEOPLE
+        };
         self.say_through(
             &chat_id,
             &chat,
@@ -1560,7 +1581,7 @@ impl Runner {
             text,
             files,
             reference,
-            false,
+            for_the_record,
         )
         .await
     }

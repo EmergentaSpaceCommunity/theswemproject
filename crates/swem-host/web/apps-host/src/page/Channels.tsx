@@ -27,7 +27,7 @@ export interface ChannelShown {
   keyed: boolean;
   paired: boolean;
   said?: string;
-  people?: { participant_id: string; name: string; may_speak: boolean; alone: boolean }[];
+  people?: { participant_id: string; name: string; may_speak: boolean; alone: boolean; bot?: boolean }[];
   reach: "pull" | "door";
   door_offered: boolean;
   door?: string;
@@ -330,7 +330,7 @@ export function Channels() {
             {(channel.people ?? []).map((guest) => (
               <span className="k-inline w-tight" key={guest.participant_id} data-guest={guest.participant_id} data-may-speak={guest.may_speak ? "true" : "false"}>
                 <span className="k-caption">
-                  {guest.name} - {guest.may_speak ? "may speak to the agent" : "is heard, may not speak to the agent"}
+                  {guest.name}{guest.bot ? " (a bot)" : ""} - {guest.may_speak ? "may speak to the agent" : "is heard, may not speak to the agent"}
                   {guest.alone ? "" : " (seen in a group only)"}
                 </span>
                 <button type="button" className="k-btn k-quiet" onClick={() => void allow(channel, guest.participant_id, !guest.may_speak)}>

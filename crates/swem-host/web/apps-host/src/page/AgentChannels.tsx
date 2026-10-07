@@ -177,7 +177,7 @@ export function AgentChannels({ agent, hidden }: { agent: Participant; hidden: b
               <span className="k-two k-grow">
                 <span className="k-name">{guest.name}</span>
                 <span className="k-caption">
-                  guest · met by {channel.name} · {guest.may_speak ? "may speak to the agent" : "heard, may not speak"}
+                  {guest.bot ? "bot" : "guest"} · met by {channel.name} · {guest.may_speak ? "may speak to the agent" : "heard, may not speak"}
                 </span>
               </span>
               <button type="button" className="k-btn k-quiet" onClick={() => void allow(channel, guest.participant_id, !guest.may_speak)}>

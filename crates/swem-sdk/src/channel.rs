@@ -143,6 +143,11 @@ pub struct Person {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
+    /// Whether the messenger says they are a bot rather than a person: another
+    /// agent's mouth in the chat, answered on a budget so that two bots do not
+    /// answer each other for ever.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
 }
 
 /// A file that came with a message, as the messenger names it; fetched
@@ -361,6 +366,7 @@ mod tests {
                 id: "7".into(),
                 name: "Ada".into(),
                 username: "ada".into(),
+                bot: false,
             },
             text: "hello".into(),
             files: vec![],

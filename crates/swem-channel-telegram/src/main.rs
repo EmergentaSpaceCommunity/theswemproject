@@ -511,6 +511,7 @@ fn person_of(from: Option<&Value>) -> Person {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
+        bot: from.get("is_bot").and_then(Value::as_bool) == Some(true),
     }
 }
 

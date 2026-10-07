@@ -861,11 +861,13 @@ async fn a_message_through_a_channel_has_what_was_due_said() {
 
 /// In a group, the agent takes a turn only when the bot is spoken to - by
 /// name or by a reply to it. What else is said there is in the chat for
-/// the record, and nobody is greeted or refused over it.
+/// the record, and nobody is greeted or refused over it. Another bot there
+/// is met as a bot, speaks when allowed, and is answered on a budget of
+/// turns that a person's word starts again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
-    reason = "one walk over one group: named, not spoken to, a stranger, a reply"
+    reason = "one walk over one group: named, not spoken to, a stranger, a reply, a bot"
 )]
 async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     let Some(program) = telegram_channel() else {
@@ -1080,6 +1082,95 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     );
     until("the agent answers Bob once allowed", || {
         (answers(&address) >= 3).then_some(())
+    })
+    .await;
+
+    // Another bot in the group is met as what it is, and may not speak
+    // until allowed, like anybody else.
+    let from_a_bot = |text: &str| {
+        let mut update = in_group((2000, "Echo"), text, false);
+        update["message"]["from"]["is_bot"] = json!(true);
+        update
+    };
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot say something")),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        answers(&address),
+        3,
+        "the agent answered a bot nobody allowed"
+    );
+    let shown = state.channels_shown().await.expect("channels");
+    let echo = shown[0]
+        .people
+        .iter()
+        .find(|one| one.name == "Echo")
+        .expect("the bot is listed among those met");
+    assert!(echo.bot && !echo.may_speak, "{echo:?}");
+    state
+        .allow_guest_at(&channel_id, &echo.participant_id, true)
+        .await
+        .expect("allowed");
+    // Allowed, it is answered: on a budget of turns since a person last
+    // spoke, so that two bots do not keep the agent talking for ever.
+    // Ada's reply and Bob's words cost two turns; two more are the budget.
+    for turn in 4..=5 {
+        fixture_call(
+            &address,
+            "POST",
+            "/_fixture/updates",
+            Some(&from_a_bot("@swem_fixture_bot say something more")),
+        );
+        until("the agent answers the bot", || {
+            (answers(&address) >= turn).then_some(())
+        })
+        .await;
+    }
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot and again")),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        answers(&address),
+        5,
+        "the agent went on answering a bot past the budget"
+    );
+    let page = state
+        .chat_page(&group.chat_id, None, 100)
+        .await
+        .expect("the page");
+    assert!(
+        page.messages
+            .iter()
+            .any(|message| message.text == "and again"),
+        "what the bot said past the budget is not in the chat for the record"
+    );
+    // A person's word starts the budget again.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((7, "Ada"), "@swem_fixture_bot carry on", false)),
+    );
+    until("the agent answers Ada", || {
+        (answers(&address) >= 6).then_some(())
+    })
+    .await;
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot once more")),
+    );
+    until("the agent answers the bot again", || {
+        (answers(&address) >= 7).then_some(())
     })
     .await;
 
