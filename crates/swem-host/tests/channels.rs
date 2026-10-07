@@ -1142,6 +1142,19 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         5,
         "the agent went on answering a bot past the budget"
     );
+    // Nor is a command of the bot's answered by the host past the budget.
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot /status")),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        answers(&address),
+        5,
+        "the host answered a bot's command past the budget"
+    );
     let page = state
         .chat_page(&group.chat_id, None, 100)
         .await

@@ -1063,21 +1063,7 @@ impl Runner {
                     }
                     Ok(())
                 } else if name == "app" || name == "status" {
-                    // Only for whoever may speak to the agent; the rest are
-                    // met, told once alone, and left alone in a group.
-                    let document = self.state.channels()?.read(&self.id)?;
-                    let Some((_, is_owner)) =
-                        self.speaker_for(&document, &chat, &person, "").await?
-                    else {
-                        return Ok(());
-                    };
-                    if name == "app" {
-                        Box::pin(self.offer_the_app(&chat.id, is_owner)).await;
-                    } else {
-                        let words = self.status_words(&chat).await;
-                        self.tell(&chat.id, &words).await;
-                    }
-                    Ok(())
+                    self.answer_the_host_command(&chat, &person, &name).await
                 } else {
                     // A command the harness does not know is words.
                     let text = format!("/{name} {args}").trim().to_owned();
@@ -1606,14 +1592,7 @@ impl Runner {
         // A bot's words are answered on a budget: once agents have taken
         // their turns since a person last spoke in the chat, what a bot says
         // is heard, for the record, and not answered until a person speaks.
-        let for_the_record = person.bot && {
-            let id = chat_id.clone();
-            self.state
-                .with_ledger(move |ledger| ledger.agent_turns_since_a_person(&id))
-                .await
-                .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
-                >= BOT_TURNS_BETWEEN_PEOPLE
-        };
+        let for_the_record = self.bot_over_budget(&person, &chat_id).await?;
         self.say_through(
             &chat_id,
             &chat,
@@ -1672,6 +1651,53 @@ impl Runner {
             )
             .await
             .map(|_| ())
+    }
+
+    /// `/app` and `/status`, answered by the host itself: only for whoever
+    /// may speak to the agent - the rest are met, told once alone, and left
+    /// alone in a group - and not for a bot past its budget.
+    async fn answer_the_host_command(
+        &self,
+        chat: &channel::ChatRef,
+        person: &Person,
+        name: &str,
+    ) -> Result<(), WorkbenchShellError> {
+        let document = self.state.channels()?.read(&self.id)?;
+        let Some((_, is_owner)) = self.speaker_for(&document, chat, person, "").await? else {
+            return Ok(());
+        };
+        if let Some(chat_id) = self.bound_chat(&chat.id).await?
+            && self.bot_over_budget(person, &chat_id).await?
+        {
+            return Ok(());
+        }
+        if name == "app" {
+            Box::pin(self.offer_the_app(&chat.id, is_owner)).await;
+        } else {
+            let words = self.status_words(chat).await;
+            self.tell(&chat.id, &words).await;
+        }
+        Ok(())
+    }
+
+    /// Whether what a bot says in a chat has run out of its budget: agents
+    /// have taken their turns there since a person last spoke. Never for a
+    /// person.
+    async fn bot_over_budget(
+        &self,
+        person: &Person,
+        chat_id: &str,
+    ) -> Result<bool, WorkbenchShellError> {
+        if !person.bot {
+            return Ok(false);
+        }
+        let id = chat_id.to_owned();
+        let turns = self
+            .state
+            .with_ledger(move |ledger| ledger.agent_turns_since_a_person(&id))
+            .await
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
+        Ok(turns >= BOT_TURNS_BETWEEN_PEOPLE)
     }
 
     /// A chat here for a chat on the messenger's side: the bot's agent and
