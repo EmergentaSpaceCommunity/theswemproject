@@ -66,6 +66,11 @@ pub struct ChannelDocument {
     pub agent: Option<String>,
     #[serde(default)]
     pub guests: GuestPolicy,
+    /// How many turns the agent takes on what bots say in a chat before a
+    /// person has to say something there again: the budget two bots
+    /// answering each other run out of.
+    #[serde(default = "default_bot_turns")]
+    pub bot_turns: u32,
     /// How what the messenger has gets here: asked for, or delivered to
     /// a door of this Workbench, which needs it served at an address.
     #[serde(default)]
@@ -135,6 +140,8 @@ pub struct ChangeChannelBody {
     pub guests: Option<GuestPolicy>,
     #[serde(default)]
     pub agent: Option<String>,
+    #[serde(default)]
+    pub bot_turns: Option<u32>,
 }
 
 /// Somebody who opened the page inside the messenger, as the door learns
@@ -440,6 +447,9 @@ impl WorkbenchShellState {
         if let Some(agent) = body.agent {
             document.agent = (!agent.trim().is_empty()).then(|| agent.trim().to_owned());
         }
+        if let Some(bot_turns) = body.bot_turns {
+            document.bot_turns = bot_turns;
+        }
         channels.write(&document)?;
         let started = self.start_channel(id).await;
         let mut shown = self.channel_shown(channels.read(id)?).await?;
@@ -699,6 +709,7 @@ impl WorkbenchShellState {
             args: body.args,
             agent: body.agent,
             guests: body.guests,
+            bot_turns: default_bot_turns(),
             reach: Reach::Pull,
             settings: body.settings,
             pairing_code: Some(pairing_code()?),
@@ -982,10 +993,11 @@ type Streams = BTreeMap<(String, String), Turn>;
 
 /// How many origins are remembered.
 const ORIGINS_KEPT: usize = 512;
-/// How many turns agents take in a chat on what bots say there before a
-/// person has to say something again: the budget two bots answering each
-/// other through their agents run out of.
-const BOT_TURNS_BETWEEN_PEOPLE: usize = 4;
+/// The budget of turns on what bots say, until the owner sets another:
+/// enough for two agents to exchange a few words, not enough to go on.
+fn default_bot_turns() -> u32 {
+    4
+}
 
 impl Runner {
     fn say(&self, words: impl Into<String>) {
@@ -1592,7 +1604,9 @@ impl Runner {
         // A bot's words are answered on a budget: once agents have taken
         // their turns since a person last spoke in the chat, what a bot says
         // is heard, for the record, and not answered until a person speaks.
-        let for_the_record = self.bot_over_budget(&person, &chat_id).await?;
+        let for_the_record = self
+            .bot_over_budget(&person, &chat_id, document.bot_turns)
+            .await?;
         self.say_through(
             &chat_id,
             &chat,
@@ -1667,7 +1681,9 @@ impl Runner {
             return Ok(());
         };
         if let Some(chat_id) = self.bound_chat(&chat.id).await?
-            && self.bot_over_budget(person, &chat_id).await?
+            && self
+                .bot_over_budget(person, &chat_id, document.bot_turns)
+                .await?
         {
             return Ok(());
         }
@@ -1687,6 +1703,7 @@ impl Runner {
         &self,
         person: &Person,
         chat_id: &str,
+        budget: u32,
     ) -> Result<bool, WorkbenchShellError> {
         if !person.bot {
             return Ok(false);
@@ -1697,7 +1714,7 @@ impl Runner {
             .with_ledger(move |ledger| ledger.agent_turns_since_a_person(&id))
             .await
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
-        Ok(turns >= BOT_TURNS_BETWEEN_PEOPLE)
+        Ok(turns >= budget as usize)
     }
 
     /// A chat here for a chat on the messenger's side: the bot's agent and

@@ -20,6 +20,7 @@ export interface ChannelShown {
   program?: string;
   agent?: string;
   guests: GuestPolicy;
+  bot_turns?: number;
   settings: { api_root?: string; door?: string };
   pairing_code?: string;
   bot?: { id: string; username: string; name: string; reach?: string };
@@ -246,6 +247,15 @@ export function Channels() {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
   };
+  const setBotTurns = async (channel: ChannelShown, turns: number) => {
+    if (!Number.isInteger(turns) || turns < 0) return;
+    try {
+      await fetchJson<ChannelShown>(`/api/channels/${encodeURIComponent(channel.id)}`, send("PATCH", { bot_turns: turns }));
+      await read();
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
   const setChannelReach = async (channel: ChannelShown, reach: "pull" | "door") => {
     try {
       await fetchJson<ChannelShown>(`/api/channels/${encodeURIComponent(channel.id)}`, send("PATCH", { reach }));
@@ -326,6 +336,19 @@ export function Channels() {
                 </button>
               ) : null}
             </span>
+            <label className="k-inline w-tight k-caption" htmlFor={`bot-turns-${channel.id}`}>
+              Other bots are answered
+              <input
+                id={`bot-turns-${channel.id}`}
+                className="k-field channel-bot-turns"
+                type="number"
+                min={0}
+                step={1}
+                value={channel.bot_turns ?? 4}
+                onChange={(event) => void setBotTurns(channel, Number(event.target.value))}
+              />
+              turns in a row; then a person has to speak.
+            </label>
             {(channel.people ?? []).length > 0 ? <span className="k-caption">People the bot has met:</span> : null}
             {(channel.people ?? []).map((guest) => (
               <span className="k-inline w-tight" key={guest.participant_id} data-guest={guest.participant_id} data-may-speak={guest.may_speak ? "true" : "false"}>

@@ -10,9 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use swem_host::{
-    AddChannelBody, AttachmentBinding, AttachmentTransport, GuestPolicy, IntegrationKind, Kind,
-    LaunchCommand, PersonalAgentProfile, PersonalAgentProfileStore, ResolvedDirectAgentConnection,
-    StoreInstallBody, StorePlanBody, WorkbenchShellState, registry_platform,
+    AddChannelBody, AttachmentBinding, AttachmentTransport, ChangeChannelBody, GuestPolicy,
+    IntegrationKind, Kind, LaunchCommand, PersonalAgentProfile, PersonalAgentProfileStore,
+    ResolvedDirectAgentConnection, StoreInstallBody, StorePlanBody, WorkbenchShellState,
+    registry_platform,
 };
 
 fn fixture_root(label: &str) -> PathBuf {
@@ -1184,6 +1185,44 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     );
     until("the agent answers the bot again", || {
         (answers(&address) >= 7).then_some(())
+    })
+    .await;
+    // The budget is the channel's setting. Two turns have gone since Ada
+    // spoke; a budget of two is spent, a budget of three has one left.
+    let change_budget = |turns: u32| {
+        let state = state.clone();
+        let channel_id = channel_id.clone();
+        async move {
+            state
+                .change_channel(
+                    &channel_id,
+                    ChangeChannelBody {
+                        bot_turns: Some(turns),
+                        ..ChangeChannelBody::default()
+                    },
+                )
+                .await
+                .expect("the budget is changed")
+        }
+    };
+    assert_eq!(change_budget(2).await.document.bot_turns, 2);
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot within a smaller budget?")),
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(answers(&address), 7, "the smaller budget was not kept");
+    change_budget(3).await;
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&from_a_bot("@swem_fixture_bot within a larger one?")),
+    );
+    until("the agent answers the bot within the larger budget", || {
+        (answers(&address) >= 8).then_some(())
     })
     .await;
 
