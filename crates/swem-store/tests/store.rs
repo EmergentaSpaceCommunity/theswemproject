@@ -388,6 +388,20 @@ fn what_a_requirement_requires_comes_first_and_a_shared_one_comes_once() {
             "{id}: the receipt does not match its own plan"
         );
     }
+    // Each receipt says what it required, and says so again when read back
+    // from disk by another Store.
+    let store = Store::open(&root.join("indexes"), &root.join("installed")).unwrap();
+    let receipts = store.receipts(&kind);
+    let required_by = |id: &str| {
+        receipts[id]
+            .requires
+            .iter()
+            .map(|r| format!("{} {}", r.id, r.version.as_deref().unwrap_or_default()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(required_by("top"), ["mid ^1", "side ^1"]);
+    assert_eq!(required_by("mid"), ["base ^1"]);
+    assert!(required_by("base").is_empty());
 }
 
 #[test]

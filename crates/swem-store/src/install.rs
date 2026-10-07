@@ -572,6 +572,7 @@ fn install_archive(
         args: Vec::new(),
         discovery_method: "archive-sha256-tree".into(),
         installed_at: now_seconds(),
+        requires: plan.requires.clone(),
     })
 }
 
@@ -754,6 +755,7 @@ fn install_npx(
         args: args.to_vec(),
         discovery_method: "registry-npx-npm-install-ignore-scripts".into(),
         installed_at: now_seconds(),
+        requires: plan.requires.clone(),
     })
 }
 
@@ -833,6 +835,7 @@ fn install_uvx(
         args: args.to_vec(),
         discovery_method: "uv-tool-install-pinned".into(),
         installed_at: now_seconds(),
+        requires: plan.requires.clone(),
     })
 }
 
@@ -894,6 +897,7 @@ fn install_binary(
             "registry-binary-sha256-exact-entry".into()
         },
         installed_at: now_seconds(),
+        requires: plan.requires.clone(),
     })
 }
 

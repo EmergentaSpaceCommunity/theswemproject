@@ -121,6 +121,10 @@ pub struct InstallReceipt {
     /// written before receipts said.
     #[serde(default)]
     pub installed_at: u64,
+    /// What it required when it was installed, as the plan said: what
+    /// removal asks about before taking another package away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<Requirement>,
 }
 
 impl InstallReceipt {

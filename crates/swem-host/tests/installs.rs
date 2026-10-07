@@ -68,6 +68,7 @@ fn an_agent_installed_from_the_registry_is_discovered_without_a_catalogue_entry(
             args: vec!["acp".into()],
             discovery_method: "registry-binary-sha256-exact-entry".into(),
             installed_at: 1,
+            requires: Vec::new(),
         },
     );
 
@@ -181,6 +182,7 @@ fn every_kind_reads_as_one_list_of_receipts() {
                 args: Vec::new(),
                 discovery_method: "registry-binary-sha256-exact-entry".into(),
                 installed_at: 2,
+                requires: Vec::new(),
             },
         );
     }
