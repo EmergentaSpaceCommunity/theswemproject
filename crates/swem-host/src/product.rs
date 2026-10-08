@@ -371,17 +371,18 @@ impl Product {
     /// variable `SWEM_CONTAINER_IMAGE` is read, and without that a container
     /// profile is refused with the flag named.
     #[must_use]
+    pub fn container_image(mut self, image: Option<String>) -> Self {
+        self.container_image = image;
+        self
+    }
+
     /// How this host's peers reach it when nothing direct works
     /// (ADR-0019): the relays of n0 by default, one's own, or none - for
     /// two hosts on one machine, and for tests, which never reach a public
     /// relay.
+    #[must_use]
     pub fn hosts_relay(mut self, relay: iroh::RelayMode) -> Self {
         self.hosts_relay = relay;
-        self
-    }
-
-    pub fn container_image(mut self, image: Option<String>) -> Self {
-        self.container_image = image;
         self
     }
 

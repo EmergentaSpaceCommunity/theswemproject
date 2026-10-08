@@ -607,6 +607,47 @@ impl Access {
         Ok(word)
     }
 
+    /// Use the word of a first start for something other than a device:
+    /// another host of the person's, given it on a page that is theirs,
+    /// adds this one (ADR-0019). Used once, as for a device.
+    ///
+    /// # Errors
+    ///
+    /// The word is not the one printed, it was used, it is too old, or this
+    /// Workbench belongs to somebody already.
+    pub fn use_the_first_word(&self, word: &str, from: &str) -> Result<(), AccessError> {
+        self.not_too_many_tries(from)?;
+        if self.claimed()? {
+            return Err(AccessError::Refused(
+                "This Workbench belongs to somebody already.".into(),
+            ));
+        }
+        let now = now_ms();
+        let changed = held(&self.book).execute(
+            "UPDATE words SET used_ms = ?1 WHERE digest = ?2 AND first = 1 AND used_ms IS NULL AND good_until_ms > ?1",
+            params![now, digest(&as_typed(word))],
+        )?;
+        if changed == 0 {
+            self.failed(from);
+            self.write_down(
+                "Refused: a word nobody was given, by another host",
+                true,
+                "",
+                from,
+            )?;
+            return Err(AccessError::Refused(
+                "This is not the word it printed, or it was used, or it is too old.".into(),
+            ));
+        }
+        self.write_down(
+            "Added to the person's hosts, by the word of the first start",
+            false,
+            "",
+            from,
+        )?;
+        Ok(())
+    }
+
     /// Begin registering a device for whoever came with a word.
     ///
     /// # Errors

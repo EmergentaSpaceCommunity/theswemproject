@@ -83,15 +83,15 @@ async fn body_of(response: hyper::Response<swem_host::ShellBody>) -> (u16, Value
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_host_is_added_by_its_address_and_word_and_asked_through_the_link() {
     let (laptop, _) = a_host("laptop", "ada").await;
     let (server, _) = a_host("server", "bob").await;
 
     // Each has a face of its own from its first start.
-    let laptop_face = laptop.hosts_standing(false).await.expect("laptop's face");
+    let laptop_face = laptop.hosts_standing(false).expect("laptop's face");
     let server_face = server
         .hosts_standing(true)
-        .await
         .expect("server's face, with a word");
     assert_ne!(
         laptop_face["this"]["host_id"],
@@ -119,7 +119,7 @@ async fn a_host_is_added_by_its_address_and_word_and_asked_through_the_link() {
     let refused = laptop.add_host(&address, "nope-nope-nope").await;
     assert!(refused.is_err(), "a wrong word: {refused:?}");
     assert_eq!(
-        laptop.hosts_standing(false).await.expect("hosts")["hosts"]
+        laptop.hosts_standing(false).expect("hosts")["hosts"]
             .as_array()
             .map(Vec::len),
         Some(0)
@@ -133,8 +133,8 @@ async fn a_host_is_added_by_its_address_and_word_and_asked_through_the_link() {
     assert_eq!(added["host_id"], server_face["this"]["host_id"]);
     assert_eq!(added["vouched_by"], laptop_face["this"]["host_id"]);
     // Both list each other now; the word is spent.
-    let laptop_hosts = laptop.hosts_standing(false).await.expect("hosts")["hosts"].clone();
-    let server_hosts = server.hosts_standing(false).await.expect("hosts")["hosts"].clone();
+    let laptop_hosts = laptop.hosts_standing(false).expect("hosts")["hosts"].clone();
+    let server_hosts = server.hosts_standing(false).expect("hosts")["hosts"].clone();
     assert_eq!(laptop_hosts[0]["host_id"], server_face["this"]["host_id"]);
     assert_eq!(server_hosts[0]["host_id"], laptop_face["this"]["host_id"]);
     assert!(
@@ -191,13 +191,13 @@ async fn a_host_is_added_by_its_address_and_word_and_asked_through_the_link() {
     let forgotten = laptop.forget_host(server_id).await.expect("forgotten");
     assert_eq!(forgotten["forgotten"], true);
     assert_eq!(
-        laptop.hosts_standing(false).await.expect("hosts")["hosts"]
+        laptop.hosts_standing(false).expect("hosts")["hosts"]
             .as_array()
             .map(Vec::len),
         Some(0)
     );
     assert_eq!(
-        server.hosts_standing(false).await.expect("hosts")["hosts"]
+        server.hosts_standing(false).expect("hosts")["hosts"]
             .as_array()
             .map(Vec::len),
         Some(0),
@@ -223,14 +223,14 @@ async fn a_third_host_is_told_of_the_others_and_knows_them() {
     let (a, _) = a_host("a", "ada").await;
     let (b, _) = a_host("b", "bob").await;
     let (c, _) = a_host("c", "cyd").await;
-    let b_face = b.hosts_standing(true).await.expect("b");
+    let b_face = b.hosts_standing(true).expect("b");
     a.add_host(
         b_face["this"]["address"].as_str().expect("address"),
         b_face["this"]["word"].as_str().expect("word"),
     )
     .await
     .expect("b added from a");
-    let c_face = c.hosts_standing(true).await.expect("c");
+    let c_face = c.hosts_standing(true).expect("c");
     a.add_host(
         c_face["this"]["address"].as_str().expect("address"),
         c_face["this"]["word"].as_str().expect("word"),
@@ -238,8 +238,8 @@ async fn a_third_host_is_told_of_the_others_and_knows_them() {
     .await
     .expect("c added from a");
     // c was told of b when it met a; b was told of c by a.
-    let c_hosts = c.hosts_standing(false).await.expect("c's hosts")["hosts"].clone();
-    let b_hosts = b.hosts_standing(false).await.expect("b's hosts")["hosts"].clone();
+    let c_hosts = c.hosts_standing(false).expect("c's hosts")["hosts"].clone();
+    let b_hosts = b.hosts_standing(false).expect("b's hosts")["hosts"].clone();
     assert_eq!(c_hosts.as_array().map(Vec::len), Some(2), "{c_hosts}");
     assert_eq!(b_hosts.as_array().map(Vec::len), Some(2), "{b_hosts}");
     // So b reaches c directly, on a's word.

@@ -31,9 +31,9 @@ use serde_json::{Value, json};
 pub const ALPN: &[u8] = b"swem-host-door/1";
 
 /// How long a vouch is good for: weeks, renewed whenever the two meet.
-const A_VOUCH_IS_GOOD_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const A_VOUCH_IS_GOOD_FOR: Duration = Duration::from_hours(30 * 24);
 /// How long a word shown to be added by is good for.
-const A_WORD_IS_GOOD_FOR: Duration = Duration::from_secs(10 * 60);
+const A_WORD_IS_GOOD_FOR: Duration = Duration::from_mins(10);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS hosts (
@@ -200,6 +200,10 @@ pub struct Told {
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn ms_of(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn now_ms() -> u64 {
@@ -379,7 +383,7 @@ impl Peers {
 
     /// Whom this host belongs to, as the vouches it signs name them.
     pub fn owned_by(&self, owner: &str) {
-        *held(&self.owner) = owner.to_owned();
+        owner.clone_into(&mut held(&self.owner));
     }
 
     #[must_use]
@@ -502,7 +506,7 @@ impl Peers {
     pub fn a_word_to_be_added_by(&self) -> Result<String, PeersError> {
         let book = held(&self.book);
         let now = now_ms();
-        let good_since = now.saturating_sub(A_WORD_IS_GOOD_FOR.as_millis() as u64);
+        let good_since = now.saturating_sub(ms_of(A_WORD_IS_GOOD_FOR));
         if let Some(word) = book
             .query_row(
                 "SELECT word FROM words WHERE used_ms IS NULL AND made_ms > ?1 \
@@ -523,10 +527,15 @@ impl Peers {
         Ok(word)
     }
 
-    fn use_the_word(&self, word: &str) -> Result<(), PeersError> {
+    /// Use the word this host showed: once, while fresh.
+    ///
+    /// # Errors
+    ///
+    /// It is not the word, or it was used, or it is old.
+    pub fn use_the_word(&self, word: &str) -> Result<(), PeersError> {
         let book = held(&self.book);
         let now = now_ms();
-        let good_since = now.saturating_sub(A_WORD_IS_GOOD_FOR.as_millis() as u64);
+        let good_since = now.saturating_sub(ms_of(A_WORD_IS_GOOD_FOR));
         let changed = book.execute(
             "UPDATE words SET used_ms = ?1 WHERE word = ?2 AND used_ms IS NULL AND made_ms > ?3",
             params![now, word.trim(), good_since],
@@ -547,7 +556,7 @@ impl Peers {
             name: name.to_owned(),
             owner: held(&self.owner).clone(),
             may: "everything".into(),
-            until_ms: now_ms() + A_VOUCH_IS_GOOD_FOR.as_millis() as u64,
+            until_ms: now_ms() + ms_of(A_VOUCH_IS_GOOD_FOR),
             by: self.id().to_string(),
         };
         let signature = self.secret.sign(&vouch.bytes());
@@ -887,16 +896,16 @@ impl Peers {
     }
 
     /// Met by a host that introduces this one: `meeting` came over a stream
-    /// from `caller`, who is not trusted yet. The word decides.
+    /// from `caller`, who is not trusted yet, and whoever answers checked
+    /// the word first - this host's own, or the one its first start printed.
     ///
     /// # Errors
     ///
-    /// The word is wrong, or the vouch does not hold.
+    /// The vouch does not hold.
     pub fn met(&self, caller: &EndpointId, meeting: &Meeting) -> Result<Introduced, PeersError> {
         if meeting.caller.host != caller.to_string() {
             return Err(PeersError::Refused("the caller is not who it says".into()));
         }
-        self.use_the_word(&meeting.word)?;
         // The caller's vouch for this host: checked, and kept for showing.
         meeting.vouched.check()?;
         if meeting.vouched.vouch.host != self.id().to_string()

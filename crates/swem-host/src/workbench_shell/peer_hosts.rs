@@ -140,7 +140,7 @@ impl WorkbenchShellState {
     /// # Errors
     ///
     /// Hosts are not enabled, or the book cannot be read.
-    pub async fn hosts_standing(&self, with_a_word: bool) -> Result<Value, WorkbenchShellError> {
+    pub fn hosts_standing(&self, with_a_word: bool) -> Result<Value, WorkbenchShellError> {
         let peers = self.peers()?;
         Ok(json!({
             "this": peers.this_host(with_a_word)?,
@@ -233,6 +233,7 @@ impl WorkbenchShellState {
 }
 
 /// Answer what is asked about hosts, or hand the request back.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn route_hosts(
     state: &Arc<WorkbenchShellState>,
     method: &Method,
@@ -259,6 +260,20 @@ pub(super) async fn route_hosts(
                 Ok(meeting) => meeting,
                 Err(error) => return Ok(error_response(&error)),
             };
+            // The word the owner was shown on this host's page, or, while
+            // nobody owns this served host yet, the word it printed at its
+            // first start (ADR-0019: a host is added from a page that is
+            // the person's, by a word only they were given).
+            if let Err(error) = peers.use_the_word(&meeting.word) {
+                let by_the_first_word = state.served_at.get().map(|served| {
+                    served
+                        .access
+                        .use_the_first_word(&meeting.word, "another host")
+                });
+                if !matches!(by_the_first_word, Some(Ok(()))) {
+                    return Ok(error_response(&WorkbenchShellError::from(error)));
+                }
+            }
             return Ok(json_result(
                 peers
                     .met(&host, &meeting)
@@ -313,7 +328,7 @@ pub(super) async fn route_hosts(
         ));
     }
     match (method, &segments[2..]) {
-        (&Method::GET, []) => Ok(json_result(state.hosts_standing(true).await)),
+        (&Method::GET, []) => Ok(json_result(state.hosts_standing(true))),
         (&Method::POST, []) => {
             let body = match read_json(request).await.and_then(|value| {
                 serde_json::from_value::<AddHostBody>(value)
@@ -336,7 +351,7 @@ pub(super) async fn route_hosts(
                 .peers()
                 .and_then(|peers| peers.call_it(&body.name).map_err(WorkbenchShellError::from));
             match called {
-                Ok(()) => Ok(json_result(state.hosts_standing(false).await)),
+                Ok(()) => Ok(json_result(state.hosts_standing(false))),
                 Err(error) => Ok(error_response(&error)),
             }
         }

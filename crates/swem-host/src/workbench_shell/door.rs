@@ -132,7 +132,7 @@ impl Way {
 
 /// A Workbench served at an address, as the door knows it.
 pub(super) struct ServedAt {
-    access: Arc<Access>,
+    pub(super) access: Arc<Access>,
     way: Way,
     /// Where Apps are drawn, when they are.
     apps: Option<String>,
@@ -886,6 +886,15 @@ impl WorkbenchShellState {
                 }),
             _ => None,
         };
+        // This host's face, for the door of one that belongs to nobody yet:
+        // its address is what a page of another host adds it by.
+        let host = self
+            .peers
+            .get()
+            .and_then(|peers| peers.this_host(false).ok())
+            .map(|this| {
+                json!({"name": this.name, "fingerprint": this.fingerprint, "address": this.address})
+            });
         match (self.served_at.get(), through) {
             (Some(served), Through::Main) => json!({
                 "at": served.access.address().origin().ascii_serialization(),
@@ -894,6 +903,7 @@ impl WorkbenchShellState {
                 "who": who,
                 "called": called,
                 "messenger": messenger,
+                "host": host,
             }),
             // Through the gate the page is at the tunnel's address, and
             // nothing of sign-in is there to be shown.
