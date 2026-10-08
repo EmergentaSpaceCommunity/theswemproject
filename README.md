@@ -56,8 +56,8 @@ is committed built, so Node is needed only to change it.
 
 Three layers, each closed over the one below:
 
-1. **Providers** are set up once, with their keys: engines (the coding agents), models, machines,
-   time, channels.
+1. **Providers** are set up once, with their keys: engines (the coding agents), models,
+   environments (how an agent is run here: as is, or in a container), time, channels.
 2. **Agents** are put together from providers. Any number of agents from the same ones.
 3. **Chats** are where people and agents talk. Every message has a sender; an agent is a
    participant like a person.

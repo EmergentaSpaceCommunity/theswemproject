@@ -76,10 +76,11 @@ order: a host with a face (its name, fingerprint and address on Settings, Hosts)
 that belongs to nobody yet offers "Make it yours" - this device is mine, or add it to my hosts;
 "Add a host" between two `swem` processes on one machine, by address and word; the page of one
 host lists the other's agents and chats under its name and draws that host's own page through
-the link. Open: the person's hosts and the places an agent lives (Providers, Hosts: this
-machine, a container) are both called hosts on the page, and the person's are asked about at
-`/api/peers` for that reason; a sleeping host telling its peers where to knock; the term of a
-vouch running out while the two never meet.
+the link. A host is the only thing called a host: the ways an agent is run on one (as is, a
+container, a provider's machine) are environments, under Providers, so the person's hosts are
+asked about at `/api/hosts` and another's page is drawn under `/hosts/<id>/`. Open: a sleeping
+host telling its peers where to knock; the term of a vouch running out while the two never
+meet.
 
 ## Links
 

@@ -36,15 +36,19 @@ export interface MachineLook {
   docker: EngineLook;
 }
 
-export interface HostStanding {
-  id: string;
+/// One way this host runs an agent, as Providers lists it: as is, or in a
+/// container; what runs it, who is run in it, whether it can be chosen
+/// today.
+export interface EnvironmentStanding {
+  environment_profile_id: string;
   name: string;
+  summary: string;
   kind: string;
   machine: string;
   an_agent_gets: string;
   used_by: string[];
-  ready: boolean;
-  said: string;
+  available: boolean;
+  why_not: string;
 }
 
 export interface SetUpStep {
@@ -81,7 +85,7 @@ interface Providers {
   /// What a provider can be opened by.
   kinds: SecretType[];
   machine: MachineLook | null;
-  hosts: HostStanding[] | null;
+  environments: EnvironmentStanding[] | null;
   looking: boolean;
   settingUp: SetUp | null;
   problem: string;
@@ -92,22 +96,24 @@ export const providers = createStore<Providers>(() => ({
   keptBy: "",
   kinds: [],
   machine: null,
-  hosts: null,
+  environments: null,
   looking: false,
   settingUp: null,
   problem: "",
 }));
 
 const part = encodeURIComponent;
+/// The container environment's id, as the host names it.
+export const IN_A_CONTAINER = "podman-container-environment";
 const send = (method: string, body?: unknown): RequestInit => ({
   method,
   ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
 });
 const said = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-interface Hosts {
+interface Environments {
   machine: MachineLook | null;
-  hosts: HostStanding[];
+  environments: EnvironmentStanding[];
   setting_up?: SetUp | null;
 }
 
@@ -117,7 +123,7 @@ function watch(): void {
   if (watching !== null) return;
   const again = async () => {
     watching = null;
-    await providing.hosts();
+    await providing.environments();
     if (providers.getState().settingUp?.state === "running") watching = setTimeout(again, 1500);
   };
   watching = setTimeout(again, 1000);
@@ -151,10 +157,10 @@ export const providing = {
     await fetchJson(`/api/model-providers/${part(provider)}/key`, send("DELETE"));
     await providing.models();
   },
-  async hosts(): Promise<void> {
+  async environments(): Promise<void> {
     try {
-      const answer = await fetchJson<Hosts>("/api/hosts");
-      providers.setState({ machine: answer.machine, hosts: answer.hosts, settingUp: answer.setting_up ?? null, problem: "" });
+      const answer = await fetchJson<Environments>("/api/environments");
+      providers.setState({ machine: answer.machine, environments: answer.environments, settingUp: answer.setting_up ?? null, problem: "" });
       if (answer.setting_up?.state === "running") watch();
     } catch (error) {
       providers.setState({ problem: said(error) });
@@ -162,21 +168,21 @@ export const providing = {
   },
   /// What setting containers up here would do, for a machine of that size.
   async planContainers(wanted: MachineWanted): Promise<SetUp> {
-    const plan = await fetchJson<SetUp>("/api/hosts/this-machine/containers/plan", send("POST", wanted));
+    const plan = await fetchJson<SetUp>(`/api/environments/${part(IN_A_CONTAINER)}/plan`, send("POST", wanted));
     providers.setState({ settingUp: plan });
     return plan;
   },
   /// Do what was offered, as a person agreed to it.
   async setContainersUp(plan: string): Promise<void> {
-    const run = await fetchJson<SetUp>("/api/hosts/this-machine/containers/set-up", send("POST", { plan_id: plan }));
+    const run = await fetchJson<SetUp>(`/api/environments/${part(IN_A_CONTAINER)}/set-up`, send("POST", { plan_id: plan }));
     providers.setState({ settingUp: run });
     watch();
   },
   async lookAgain(): Promise<void> {
     providers.setState({ looking: true, problem: "" });
     try {
-      const answer = await fetchJson<Hosts>("/api/hosts/this-machine/look", send("POST"));
-      providers.setState({ machine: answer.machine, hosts: answer.hosts });
+      const answer = await fetchJson<Environments>("/api/environments/look", send("POST"));
+      providers.setState({ machine: answer.machine, environments: answer.environments });
     } catch (error) {
       providers.setState({ problem: said(error) });
     } finally {

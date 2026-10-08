@@ -63,7 +63,7 @@ export function useOtherHosts(): OnAHost[] {
     const load = async () => {
       let shown: HostsShown;
       try {
-        shown = await fetchJson<HostsShown>("/api/peers");
+        shown = await fetchJson<HostsShown>("/api/hosts");
       } catch {
         // Not the owner, or a Workbench without hosts: nothing to show.
         return;
@@ -71,7 +71,7 @@ export function useOtherHosts(): OnAHost[] {
       const on = await Promise.all(
         shown.hosts.map(async (host): Promise<OnAHost> => {
           try {
-            const now = await fetchJson<Now>(`/api/peers/${encodeURIComponent(host.host_id)}/api/now`);
+            const now = await fetchJson<Now>(`/api/hosts/${encodeURIComponent(host.host_id)}/api/now`);
             const agents = now.participants.filter((one) => one.kind === "agent" && !one.retired).sort((left, right) => left.name.localeCompare(right.name));
             const chats = now.chats.filter((chat) => chat.members.filter((member) => member.kind === "agent").length > 1 || chat.members.some((member) => member.kind === "guest" && !member.retired));
             return { host, agents, chats, reached: true };

@@ -94,13 +94,20 @@ A library plus test fixtures. It owns:
   file opened, saved while it is what was opened, made, renamed and removed: each is a request
   to the runner. What a person handed over and what the agent handed back (`workbench_files.rs`)
   are two folders of the same place, listed beside the tree.
-- **Hosts** (`host/`, `workbench_shell/hosts.rs`). This machine is looked at while the door
-  opens and when a person asks: system, processors, memory, disk, and whether Podman and
-  Docker are there and answer. What was found is kept under `<data root>/hosts`. Where an
-  agent may live is offered from it, and a place that cannot take an agent today says why.
-  Setting containers up is the plan the command line has (`podman_provisioning_plan`), kept by
-  the shell until a person agrees to it by its id; its steps are run one by one, how each went
-  is read from `GET /api/hosts`, and the machine is looked at again at the end.
+- **Environments** (`environment_profile.rs`, `host/`, `workbench_shell/environments.rs`). How
+  this host runs an agent: as is on the machine, or sealed in a container; a provider's machine
+  arrives as a package. An environment is a way of running, not a place: the host stays the
+  agent's home. This machine is looked at while the door opens and when a person asks: system,
+  processors, memory, disk, and whether Podman and Docker are there and answer. What was found
+  is kept under `<data root>/hosts`. The one list, `GET /api/environments`, says what runs each
+  environment, who is run in it, and why one cannot be chosen today. Setting containers up is
+  the plan the command line has (`podman_provisioning_plan`), kept by the shell until a person
+  agrees to it by its id; its steps are run one by one, how each went is read from the same
+  list, and the machine is looked at again at the end.
+- **Hosts of one person** (`peers.rs`, `workbench_shell/peer_hosts.rs`). A host is an
+  installation of `swem` with a key of its own; the person's hosts are asked about at
+  `/api/hosts`, and another host's page is drawn through this one under `/hosts/<id>/`
+  (ADR-0019).
 - **The Workbench shell** (`workbench_shell.rs` and its modules). The HTTP surface the page talks
   to. Who asks is found in one place before anything is answered (`door.rs`): on the machine a
   person sits at, by the page's own origin and the secret of the run; served at an address, by

@@ -40,12 +40,12 @@ use crate::workbench_apps::{self, ConnectionApps, OpenApp, OpenedApp, RelayRefus
 #[path = "workbench_shell/agent_environment.rs"]
 mod agent_environment;
 mod door;
-mod hosts;
+mod environments;
 pub(crate) use door::SaidBy;
 pub use door::{Way, certificate_good_until};
 #[path = "workbench_shell/mcp_servers.rs"]
 mod mcp_servers;
-pub use hosts::{EnvironmentOffered, HostStanding, MachineWanted, SetUp, SetUpStep};
+pub use environments::{EnvironmentOffered, MachineWanted, SetUp, SetUpStep};
 mod channels;
 mod model_providers;
 mod peer_hosts;
@@ -4220,7 +4220,7 @@ pub(crate) async fn route_shell(
     let who = if let Some(came) = came_as_host {
         match WorkbenchShellState::host_principal(&came) {
             Some(who) => Some(who),
-            None if matches!(segments.as_slice(), ["api", "peers", "meet"]) => None,
+            None if matches!(segments.as_slice(), ["api", "hosts", "meet"]) => None,
             None => {
                 return respond_json(
                     StatusCode::FORBIDDEN,
@@ -4229,7 +4229,7 @@ pub(crate) async fn route_shell(
             }
         }
     } else if segments.first() == Some(&"api")
-        || (segments.first() == Some(&"peers") && segments.len() >= 2)
+        || (segments.first() == Some(&"hosts") && segments.len() >= 2)
     {
         match state.let_in(&method, &segments, request.headers(), &from, said, through) {
             Ok(who) => who,
@@ -4402,20 +4402,20 @@ pub(crate) async fn route_shell(
         (&Method::GET, ["api", "permission-profiles"]) => json_result(Ok(json!({
             "profiles": crate::permission_profiles(),
         }))),
-        (&Method::GET, ["api", "environments"]) => json_result(Ok(json!({
-            "environments": state.environments_offered(),
-        }))),
-        // What this machine is and where on it an agent may live.
-        (&Method::GET, ["api", "hosts"]) => json_result(state.hosts().map(|hosts| {
-            json!({
-                "machine": state.machine(),
-                "hosts": hosts,
-                "setting_up": state.setting_up(),
-            })
-        })),
+        // The environments this host runs an agent in, and the machine
+        // behind them.
+        (&Method::GET, ["api", "environments"]) => {
+            json_result(state.environments().map(|environments| {
+                json!({
+                    "machine": state.machine(),
+                    "environments": environments,
+                    "setting_up": state.setting_up(),
+                })
+            }))
+        }
         // Setting containers up here: what would be done, and doing it
         // once a person agreed to exactly that.
-        (&Method::POST, ["api", "hosts", "this-machine", "containers", "plan"]) => {
+        (&Method::POST, ["api", "environments", id, "plan"]) if *id == crate::IN_A_CONTAINER => {
             let wanted = match read_json(request).await.and_then(|value| {
                 serde_json::from_value::<MachineWanted>(value)
                     .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))
@@ -4425,20 +4425,18 @@ pub(crate) async fn route_shell(
             };
             json_result(state.plan_containers(wanted).await)
         }
-        (&Method::POST, ["api", "hosts", "this-machine", "containers", "set-up"]) => {
+        (&Method::POST, ["api", "environments", id, "set-up"]) if *id == crate::IN_A_CONTAINER => {
             let plan_id = match read_json(request).await {
                 Ok(body) => body["plan_id"].as_str().unwrap_or_default().to_owned(),
                 Err(error) => return error_response(&error),
             };
             json_result(state.set_containers_up(&plan_id))
         }
-        (&Method::POST, ["api", "hosts", "this-machine", "look"]) => {
+        (&Method::POST, ["api", "environments", "look"]) => {
             match state.look_at_the_machine().await {
-                Ok(_) => json_result(
-                    state
-                        .hosts()
-                        .map(|hosts| json!({ "machine": state.machine(), "hosts": hosts })),
-                ),
+                Ok(_) => json_result(state.environments().map(|environments| {
+                    json!({ "machine": state.machine(), "environments": environments })
+                })),
                 Err(error) => error_response(&error),
             }
         }

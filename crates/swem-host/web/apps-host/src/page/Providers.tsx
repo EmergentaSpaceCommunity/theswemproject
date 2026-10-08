@@ -11,56 +11,17 @@ import { Channels } from "./Channels.tsx";
 import { Engines } from "./Engines.tsx";
 import { Box, Brain, ChatSign, Clock, Laptop, Plus, Wrench } from "./icons.tsx";
 import { go, type ProvidersTab } from "./place.ts";
-import { gigabytes, providers, providing, when, type EngineLook, type HostStanding, type ModelProviderStanding } from "./providers.ts";
+import { gigabytes, providers, providing, when, type EngineLook, type EnvironmentStanding, type ModelProviderStanding } from "./providers.ts";
 import { Standing, UsedBy } from "./standing.tsx";
 import { Timekeepers } from "./Timekeepers.tsx";
 
 const TABS: { tab: ProvidersTab; label: string; sign: typeof Brain }[] = [
   { tab: "engines", label: "Engines", sign: Wrench },
   { tab: "models", label: "Models", sign: Brain },
-  { tab: "hosts", label: "Hosts", sign: Laptop },
+  { tab: "environments", label: "Environments", sign: Laptop },
   { tab: "time", label: "Time", sign: Clock },
   { tab: "channels", label: "Channels", sign: ChatSign },
 ];
-
-/// The kinds of host there are, and which of them can be added today.
-function AddHost({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return (
-    <Dialog.Root open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
-      <Dialog.Portal>
-        <Dialog.Backdrop className="w-scrim" />
-        <Dialog.Popup className="k-dialog w-dialog">
-          <Dialog.Title className="k-heading">Add a host</Dialog.Title>
-          <Dialog.Description className="k-caption">A host is a machine an agent lives in. Two are built in and are here already: this machine, and containers on it.</Dialog.Description>
-          <div className="k-row w-nowrap w-top">
-            <Laptop size={18} />
-            <span className="w-col w-close k-grow">
-              <span className="k-name">A machine over SSH</span>
-              <span className="k-caption">A machine of yours. SWEM looks at it first, then puts its runner and the agent's engine there.</span>
-            </span>
-            <Standing tone="none">Not yet</Standing>
-          </div>
-          <div className="k-row w-nowrap w-top">
-            <Box size={18} />
-            <span className="w-col w-close k-grow">
-              <span className="k-name">Sprites</span>
-              <span className="k-caption">A cloud machine that sleeps when idle and is woken by a message.</span>
-            </span>
-            <Standing tone="none">Not yet</Standing>
-          </div>
-          <div className="k-notice">
-            SWEM does not reach a machine other than this one yet. An agent here lives on this machine, or in a container on it once containers are set up under Hosts.
-          </div>
-          <div className="k-inline w-end">
-            <Dialog.Close className="k-btn" type="button">
-              Close
-            </Dialog.Close>
-          </div>
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
 
 /// Giving a key: typed once, sent, and gone from the page.
 function GiveKey({ provider, onClose }: { provider: ModelProviderStanding | null; onClose: () => void }) {
@@ -361,30 +322,27 @@ function Fact({ name, children }: { name: string; children: string }) {
   );
 }
 
-function Host({ host, onSetUp }: { host: HostStanding; onSetUp?: () => void }) {
+function Environment({ one, onSetUp }: { one: EnvironmentStanding; onSetUp?: () => void }) {
   return (
     <tr>
       <td>
         <span className="k-inline w-nowrap">
-          {host.kind === "Built in" ? <Laptop size={18} /> : <Box size={18} />}
+          {one.kind === "Container" ? <Box size={18} /> : <Laptop size={18} />}
           <span className="k-two">
-            <span className="k-name">{host.name}</span>
-            <span className="k-caption">{host.kind}</span>
+            <span className="k-name">{one.name}</span>
+            <span className="k-caption">{one.kind}</span>
           </span>
         </span>
       </td>
+      <td>{one.machine || <span className="k-caption">Not known</span>}</td>
+      <td>{one.an_agent_gets}</td>
       <td>
-        <span className="k-caption">None needed</span>
-      </td>
-      <td>{host.machine || <span className="k-caption">Not known</span>}</td>
-      <td>{host.an_agent_gets}</td>
-      <td>
-        <UsedBy profiles={host.used_by} />
+        <UsedBy profiles={one.used_by} />
       </td>
       <td className="w-end">
-        <Standing tone={host.ready ? "ready" : "asking"}>{host.ready ? "Ready" : "Cannot start"}</Standing>
-        {host.ready ? null : <div className="k-caption">{host.said}</div>}
-        {!host.ready && onSetUp ? (
+        <Standing tone={one.available ? "ready" : "asking"}>{one.available ? "Ready" : "Cannot start"}</Standing>
+        {one.available ? null : <div className="k-caption">{one.why_not}</div>}
+        {!one.available && onSetUp ? (
           <button type="button" className="k-btn k-quiet" onClick={onSetUp}>
             Set up
           </button>
@@ -394,13 +352,15 @@ function Host({ host, onSetUp }: { host: HostStanding; onSetUp?: () => void }) {
   );
 }
 
-function Hosts() {
+/// How this host runs an agent: as is, in a container, or from a provider
+/// once one is installed. The host stays the agent's home either way.
+function Environments() {
   const machine = useStore(providers, (state) => state.machine);
-  const hosts = useStore(providers, (state) => state.hosts);
+  const environments = useStore(providers, (state) => state.environments);
   const looking = useStore(providers, (state) => state.looking);
   const [settingUp, setSettingUp] = useState(false);
   useEffect(() => {
-    void providing.hosts();
+    void providing.environments();
   }, []);
   return (
     <>
@@ -435,18 +395,39 @@ function Hosts() {
         <table className="w-table">
           <thead>
             <tr>
-              <th scope="col" className="k-eyebrow">Host</th>
-              <th scope="col" className="k-eyebrow">Key</th>
-              <th scope="col" className="k-eyebrow">Machine</th>
+              <th scope="col" className="k-eyebrow">Environment</th>
+              <th scope="col" className="k-eyebrow">Runs on</th>
               <th scope="col" className="k-eyebrow">An agent gets</th>
               <th scope="col" className="k-eyebrow">Agents</th>
               <th scope="col" className="k-eyebrow w-end">State</th>
             </tr>
           </thead>
           <tbody>
-            {(hosts ?? []).map((host) => (
-              <Host host={host} key={host.id} onSetUp={host.kind !== "Built in" && machine?.podman.standing === "not_ready" ? () => setSettingUp(true) : undefined} />
+            {(environments ?? []).map((one) => (
+              <Environment one={one} key={one.environment_profile_id} onSetUp={one.kind === "Container" && machine?.podman.standing === "not_ready" ? () => setSettingUp(true) : undefined} />
             ))}
+            <tr data-environment="from-a-provider">
+              <td>
+                <span className="k-inline w-nowrap">
+                  <Plus size={18} />
+                  <span className="k-two">
+                    <span className="k-name">From a provider</span>
+                    <span className="k-caption">External</span>
+                  </span>
+                </span>
+              </td>
+              <td>
+                <span className="k-caption">Elsewhere</span>
+              </td>
+              <td>A machine the provider gives; the agent still lives here</td>
+              <td>
+                <span className="k-caption">None</span>
+              </td>
+              <td className="w-end">
+                <Standing tone="none">Not yet</Standing>
+                <div className="k-caption">A provider arrives as a package from the Store.</div>
+              </td>
+            </tr>
           </tbody>
         </table>
       </section>
@@ -456,19 +437,12 @@ function Hosts() {
 
 export function Providers({ tab }: { tab: ProvidersTab }) {
   const problem = useStore(providers, (state) => state.problem);
-  const [adding, setAdding] = useState(false);
   return (
     <main className="w-main">
-      <AddHost open={adding} onClose={() => setAdding(false)} />
       <header className="w-head">
-        <div className="k-spread">
-          <div className="w-col w-close">
-            <h1 className="w-h1">Providers</h1>
-            <span className="k-caption">What agents are put together from. Set up once, with its key, then used by any number of agents.</span>
-          </div>
-          <button type="button" className="k-btn" onClick={() => setAdding(true)}>
-            Add a host
-          </button>
+        <div className="w-col w-close">
+          <h1 className="w-h1">Providers</h1>
+          <span className="k-caption">What agents are put together from. Set up once, with its key, then used by any number of agents.</span>
         </div>
         <nav className="k-tabs" aria-label="Providers">
           {TABS.map((one) => (
@@ -487,7 +461,7 @@ export function Providers({ tab }: { tab: ProvidersTab }) {
       </header>
       <div className="w-page">
         {problem ? <div className="k-notice k-danger">{problem}</div> : null}
-        {tab === "engines" ? <Engines /> : tab === "hosts" ? <Hosts /> : tab === "time" ? <Timekeepers /> : tab === "channels" ? <Channels /> : <Models />}
+        {tab === "engines" ? <Engines /> : tab === "environments" ? <Environments /> : tab === "time" ? <Timekeepers /> : tab === "channels" ? <Channels /> : <Models />}
       </div>
     </main>
   );

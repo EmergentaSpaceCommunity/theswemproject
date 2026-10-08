@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 
 export type AgentTab = "chat" | "files" | "terminal" | "schedules" | "channels" | "settings" | "apps";
-export type ProvidersTab = "engines" | "models" | "hosts" | "time" | "channels";
+export type ProvidersTab = "engines" | "models" | "environments" | "time" | "channels";
 export type SettingsTab = "access" | "hosts";
 
 export type Place =
@@ -33,7 +33,7 @@ export function read(hash: string): Place {
   }
   if (first === "chats" && second) return { at: "chat", chat: second };
   if (first === "providers") {
-    const tab = second === "engines" || second === "hosts" || second === "time" || second === "channels" ? second : "models";
+    const tab = second === "engines" || second === "environments" || second === "time" || second === "channels" ? second : "models";
     return { at: "providers", tab };
   }
   if (first === "store") return { at: "store" };

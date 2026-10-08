@@ -180,10 +180,10 @@ export const withdraw = (token: string): Promise<unknown> => fetchJson(`/api/acc
 export const newCodes = (): Promise<{ codes: string[] }> => fetchJson("/api/access/codes", send({}));
 /// Said on the page when a host was added or forgotten, so that the rail reads them again.
 export const HOSTS_CHANGED = "swem:hosts-changed";
-export const hostsShown = (): Promise<HostsShown> => fetchJson<HostsShown>("/api/peers");
-export const addHost = (address: string, word: string): Promise<HostShown> => fetchJson<HostShown>("/api/peers", send({ address, word }));
-export const forgetHost = (host: string): Promise<unknown> => fetchJson(`/api/peers/${encodeURIComponent(host)}`, { method: "DELETE" });
-export const callThisHost = (name: string): Promise<HostsShown> => fetchJson<HostsShown>("/api/peers/this", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+export const hostsShown = (): Promise<HostsShown> => fetchJson<HostsShown>("/api/hosts");
+export const addHost = (address: string, word: string): Promise<HostShown> => fetchJson<HostShown>("/api/hosts", send({ address, word }));
+export const forgetHost = (host: string): Promise<unknown> => fetchJson(`/api/hosts/${encodeURIComponent(host)}`, { method: "DELETE" });
+export const callThisHost = (name: string): Promise<HostsShown> => fetchJson<HostsShown>("/api/hosts/this", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
 
 /// What this device is likely to be called, for a person to correct.
 export function likelyName(agent: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string {

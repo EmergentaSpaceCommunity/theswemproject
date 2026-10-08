@@ -177,7 +177,7 @@ impl WorkbenchShellState {
         // listing this one; then it is forgotten here, told or not.
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/peers/forgotten")
+            .uri("/api/hosts/forgotten")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(hyper::body::Bytes::from(
                 json!({"host": peers.id().to_string()}).to_string(),
@@ -245,11 +245,11 @@ pub(super) async fn route_hosts(
     request: Request<AskedBody>,
     who: Option<&Principal>,
 ) -> Result<Response<ShellBody>, Request<AskedBody>> {
-    // `/api/peers/...` is what the page asks about the person's hosts (the
-    // places an agent lives are `/api/hosts`); `/peers/<id>/...`
-    // is another host's own page, drawn under this one's address.
-    let a_page = segments.len() >= 2 && segments[0] == "peers";
-    if !a_page && (segments.len() < 2 || segments[0] != "api" || segments[1] != "peers") {
+    // `/api/hosts/...` is what the page asks about the person's hosts;
+    // `/hosts/<id>/...` is another host's own page, drawn under this one's
+    // address.
+    let a_page = segments.len() >= 2 && segments[0] == "hosts";
+    if !a_page && (segments.len() < 2 || segments[0] != "api" || segments[1] != "hosts") {
         return Err(request);
     }
     if a_page {
@@ -260,7 +260,7 @@ pub(super) async fn route_hosts(
                 &json!({"error": "forbidden"}),
             ));
         }
-        // The page is drawn under `/peers/<id>/`, with the stroke, so that
+        // The page is drawn under `/hosts/<id>/`, with the stroke, so that
         // what it names beside itself is found beside it.
         if segments.len() == 2 && !request.uri().path().ends_with('/') {
             return Ok(Response::builder()

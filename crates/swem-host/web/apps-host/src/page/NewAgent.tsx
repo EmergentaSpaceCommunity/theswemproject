@@ -161,7 +161,7 @@ export function NewAgent() {
   const { onboarding, onboardingStatus, profiles, environments, permissionProfiles } = useSession();
   const participants = useStore(world, (state) => state.participants);
   const models = useStore(providersStore, (state) => state.models);
-  const hosts = useStore(providersStore, (state) => state.hosts);
+  const standing = useStore(providersStore, (state) => state.environments);
   const keeper = useStore(time, (known) => known.keeper);
   const [at, setAt] = useState(0);
   const [engine, setEngine] = useState("");
@@ -184,7 +184,7 @@ export function NewAgent() {
     void sessionStore.loadEnvironments();
     void sessionStore.loadPermissionProfiles();
     void providing.models();
-    void providing.hosts();
+    void providing.environments();
     void timing.keeper().catch(() => {});
   }, []);
 
@@ -264,7 +264,7 @@ export function NewAgent() {
 
         {at === 0 ? (
           <>
-            <Part title="What it is built on" about="An agent here stands on a coding agent you already trust. SWEM gives it a name, a host, keys, chats and a sense of time.">
+            <Part title="What it is built on" about="An agent here stands on a coding agent you already trust. SWEM gives it a name, an environment, keys, chats and a sense of time.">
               <fieldset className="w-fieldset w-cards">
                 {engines.map((one) => (
                   <label className={`k-rail-item${engine === one.agent_id ? " k-active" : ""}`} key={one.agent_id}>
@@ -336,29 +336,29 @@ export function NewAgent() {
         {at === 1 ? (
           <>
             <Part
-              title="Where it works"
-              about={`The host is where ${name.trim() || "it"} lives: its files, its terminal, its sign-in and whatever it starts stay there.`}
+              title="Where it runs"
+              about={`How this host runs ${name.trim() || "it"}: as is on this machine, or sealed in a container. Its files, its terminal, its sign-in and whatever it starts stay on this host.`}
               action={
-                <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "providers", tab: "hosts" })}>
-                  Add a host
+                <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "providers", tab: "environments" })}>
+                  Environments
                 </button>
               }
             >
               <fieldset className="w-fieldset" disabled={made !== ""}>
                 {places.map((one) => {
                   const inAContainer = one.environment_profile_id.includes("container");
-                  const host = (hosts ?? []).find((known) => (known.kind === "Built in") !== inAContainer);
+                  const known = (standing ?? []).find((known) => known.environment_profile_id === one.environment_profile_id);
                   const can = one.available !== false;
                   return (
                     <label className={`k-rail-item w-top${chosenPlace?.environment_profile_id === one.environment_profile_id ? " k-active" : ""}`} key={one.environment_profile_id}>
                       <input type="radio" name="place" disabled={!can} checked={chosenPlace?.environment_profile_id === one.environment_profile_id} onChange={() => setPlace(one.environment_profile_id)} />
                       {inAContainer ? <Box size={18} /> : <Laptop size={18} />}
                       <span className="w-col w-close k-grow">
-                        <span className="k-name">{host?.name ?? one.name}</span>
+                        <span className="k-name">{known?.name ?? one.name}</span>
                         <span className="k-caption">{one.summary}</span>
-                        {host ? (
+                        {known ? (
                           <span className="k-inline w-tight">
-                            {host.an_agent_gets.split(", ").map((gets) => (
+                            {known.an_agent_gets.split(", ").map((gets) => (
                               <span className="k-badge" key={gets}>
                                 {gets.replace(/^./, (first) => first.toUpperCase())}
                               </span>

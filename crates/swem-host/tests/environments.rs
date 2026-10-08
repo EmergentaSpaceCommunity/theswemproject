@@ -56,30 +56,31 @@ async fn where_an_agent_may_live_is_offered_from_what_was_found() {
 
     // Nobody looked: nothing is promised and nothing is refused.
     assert_eq!(state.machine(), None);
-    assert!(state.environments_offered().iter().all(|one| one.available));
-    state.enable_machine_look(&root).expect("enable the look");
-    let hosts = state.hosts().expect("hosts");
+    let environments = state.environments().expect("environments");
+    assert!(environments.iter().all(|one| one.available));
     assert_eq!(
-        hosts
+        environments
             .iter()
-            .map(|host| (host.id.as_str(), host.used_by.len()))
+            .map(|one| (
+                one.option.environment_profile_id.as_str(),
+                one.used_by.len()
+            ))
             .collect::<Vec<_>>(),
         [(THIS_MACHINE, 1), (IN_A_CONTAINER, 0)]
     );
-    assert_eq!(hosts[1].said, "Not looked at yet");
+    assert_eq!(environments[1].machine, "");
+    state.enable_machine_look(&root).expect("enable the look");
 
     let look = state.look_at_the_machine().await.expect("look");
     assert_eq!(state.machine(), Some(look.clone()));
-    let offered = state.environments_offered();
+    let offered = state.environments().expect("environments");
     let container = offered
         .iter()
         .find(|one| one.option.environment_profile_id == IN_A_CONTAINER)
         .expect("a container is listed");
     assert_eq!(container.available, look.a_container_can_start());
     assert_eq!(container.why_not.is_empty(), look.a_container_can_start());
-    let hosts = state.hosts().expect("hosts");
-    assert!(hosts[0].ready && hosts[0].machine.contains(&look.system));
-    assert_eq!(hosts[1].ready, look.a_container_can_start());
+    assert!(offered[0].available && offered[0].machine.contains(&look.system));
 
     // Moving an agent where it cannot live is refused in the look's words;
     // saying again where it already lives asks for nothing.

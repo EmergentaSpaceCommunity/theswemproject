@@ -138,7 +138,7 @@ function WorkbenchWhole() {
       const on = hosts.find((one) => one.host.host_id === place.host);
       main = (
         <main className="w-main" data-host-page={place.host}>
-          <iframe className="w-within" src={`${under(`/peers/${encodeURIComponent(place.host)}/`)}#/${place.inside}`} title={on ? `On ${on.host.name}` : "Another host"} />
+          <iframe className="w-within" src={`${under(`/hosts/${encodeURIComponent(place.host)}/`)}#/${place.inside}`} title={on ? `On ${on.host.name}` : "Another host"} />
         </main>
       );
     }
