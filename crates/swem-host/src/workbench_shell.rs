@@ -4689,6 +4689,29 @@ pub(crate) async fn route_shell(
                 Err(error) => error_response(&error),
             }
         }
+        // A guest is let reset and compact the agent's session, or no
+        // longer.
+        (
+            &Method::POST,
+            [
+                "api",
+                "channels",
+                channel_id,
+                "guests",
+                guest,
+                "commands",
+                on @ ("on" | "off"),
+            ],
+        ) => {
+            let (channel_id, guest) = ((*channel_id).to_owned(), (*guest).to_owned());
+            match state
+                .let_guest_command(&channel_id, &guest, *on == "on")
+                .await
+            {
+                Ok(()) => json_result(state.channels_standing().await),
+                Err(error) => error_response(&error),
+            }
+        }
         (&Method::GET, ["api", "time"]) => json_result(state.keeper().await),
         // A scheduler outside knocks: it is time to look. It carries
         // nothing and is told how many messages were taken up.

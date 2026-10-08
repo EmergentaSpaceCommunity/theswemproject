@@ -28,7 +28,7 @@ export interface ChannelShown {
   keyed: boolean;
   paired: boolean;
   said?: string;
-  people?: { participant_id: string; name: string; may_speak: boolean; alone: boolean; bot?: boolean }[];
+  people?: { participant_id: string; name: string; may_speak: boolean; alone: boolean; bot?: boolean; may_command?: boolean }[];
   reach: "pull" | "door";
   door_offered: boolean;
   door?: string;
@@ -264,6 +264,13 @@ export function Channels() {
       setProblem(failure instanceof Error ? failure.message : String(failure));
     }
   };
+  const letCommand = async (channel: ChannelShown, guest: string, may: boolean) => {
+    try {
+      setStanding(await fetchJson<ChannelsStanding>(`/api/channels/${encodeURIComponent(channel.id)}/guests/${encodeURIComponent(guest)}/commands/${may ? "on" : "off"}`, send("POST")));
+    } catch (failure) {
+      setProblem(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
   const allow = async (channel: ChannelShown, guest: string, may: boolean) => {
     try {
       setStanding(await fetchJson<ChannelsStanding>(`/api/channels/${encodeURIComponent(channel.id)}/guests/${encodeURIComponent(guest)}/${may ? "allow" : "forbid"}`, send("POST")));
@@ -354,11 +361,17 @@ export function Channels() {
               <span className="k-inline w-tight" key={guest.participant_id} data-guest={guest.participant_id} data-may-speak={guest.may_speak ? "true" : "false"}>
                 <span className="k-caption">
                   {guest.name}{guest.bot ? " (a bot)" : ""} - {guest.may_speak ? "may speak to the agent" : "is heard, may not speak to the agent"}
+                  {guest.may_speak && guest.may_command ? ", may clear and compact its session" : ""}
                   {guest.alone ? "" : " (seen in a group only)"}
                 </span>
                 <button type="button" className="k-btn k-quiet" onClick={() => void allow(channel, guest.participant_id, !guest.may_speak)}>
                   {guest.may_speak ? "Forbid" : "Allow"}
                 </button>
+                {guest.may_speak ? (
+                  <button type="button" className="k-btn k-quiet channel-guest-commands" data-may-command={guest.may_command ? "true" : "false"} onClick={() => void letCommand(channel, guest.participant_id, !guest.may_command)}>
+                    {guest.may_command ? "Only speak" : "Clear and compact"}
+                  </button>
+                ) : null}
               </span>
             ))}
           </span>

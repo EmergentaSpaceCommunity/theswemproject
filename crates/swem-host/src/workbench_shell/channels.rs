@@ -159,6 +159,10 @@ pub(super) struct MessengerPerson {
 /// Somebody a bot has met, and whether the agent takes a turn on what they
 /// say; the owner is not listed here.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four facts the page shows as four words; no two are one state"
+)]
 pub struct GuestSeen {
     pub participant_id: String,
     pub name: String,
@@ -168,6 +172,10 @@ pub struct GuestSeen {
     /// The messenger says they are a bot.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bot: bool,
+    /// They may reset and compact the agent's session with `/clear` and
+    /// `/compact`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub may_command: bool,
 }
 
 /// What can run a channel here: a package the Store installed, or one that
@@ -392,6 +400,7 @@ impl WorkbenchShellState {
                         may_speak: identity.may_speak,
                         alone: identity.direct_chat.is_some(),
                         bot: identity.bot,
+                        may_command: identity.may_command,
                     });
                 }
                 Ok((paired, guests))
@@ -614,6 +623,36 @@ impl WorkbenchShellState {
                 )));
             }
             ledger.let_speak(&channel, &guest, may_speak)
+        })
+        .await
+        .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))
+    }
+
+    /// Let a guest met through a channel reset and compact the agent's
+    /// session, or no longer.
+    ///
+    /// # Errors
+    ///
+    /// No such channel, or nobody of that id was met through it.
+    pub async fn let_guest_command(
+        self: &Arc<Self>,
+        id: &str,
+        guest: &str,
+        may_command: bool,
+    ) -> Result<(), WorkbenchShellError> {
+        self.channels()?.read(id)?;
+        let (channel, guest) = (id.to_owned(), guest.to_owned());
+        self.with_ledger(move |ledger| {
+            if !ledger
+                .identities_of(&guest)?
+                .iter()
+                .any(|identity| identity.channel_id == channel)
+            {
+                return Err(crate::RoutingError::InvalidBinding(format!(
+                    "nobody {guest} was met through this channel"
+                )));
+            }
+            ledger.let_command(&channel, &guest, may_command)
         })
         .await
         .map_err(|error| WorkbenchShellError::NotFound(error.to_string()))

@@ -127,6 +127,13 @@ struct Prepared {
     given_through: u64,
     /// What was said in the chat before the message, oldest first.
     before: Vec<(Message, Participant)>,
+    /// The sender is a guest the owner lets reset and compact the session.
+    may_command: bool,
+}
+
+/// A `/clear` or `/compact`: what a guest who may command says as typed.
+fn is_a_session_command(text: &str) -> bool {
+    matches!(text.split_whitespace().next(), Some("/clear" | "/compact"))
 }
 
 /// How a turn that was given ended.
@@ -444,6 +451,11 @@ impl WorkbenchShellState {
                 _ => sender.clone(),
             };
             let owner = ledger.owner()?;
+            let may_command = sender.kind == ParticipantKind::Guest
+                && ledger
+                    .identities_of(&sender.participant_id)?
+                    .iter()
+                    .any(|identity| identity.may_command);
             let session = ledger.current_session(&delivery.chat_id, &delivery.agent_id)?;
             let given_through =
                 ledger.given_through(&delivery.chat_id, &delivery.agent_id, None)?;
@@ -480,6 +492,7 @@ impl WorkbenchShellState {
                 session,
                 given_through,
                 before,
+                may_command,
             })
         })
         .await
@@ -735,6 +748,11 @@ impl WorkbenchShellState {
         attached: &BTreeSet<String>,
     ) -> Result<(Vec<ContentBlock>, Vec<String>, String), WorkbenchShellError> {
         let trust = trust_of(&prepared.speaks_for, &prepared.owner);
+        // The owner's words are the turn as typed. So is a session command
+        // from a guest the owner lets give one; anything else a guest says
+        // is data in the block.
+        let as_typed = trust == Trust::Principal
+            || (prepared.may_command && is_a_session_command(&prepared.message.text));
         let said = |message: &Message, sender: &Participant| Said {
             from: speaker(sender, trust_of(sender, &prepared.owner)),
             at_ms: message.created_ms,
@@ -818,7 +836,7 @@ impl WorkbenchShellState {
                 {
                     above.extend(super::model_context::context_content(&context));
                 }
-            } else if trust == Trust::Principal
+            } else if as_typed
                 && let Ok(typed) = serde_json::from_value::<ContentBlock>(block.clone())
             {
                 // A principal's words are the turn, as they were typed, and
@@ -827,7 +845,7 @@ impl WorkbenchShellState {
                 above.push(typed);
             }
         }
-        let typed = if trust == Trust::Principal {
+        let typed = if as_typed {
             prepared.message.text.as_str()
         } else {
             ""

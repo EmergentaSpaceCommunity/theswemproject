@@ -38,9 +38,13 @@ are programs checked against their shape when installed (`docs/channels.md`); a
 package of another kind is an archive for whoever takes that kind - a server whose entry says
 `takes`, as the Cycle's hub takes `swem.cycle/package@1`, or the product the harness is built
 into. A kind nobody here takes is listed as such and cannot be installed. What an entry
-`requires` is installed with it under one consent. Every install is planned, shown, consented to
-by its exact plan id, and receipted under the install root; a newer version in an index is offered
-as an update, and what was installed can be removed.
+`requires` is installed with it under one consent, what those require with them. Every install is
+planned, shown, consented to by its exact plan id, and receipted under the install root; a newer
+version in an index is offered as an update, and what was installed can be removed once nothing
+requires it. What a plan brought in for another entry says "installed for" that entry on the
+Store page, and once that entry is gone, that nothing needs it any more. A package the host
+starts - a tunnel, a channel - finds each installed tool under `SWEM_TOOL_<ID>` in its
+environment.
 
 A server that takes packages for itself says so with `takes` in its entry, and a product that
 builds the harness in takes kinds of its own: `docs/building-in.md`, "The Store: kinds and

@@ -38,6 +38,11 @@ A guest is a participant like anybody else: what they said is theirs on the page
 is told who is speaking and that they are a guest, not the owner. The page inside the messenger
 is theirs too, but only for their own chats: what the agent put out is the owner's; the commands
 `/app` and `/status` answer only those who may speak; only the owner's `/app` opens a tunnel.
+The agent's own `/clear` and `/compact` are the owner's: from a guest they are words in the
+chat, unless the owner pressed **Clear and compact** on that guest's row, since in a group the
+agent's session is everybody's. A guest the messenger calls a bot is listed as one, and once
+allowed is answered only a few turns in a row - the number is on the bot's row - until a person
+speaks again.
 
 ## Groups and topics
 

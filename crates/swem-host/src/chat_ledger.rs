@@ -120,6 +120,7 @@ pub(crate) const CHANNELS_SCHEMA: &str = "
     may_speak INTEGER NOT NULL DEFAULT 0,
     told_ms INTEGER,
     bot INTEGER NOT NULL DEFAULT 0,
+    may_command INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(channel_id, external_id)
   );
   CREATE INDEX IF NOT EXISTS identities_participant ON identities(participant_id);
@@ -132,8 +133,7 @@ pub(crate) const CHANNELS_SCHEMA: &str = "
   );
   CREATE INDEX IF NOT EXISTS channel_chats_chat ON channel_chats(chat_id);";
 
-const IDENTITY_COLUMNS: &str =
-    "channel_id, external_id, participant_id, name, bound_ms, direct_chat, may_speak, told_ms, bot";
+const IDENTITY_COLUMNS: &str = "channel_id, external_id, participant_id, name, bound_ms, direct_chat, may_speak, told_ms, bot, may_command";
 
 fn identity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Identity> {
     Ok(Identity {
@@ -146,16 +146,18 @@ fn identity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Identity> {
         may_speak: row.get::<_, i32>(6)? != 0,
         told_ms: row.get(7)?,
         bot: row.get::<_, i32>(8)? != 0,
+        may_command: row.get::<_, i32>(9)? != 0,
     })
 }
 
 /// Columns of `identities` that came later, with how they are added to a
 /// ledger whose table predates them.
-pub(crate) const IDENTITY_COLUMNS_ADDED: [(&str, &str); 4] = [
+pub(crate) const IDENTITY_COLUMNS_ADDED: [(&str, &str); 5] = [
     ("direct_chat", "TEXT"),
     ("may_speak", "INTEGER NOT NULL DEFAULT 0"),
     ("told_ms", "INTEGER"),
     ("bot", "INTEGER NOT NULL DEFAULT 0"),
+    ("may_command", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// The channel a message came through when it was typed into the Workbench.
@@ -194,6 +196,11 @@ pub struct Identity {
     /// The messenger says they are a bot: what they say to the agent is
     /// answered on a budget of turns since a person last spoke in the chat.
     pub bot: bool,
+    /// A guest the owner lets reset and compact the agent's session: their
+    /// `/clear` and `/compact` reach the agent as typed, as the owner's do.
+    /// In a group the session is everybody's, so this is the owner's to
+    /// give.
+    pub may_command: bool,
 }
 
 /// A chat on a messenger's side that is a chat here.
@@ -1127,6 +1134,24 @@ impl RoutingLedger {
         Ok(())
     }
 
+    /// Whether a guest may reset and compact the agent's session.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be written.
+    pub fn let_command(
+        &mut self,
+        channel_id: &str,
+        participant_id: &str,
+        may_command: bool,
+    ) -> Result<(), RoutingError> {
+        self.connection.execute(
+            "UPDATE identities SET may_command = ?3 WHERE channel_id = ?1 AND participant_id = ?2",
+            params![channel_id, participant_id, i32::from(may_command)],
+        )?;
+        Ok(())
+    }
+
     /// A guest who may not speak was told so now.
     ///
     /// # Errors
@@ -1200,6 +1225,7 @@ impl RoutingLedger {
             may_speak: true,
             told_ms: None,
             bot: false,
+            may_command: true,
         })
     }
 
@@ -1269,7 +1295,9 @@ impl RoutingLedger {
              WHERE chat_id = ?1 AND channel = ?2 AND sequence > COALESCE(
                (SELECT MAX(m.sequence) FROM messages m
                 JOIN participants p ON p.participant_id = m.sender_id
-                WHERE m.chat_id = ?1 AND p.kind = 'person'),
+                WHERE m.chat_id = ?1 AND (p.kind = 'person' OR (p.kind = 'guest'
+                  AND NOT EXISTS (SELECT 1 FROM identities i
+                                  WHERE i.participant_id = m.sender_id AND i.bot = 1)))),
                0)",
             params![chat_id, CHANNEL_AGENT],
             |row| row.get(0),

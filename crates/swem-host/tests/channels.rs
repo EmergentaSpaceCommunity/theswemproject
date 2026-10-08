@@ -1118,8 +1118,9 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         .expect("allowed");
     // Allowed, it is answered: on a budget of turns since a person last
     // spoke, so that two bots do not keep the agent talking for ever.
-    // Ada's reply and Bob's words cost two turns; two more are the budget.
-    for turn in 4..=5 {
+    // Bob, a person, spoke last; the answer to him cost one turn, and three
+    // more are the budget.
+    for turn in 4..=6 {
         fixture_call(
             &address,
             "POST",
@@ -1140,7 +1141,7 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         answers(&address),
-        5,
+        6,
         "the agent went on answering a bot past the budget"
     );
     // Nor is a command of the bot's answered by the host past the budget.
@@ -1153,7 +1154,7 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         answers(&address),
-        5,
+        6,
         "the host answered a bot's command past the budget"
     );
     let page = state
@@ -1174,7 +1175,7 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         Some(&in_group((7, "Ada"), "@swem_fixture_bot carry on", false)),
     );
     until("the agent answers Ada", || {
-        (answers(&address) >= 6).then_some(())
+        (answers(&address) >= 7).then_some(())
     })
     .await;
     fixture_call(
@@ -1184,11 +1185,69 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         Some(&from_a_bot("@swem_fixture_bot once more")),
     );
     until("the agent answers the bot again", || {
-        (answers(&address) >= 7).then_some(())
+        (answers(&address) >= 8).then_some(())
     })
     .await;
-    // The budget is the channel's setting. Two turns have gone since Ada
-    // spoke; a budget of two is spent, a budget of three has one left.
+    // Bob may speak, but his "/compact" is data in the block, not the
+    // agent's command; let command, it reaches the agent as typed, and the
+    // echo fixture answers with what it was given first.
+    let prompt_given = |n: usize| {
+        let state = state.clone();
+        let chat_id = group.chat_id.clone();
+        async move {
+            let page = state
+                .chat_page(&chat_id, None, 200)
+                .await
+                .expect("the page");
+            let answer = page
+                .messages
+                .iter()
+                .filter(|message| message.text.contains("session_id"))
+                .nth(n - 1)
+                .expect("the answer")
+                .text
+                .clone();
+            serde_json::from_str::<Value>(&answer)
+                .ok()
+                .and_then(|echo| echo["prompt"].as_str().map(str::to_owned))
+                .unwrap_or(answer)
+        }
+    };
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((9, "Bob"), "@swem_fixture_bot /compact", false)),
+    );
+    until("the agent answers Bob", || {
+        (answers(&address) >= 9).then_some(())
+    })
+    .await;
+    assert!(
+        prompt_given(9).await.starts_with("<swem:turn"),
+        "a guest's /compact reached the agent as typed"
+    );
+    state
+        .let_guest_command(&channel_id, &bob_id, true)
+        .await
+        .expect("Bob may command");
+    fixture_call(
+        &address,
+        "POST",
+        "/_fixture/updates",
+        Some(&in_group((9, "Bob"), "@swem_fixture_bot /compact", false)),
+    );
+    until("the agent answers Bob's command", || {
+        (answers(&address) >= 10).then_some(())
+    })
+    .await;
+    let given = prompt_given(10).await;
+    assert!(
+        given.starts_with("/compact"),
+        "a guest who may command had the command sealed away: {given}"
+    );
+    // The budget is the channel's setting. One turn has gone since Bob, a
+    // person, spoke; a budget of one is spent, a budget of two has one left.
     let change_budget = |turns: u32| {
         let state = state.clone();
         let channel_id = channel_id.clone();
@@ -1205,7 +1264,7 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
                 .expect("the budget is changed")
         }
     };
-    assert_eq!(change_budget(2).await.document.bot_turns, 2);
+    assert_eq!(change_budget(1).await.document.bot_turns, 1);
     fixture_call(
         &address,
         "POST",
@@ -1213,8 +1272,8 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         Some(&from_a_bot("@swem_fixture_bot within a smaller budget?")),
     );
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(answers(&address), 7, "the smaller budget was not kept");
-    change_budget(3).await;
+    assert_eq!(answers(&address), 10, "the smaller budget was not kept");
+    change_budget(2).await;
     fixture_call(
         &address,
         "POST",
@@ -1222,7 +1281,7 @@ async fn in_a_group_the_agent_answers_only_when_spoken_to() {
         Some(&from_a_bot("@swem_fixture_bot within a larger one?")),
     );
     until("the agent answers the bot within the larger budget", || {
-        (answers(&address) >= 8).then_some(())
+        (answers(&address) >= 11).then_some(())
     })
     .await;
 
