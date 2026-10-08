@@ -442,6 +442,7 @@ impl WorkbenchShellState {
     ) -> Result<ChannelShown, WorkbenchShellError> {
         let channels = self.channels()?;
         let mut document = channels.read(id)?;
+        let reach_before = document.reach;
         if let Some(reach) = body.reach {
             if reach == Reach::Door && self.served_origin().is_none() {
                 return Err(WorkbenchShellError::Invalid(
@@ -460,7 +461,14 @@ impl WorkbenchShellState {
             document.bot_turns = bot_turns;
         }
         channels.write(&document)?;
-        let started = self.start_channel(id).await;
+        // Only the reach is the program's business, through its settings;
+        // the rest the host reads from the document at each message. A
+        // restart for those would drop whatever the program was carrying.
+        let started = if document.reach == reach_before {
+            Ok(())
+        } else {
+            self.start_channel(id).await
+        };
         let mut shown = self.channel_shown(channels.read(id)?).await?;
         if let Err(error) = started {
             shown.said = error.to_string();
