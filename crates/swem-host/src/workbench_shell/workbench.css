@@ -162,6 +162,7 @@ a.k-btn { color: inherit; text-decoration: none; }
 .w-part-name { width: 64px; flex: none; }
 .w-part .k-field { width: 100%; min-width: 0; }
 .w-part .k-inline > .k-field { width: auto; }
+.k-field.channel-bot-turns { width: 4.5em; text-align: center; }
 .w-part textarea.k-field { resize: vertical; min-height: 96px; }
 .w-part .k-row > svg { color: var(--color-text-secondary); }
 .w-change { padding: 12px 0 12px 28px; border-bottom: var(--border-width-regular) solid var(--color-border-secondary); }

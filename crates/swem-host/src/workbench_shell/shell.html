@@ -36,6 +36,7 @@
   .store-space { display:grid; grid-template-columns:300px minmax(360px,1fr); grid-template-rows:minmax(0,1fr); }
   .store-sources { display:grid; align-content:start; gap:10px; padding:16px; border-right:var(--border-width-regular) solid var(--line); background:var(--panel); overflow:auto; min-width:0; }
   .store-sources p { margin:0; }
+  .store-sources > *, .store-sources input { min-width:0; overflow-wrap:anywhere; }
   .index-row { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
   .store-list { display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; gap:10px; padding:16px 24px; min-width:0; overflow:auto; }
   .store-toolbar { display:flex; gap:8px; }
