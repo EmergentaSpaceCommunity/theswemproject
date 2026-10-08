@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
 import { fetchJson } from "../http.ts";
-import { named } from "./door.ts";
-import { ChatSign, Gear, Moon, People, Plug, Plus, Shop, Sun, Tiles } from "./icons.tsx";
+import { HOSTS_CHANGED, named, type HostShown, type HostsShown } from "./door.ts";
+import { ChatSign, Gear, Moon, People, Plug, Plus, Server, Shop, Sun, Tiles } from "./icons.tsx";
 import { go, usePlace, type Place } from "./place.ts";
-import type { Participant } from "./types.ts";
+import type { Now, Participant } from "./types.ts";
 import { Avatar, names, StateDot, useDoing, useStanding } from "./who.tsx";
 import { chatsOf, world } from "./world.ts";
 
@@ -45,6 +45,59 @@ export function useSpaces(): SpaceView[] {
     };
   }, []);
   return spaces;
+}
+
+/// Another host of the person's, with what is on it: read through this
+/// host over the link between them, now and then, as the spaces are.
+export interface OnAHost {
+  host: HostShown;
+  agents: Participant[];
+  chats: Now["chats"];
+  reached: boolean;
+}
+
+export function useOtherHosts(): OnAHost[] {
+  const [hosts, setHosts] = useState<OnAHost[]>([]);
+  useEffect(() => {
+    let left = false;
+    const load = async () => {
+      let shown: HostsShown;
+      try {
+        shown = await fetchJson<HostsShown>("/api/peers");
+      } catch {
+        // Not the owner, or a Workbench without hosts: nothing to show.
+        return;
+      }
+      const on = await Promise.all(
+        shown.hosts.map(async (host): Promise<OnAHost> => {
+          try {
+            const now = await fetchJson<Now>(`/api/peers/${encodeURIComponent(host.host_id)}/api/now`);
+            const agents = now.participants.filter((one) => one.kind === "agent" && !one.retired).sort((left, right) => left.name.localeCompare(right.name));
+            const chats = now.chats.filter((chat) => chat.members.filter((member) => member.kind === "agent").length > 1 || chat.members.some((member) => member.kind === "guest" && !member.retired));
+            return { host, agents, chats, reached: true };
+          } catch {
+            return { host, agents: [], chats: [], reached: false };
+          }
+        }),
+      );
+      if (!left) setHosts(on);
+    };
+    void load();
+    const every = window.setInterval(() => void load(), 10000);
+    const seen = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const changed = () => void load();
+    document.addEventListener("visibilitychange", seen);
+    window.addEventListener(HOSTS_CHANGED, changed);
+    return () => {
+      left = true;
+      window.clearInterval(every);
+      document.removeEventListener("visibilitychange", seen);
+      window.removeEventListener(HOSTS_CHANGED, changed);
+    };
+  }, []);
+  return hosts;
 }
 
 type Theme = "dark" | "light";
@@ -102,7 +155,62 @@ function AgentRow({ agent, active }: { agent: Participant; active: boolean }) {
 
 const here = (place: Place, agent: string): boolean => place.at === "agent" && place.agent === agent;
 
-export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: () => void }) {
+/// What is on another host of the person's, under its name. An agent or a
+/// chat there opens through this host.
+function OnHost({ on, place }: { on: OnAHost; place: Place }) {
+  const { host, agents, chats, reached } = on;
+  const there = (inside: string): boolean => place.at === "host" && place.host === host.host_id && place.inside === inside;
+  const open = (inside: string) => go({ at: "host", host: host.host_id, inside });
+  return (
+    <div className="k-rail-group" data-on-host={host.name}>
+      <span className="k-eyebrow k-inline w-tight">
+        <Server size={12} />
+        <span>On {host.name}</span>
+      </span>
+      {!reached ? <span className="k-caption w-rail-note">Out of reach</span> : null}
+      {agents.map((agent) => (
+        <button
+          type="button"
+          className={`k-rail-item${there(`agents/${encodeURIComponent(agent.participant_id)}`) ? " k-active" : ""}`}
+          aria-current={there(`agents/${encodeURIComponent(agent.participant_id)}`) ? "page" : undefined}
+          key={agent.participant_id}
+          onClick={() => open(`agents/${encodeURIComponent(agent.participant_id)}`)}
+        >
+          <Avatar who={agent} />
+          <span className="k-two">
+            <span className="k-name">{agent.name}</span>
+            <span className="k-caption">On {host.name}</span>
+          </span>
+        </button>
+      ))}
+      {chats.map((chat) => (
+        <button type="button" className={`k-rail-item${there(`chats/${encodeURIComponent(chat.chat_id)}`) ? " k-active" : ""}`} key={chat.chat_id} onClick={() => open(`chats/${encodeURIComponent(chat.chat_id)}`)}>
+          <span className="k-avatar">
+            <People />
+          </span>
+          <span className="k-two">
+            <span className="k-name">{chat.title || "New chat"}</span>
+            <span className="k-caption">On {host.name}</span>
+          </span>
+        </button>
+      ))}
+      {reached ? (
+        <>
+          <button type="button" className={`k-rail-item k-new${there("agents/new") ? " k-active" : ""}`} onClick={() => open("agents/new")}>
+            <Plus />
+            <span>New agent</span>
+          </button>
+          <button type="button" className={`k-rail-item k-quiet${there("store") ? " k-active" : ""}`} onClick={() => open("store")}>
+            <Shop size={17} />
+            <span>Store on {host.name}</span>
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+export function Rail({ spaces, hosts, onNewChat }: { spaces: SpaceView[]; hosts: OnAHost[]; onNewChat: () => void }) {
   const place = usePlace();
   const called = useStore(named, (state) => state.called);
   const owner = useStore(world, (state) => state.owner);
@@ -155,6 +263,9 @@ export function Rail({ spaces, onNewChat }: { spaces: SpaceView[]; onNewChat: ()
           <span>New chat</span>
         </button>
       </div>
+      {hosts.map((on) => (
+        <OnHost on={on} place={place} key={on.host.host_id} />
+      ))}
       {spaces.length > 0 ? (
         <div className="k-rail-group">
           <span className="k-eyebrow">Apps</span>

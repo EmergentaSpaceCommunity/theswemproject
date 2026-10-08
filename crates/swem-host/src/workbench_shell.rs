@@ -4208,10 +4208,11 @@ pub(crate) async fn route_shell(
     // Another host of the owner's, over the link between hosts: trusted,
     // it asks as the owner; not yet, it reaches the meeting alone.
     let came_as_host = WorkbenchShellState::came_as_host(&request);
+    let over_the_link = came_as_host.is_some();
     let who = if let Some(came) = came_as_host {
         match WorkbenchShellState::host_principal(&came) {
             Some(who) => Some(who),
-            None if matches!(segments.as_slice(), ["api", "hosts", "meet"]) => None,
+            None if matches!(segments.as_slice(), ["api", "peers", "meet"]) => None,
             None => {
                 return respond_json(
                     StatusCode::FORBIDDEN,
@@ -4219,7 +4220,9 @@ pub(crate) async fn route_shell(
                 );
             }
         }
-    } else if segments.first() == Some(&"api") {
+    } else if segments.first() == Some(&"api")
+        || (segments.first() == Some(&"peers") && segments.len() >= 2)
+    {
         match state.let_in(&method, &segments, request.headers(), &from, said, through) {
             Ok(who) => who,
             Err(refused) => return *refused,
@@ -4297,7 +4300,13 @@ pub(crate) async fn route_shell(
                 // Served at an address, the page is what anybody gets and
                 // says nothing; what is behind it opens by sign-in. Through
                 // the gate the same: it opens by the messenger's signature.
-                Some(_) if state.is_served_at_an_address() || through == door::Through::Gate => {
+                // Another host of the owner's draws this page under its own
+                // address: what it asks, it asks as the owner already.
+                Some(_)
+                    if state.is_served_at_an_address()
+                        || through == door::Through::Gate
+                        || over_the_link =>
+                {
                     None
                 }
                 Some(token) if offered.as_deref() == Some(token) => Some(format!(

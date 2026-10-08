@@ -42,6 +42,8 @@ export interface DoorStanding {
   messenger?: InAMessenger | null;
   /// Reached through the gate a tunnel points at: nothing of sign-in is here.
   gate?: boolean;
+  /// This host's face, for the person to add it from a page of another host of theirs.
+  host?: { name: string; fingerprint: string; address: string } | null;
 }
 
 /// How the page is drawn for somebody who came through a messenger.
@@ -82,6 +84,32 @@ export interface AccessShown {
   tokens: Token[];
   codes: { left: number; made: number; made_ms: number | null };
   happened: Happened[];
+}
+
+/// Another host of the person's, as this one knows it.
+export interface HostShown {
+  host_id: string;
+  name: string;
+  fingerprint: string;
+  vouched_by: string;
+  until_ms: number;
+  added_ms: number;
+  seen_ms: number | null;
+}
+
+/// This host, and how to add it from a page of another.
+export interface ThisHost {
+  host_id: string;
+  name: string;
+  fingerprint: string;
+  address: string;
+  word?: string;
+  word_good_for_minutes: number;
+}
+
+export interface HostsShown {
+  this: ThisHost;
+  hosts: HostShown[];
 }
 
 interface Begun {
@@ -150,6 +178,12 @@ export const takeAway = (device: string): Promise<unknown> => fetchJson(`/api/ac
 export const makeToken = (name: string, may: May[]): Promise<{ token: Token; opens: string }> => fetchJson("/api/access/tokens", send({ name, may }));
 export const withdraw = (token: string): Promise<unknown> => fetchJson(`/api/access/tokens/${encodeURIComponent(token)}`, { method: "DELETE" });
 export const newCodes = (): Promise<{ codes: string[] }> => fetchJson("/api/access/codes", send({}));
+/// Said on the page when a host was added or forgotten, so that the rail reads them again.
+export const HOSTS_CHANGED = "swem:hosts-changed";
+export const hostsShown = (): Promise<HostsShown> => fetchJson<HostsShown>("/api/peers");
+export const addHost = (address: string, word: string): Promise<HostShown> => fetchJson<HostShown>("/api/peers", send({ address, word }));
+export const forgetHost = (host: string): Promise<unknown> => fetchJson(`/api/peers/${encodeURIComponent(host)}`, { method: "DELETE" });
+export const callThisHost = (name: string): Promise<HostsShown> => fetchJson<HostsShown>("/api/peers/this", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
 
 /// What this device is likely to be called, for a person to correct.
 export function likelyName(agent: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string {

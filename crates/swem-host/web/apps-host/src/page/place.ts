@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 
 export type AgentTab = "chat" | "files" | "terminal" | "schedules" | "channels" | "settings" | "apps";
 export type ProvidersTab = "engines" | "models" | "hosts" | "time" | "channels";
-export type SettingsTab = "access";
+export type SettingsTab = "access" | "hosts";
 
 export type Place =
   | { at: "home" }
@@ -16,7 +16,10 @@ export type Place =
   | { at: "providers"; tab: ProvidersTab }
   | { at: "store" }
   | { at: "settings"; tab: SettingsTab }
-  | { at: "app"; server: string };
+  | { at: "app"; server: string }
+  /// Another host of the person's, drawn through this one, at a place of
+  /// its own page: `agents/<id>`, `chats/<id>`, `store`, or its home.
+  | { at: "host"; host: string; inside: string };
 
 const TABS: AgentTab[] = ["chat", "files", "terminal", "schedules", "channels", "settings", "apps"];
 
@@ -34,7 +37,15 @@ export function read(hash: string): Place {
     return { at: "providers", tab };
   }
   if (first === "store") return { at: "store" };
-  if (first === "settings") return { at: "settings", tab: "access" };
+  if (first === "settings") return { at: "settings", tab: second === "hosts" ? "hosts" : "access" };
+  if (first === "hosts" && second) {
+    const inside = hash
+      .replace(/^#\/?/, "")
+      .split("/")
+      .slice(2)
+      .join("/");
+    return { at: "host", host: second, inside };
+  }
   if (first === "apps" && second) return { at: "app", server: second };
   return { at: "home" };
 }
@@ -57,6 +68,8 @@ export function address(place: Place): string {
       return `#/settings/${place.tab}`;
     case "app":
       return `#/apps/${part(place.server)}`;
+    case "host":
+      return place.inside ? `#/hosts/${part(place.host)}/${place.inside}` : `#/hosts/${part(place.host)}`;
     default:
       return "#/";
   }

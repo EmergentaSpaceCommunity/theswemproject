@@ -251,11 +251,84 @@ function SignIn({ standing, onIn, onWord }: { standing: DoorStanding; onIn: () =
   );
 }
 
+/// A served host that belongs to nobody yet: make it the person's with a
+/// passkey here, or add it to the hosts they have from a page of one.
+function MakeItYours({ standing, onMine }: { standing: DoorStanding; onMine: () => void }) {
+  const [adding, setAdding] = useState(false);
+  const host = standing.host ?? null;
+  const [copied, setCopied] = useState(false);
+  if (adding && host) {
+    return (
+      <section className="k-dialog w-door" aria-label="Add it to your hosts" data-add-to-hosts="">
+        <div className="w-col w-close">
+          <h1 className="w-h1">Add it to your hosts</h1>
+          <span className="k-caption">On a page of a host that is yours already: Settings, Hosts, Add a host. Give it this address and the word this host printed where you started it. It then shows up there, and its agents on that page.</span>
+        </div>
+        <div className="w-facts">
+          <div className="w-fact">
+            <span className="k-caption">This host</span>
+            <span className="k-name">{host.name}</span>
+          </div>
+          <div className="w-fact">
+            <span className="k-caption">Fingerprint</span>
+            <span className="k-name k-mono">{host.fingerprint}</span>
+          </div>
+        </div>
+        <div className="w-col w-close">
+          <span className="k-caption">Its address</span>
+          <div className="w-said-once w-address">{host.address}</div>
+          <div className="k-inline w-tight">
+            <button
+              type="button"
+              className="k-btn w-tall"
+              onClick={() => {
+                void navigator.clipboard?.writeText(host.address).then(() => {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1600);
+                });
+              }}
+            >
+              {copied ? "Copied" : "Copy the address"}
+            </button>
+            <button type="button" className="k-btn k-quiet w-tall" onClick={() => setAdding(false)}>
+              Back
+            </button>
+          </div>
+        </div>
+        <div className="k-notice">Once added, this page opens through your other host; there is no passkey to register here unless you want to come to it directly too.</div>
+      </section>
+    );
+  }
+  return (
+    <section className="k-dialog w-door" aria-label="Make it yours" data-make-it-yours="">
+      <div className="w-col w-close">
+        <h1 className="w-h1">Make it yours</h1>
+        <span className="k-caption">This host was started for the first time and belongs to nobody yet. It has a key of its own{host ? `: ${host.name}, ${host.fingerprint}` : ""}.</span>
+      </div>
+      <div className="w-col w-close">
+        <button type="button" className="k-btn k-primary w-tall" onClick={onMine} data-this-device-is-mine="">
+          <Key size={16} />
+          <span>This device is mine</span>
+        </button>
+        <span className="k-caption">Register this device with a passkey and the word it printed. Your first host, or one you come to directly.</span>
+      </div>
+      <div className="w-col w-close">
+        <button type="button" className="k-btn w-tall" onClick={() => setAdding(true)} disabled={!host} data-add-it-to-my-hosts="">
+          <span>Add it to my hosts</span>
+        </button>
+        <span className="k-caption">You have a host already. Add this one from its page, and come to it through there.</span>
+      </div>
+      <span className="k-caption k-mono">{standing.name}</span>
+    </section>
+  );
+}
+
 export function Door({ children }: { children: ReactNode }) {
   const [standing, setStanding] = useState<DoorStanding | null>(null);
   const [problem, setProblem] = useState("");
   const [codes, setCodes] = useState<string[] | null>(null);
   const [withWord, setWithWord] = useState(false);
+  const [mine, setMine] = useState(false);
   const ask = useCallback(() => {
     doorStanding()
       .then((now) => {
@@ -322,7 +395,11 @@ export function Door({ children }: { children: ReactNode }) {
   return (
     <Alone>
       {!standing.claimed ? (
-        <Register standing={standing} first withACode={false} onIn={cameIn} />
+        mine ? (
+          <Register standing={standing} first withACode={false} onIn={cameIn} onBack={() => setMine(false)} />
+        ) : (
+          <MakeItYours standing={standing} onMine={() => setMine(true)} />
+        )
       ) : who?.by === "code" ? (
         <Register standing={standing} first={false} withACode onIn={cameIn} />
       ) : withWord ? (

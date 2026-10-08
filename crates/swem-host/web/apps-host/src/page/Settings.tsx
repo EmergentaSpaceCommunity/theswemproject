@@ -4,9 +4,30 @@ import { Dialog } from "@base-ui/react/dialog";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { Codes } from "./Door.tsx";
-import { accessShown, doorStanding, makeToken, mayInWords, newCodes, signOut, takeAway, withdraw, wordForADevice, type AccessShown, type Device, type May, type Token } from "./door.ts";
-import { Globe, Laptop, Lock, Phone, Plug, Plus } from "./icons.tsx";
-import type { SettingsTab } from "./place.ts";
+import {
+  accessShown,
+  addHost,
+  callThisHost,
+  doorStanding,
+  forgetHost,
+  HOSTS_CHANGED,
+  hostsShown,
+  makeToken,
+  mayInWords,
+  newCodes,
+  signOut,
+  takeAway,
+  withdraw,
+  wordForADevice,
+  type AccessShown,
+  type Device,
+  type HostShown,
+  type HostsShown,
+  type May,
+  type Token,
+} from "./door.ts";
+import { Globe, Laptop, Lock, Phone, Plug, Plus, Server } from "./icons.tsx";
+import { go, type SettingsTab } from "./place.ts";
 import { when } from "./providers.ts";
 import { Standing } from "./standing.tsx";
 
@@ -413,6 +434,246 @@ function Access() {
   return shown ? <Served shown={shown} again={again} /> : null;
 }
 
+type HostsOpen = { what: "add" } | { what: "forget"; host: HostShown } | { what: "name" } | null;
+
+function AddHost({ onClose, onAdded }: { onClose: () => void; onAdded: (host: HostShown) => void }) {
+  const [address, setAddress] = useState("");
+  const [word, setWord] = useState("");
+  const [problem, setProblem] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setProblem("");
+    try {
+      onAdded(await addHost(address.trim(), word.trim()));
+    } catch (error) {
+      setProblem(told(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog.Root open onOpenChange={(next) => (next ? undefined : onClose())}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="w-scrim" />
+        <Dialog.Popup className="k-dialog w-dialog">
+          <Dialog.Title className="k-heading">Add a host</Dialog.Title>
+          <Dialog.Description className="k-caption">
+            On the other host, Settings, Hosts shows its address and a word. A host that was just started and belongs to nobody yet is added with the word it printed where it was started.
+          </Dialog.Description>
+          <form className="w-col" onSubmit={(event) => void submit(event)} aria-label="Add a host">
+            <label className="w-col w-close">
+              <span className="k-caption">Its address</span>
+              <textarea className="k-field k-mono" value={address} onChange={(event) => setAddress(event.target.value)} rows={3} spellCheck={false} required autoFocus />
+            </label>
+            <label className="w-col w-close">
+              <span className="k-caption">The word</span>
+              <input className="k-field k-mono" value={word} onChange={(event) => setWord(event.target.value)} autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="xxxx-xxxx-xxxx-xxxx" required />
+            </label>
+            <div className="k-notice">This host goes to the other, gives it the word and vouches for it: whose it is, what it is called, and until when. The other is told of your hosts, and they of it.</div>
+            {problem ? (
+              <div className="k-notice k-danger" role="alert">
+                {problem}
+              </div>
+            ) : null}
+            <div className="k-inline w-end w-tight">
+              <button type="button" className="k-btn k-quiet" onClick={onClose}>
+                Not now
+              </button>
+              <button type="submit" className="k-btn k-primary" disabled={busy || !address.trim() || !word.trim()}>
+                {busy ? "Adding" : "Add it"}
+              </button>
+            </div>
+          </form>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function CallIt({ name, onClose, onCalled }: { name: string; onClose: () => void; onCalled: (shown: HostsShown) => void }) {
+  const [called, setCalled] = useState(name);
+  const [problem, setProblem] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      onCalled(await callThisHost(called.trim()));
+    } catch (error) {
+      setProblem(told(error));
+    }
+  };
+  return (
+    <Dialog.Root open onOpenChange={(next) => (next ? undefined : onClose())}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="w-scrim" />
+        <Dialog.Popup className="k-dialog w-dialog">
+          <Dialog.Title className="k-heading">Call this host</Dialog.Title>
+          <Dialog.Description className="k-caption">Its name is what your other hosts show it as.</Dialog.Description>
+          <form className="w-col" onSubmit={(event) => void submit(event)} aria-label="Call this host">
+            <input className="k-field" value={called} onChange={(event) => setCalled(event.target.value)} maxLength={60} required autoFocus />
+            {problem ? (
+              <div className="k-notice k-danger" role="alert">
+                {problem}
+              </div>
+            ) : null}
+            <div className="k-inline w-end w-tight">
+              <button type="button" className="k-btn k-quiet" onClick={onClose}>
+                Not now
+              </button>
+              <button type="submit" className="k-btn k-primary" disabled={!called.trim()}>
+                Call it so
+              </button>
+            </div>
+          </form>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/// The person's hosts: this one, with its address and the word to add it
+/// by, and the others, each with Forget.
+function Hosts() {
+  const [shown, setShown] = useState<HostsShown | null>(null);
+  const [problem, setProblem] = useState("");
+  const [open, setOpen] = useState<HostsOpen>(null);
+  const again = useCallback(() => {
+    window.dispatchEvent(new Event(HOSTS_CHANGED));
+    hostsShown()
+      .then((now) => {
+        setShown(now);
+        setProblem("");
+      })
+      .catch((error: unknown) => setProblem(told(error)));
+  }, []);
+  useEffect(again, [again]);
+  if (!shown) {
+    return problem ? (
+      <div className="k-notice k-danger" role="alert">
+        {problem}
+      </div>
+    ) : null;
+  }
+  const word = shown.this.word ?? "";
+  return (
+    <>
+      {problem ? (
+        <div className="k-notice k-danger" role="alert">
+          {problem}
+        </div>
+      ) : null}
+      <div className="w-columns">
+        <div className="w-col">
+          <Part
+            title="This host"
+            about="It has a key of its own. Your other hosts know it by the fingerprint of that key."
+            action={
+              <button type="button" className="k-btn" onClick={() => setOpen({ what: "name" })}>
+                Call it something else
+              </button>
+            }
+          >
+            <div className="w-facts">
+              <Fact label="Name">{shown.this.name}</Fact>
+              <Fact label="Fingerprint">
+                <span className="k-mono" data-fingerprint="">
+                  {shown.this.fingerprint}
+                </span>
+              </Fact>
+            </div>
+            <span className="k-caption">To add this host to your hosts, open a page of one that is yours already, Settings, Hosts, Add a host, and give it this address and this word.</span>
+            <div className="w-col w-close">
+              <span className="k-caption">Its address</span>
+              <div className="w-said-once w-address" data-address="">
+                {shown.this.address}
+              </div>
+              <div className="k-inline">
+                <CopyIt text={shown.this.address} />
+              </div>
+            </div>
+            <div className="w-col w-close">
+              <span className="k-caption">The word, used once, good for {shown.this.word_good_for_minutes} minutes</span>
+              <div className="w-said-once" data-word="">
+                {word}
+              </div>
+            </div>
+          </Part>
+        </div>
+        <div className="w-col">
+          <Part
+            title="Your hosts"
+            about="Each is yours by a vouch one of them signed. Forget one and it is yours no more, on every host."
+            action={
+              <button type="button" className="k-btn" onClick={() => setOpen({ what: "add" })}>
+                <Plus />
+                <span>Add a host</span>
+              </button>
+            }
+          >
+            {shown.hosts.length === 0 ? (
+              <span className="k-caption">This is your only host. Its agents are what the page shows.</span>
+            ) : (
+              <div className="w-col w-close">
+                {shown.hosts.map((host) => (
+                  <div className="k-row w-nowrap" key={host.host_id} data-host={host.name}>
+                    <Server size={18} />
+                    <span className="w-col w-close k-grow">
+                      <span className="k-name">{host.name}</span>
+                      <span className="k-caption k-mono">{host.fingerprint}</span>
+                    </span>
+                    <span className="k-caption">{host.seen_ms === null ? `Added ${when(host.added_ms)}` : `Seen ${when(host.seen_ms)}`}</span>
+                    <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "host", host: host.host_id, inside: "" })}>
+                      Open
+                    </button>
+                    <button type="button" className="k-btn k-quiet" onClick={() => setOpen({ what: "forget", host })}>
+                      Forget
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Part>
+        </div>
+      </div>
+      {open?.what === "add" ? (
+        <AddHost
+          onClose={() => setOpen(null)}
+          onAdded={() => {
+            setOpen(null);
+            again();
+          }}
+        />
+      ) : null}
+      {open?.what === "name" ? (
+        <CallIt
+          name={shown.this.name}
+          onClose={() => setOpen(null)}
+          onCalled={() => {
+            setOpen(null);
+            again();
+          }}
+        />
+      ) : null}
+      {open?.what === "forget" ? (
+        <Asked
+          title={`Forget ${open.host.name}`}
+          about="It is told, and it is yours no more: your pages stop showing it, and it stops answering them."
+          yes="Forget it"
+          onAnswer={(yes) => {
+            const host = open.host;
+            setOpen(null);
+            if (yes)
+              forgetHost(host.host_id)
+                .catch((error: unknown) => setProblem(told(error)))
+                .finally(again);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function Settings({ tab }: { tab: SettingsTab }) {
   const [served, setServed] = useState(false);
   useEffect(() => {
@@ -441,15 +702,17 @@ export function Settings({ tab }: { tab: SettingsTab }) {
           ) : null}
         </div>
         <nav className="k-tabs" aria-label="Settings">
-          <button type="button" className={`k-tab${tab === "access" ? " k-active" : ""}`} aria-current="page">
+          <button type="button" className={`k-tab${tab === "access" ? " k-active" : ""}`} aria-current={tab === "access" ? "page" : undefined} onClick={() => go({ at: "settings", tab: "access" })}>
             <Lock size={15} />
             <span>Access</span>
           </button>
+          <button type="button" className={`k-tab${tab === "hosts" ? " k-active" : ""}`} aria-current={tab === "hosts" ? "page" : undefined} onClick={() => go({ at: "settings", tab: "hosts" })}>
+            <Server size={15} />
+            <span>Hosts</span>
+          </button>
         </nav>
       </header>
-      <div className="w-page">
-        <Access />
-      </div>
+      <div className="w-page">{tab === "hosts" ? <Hosts /> : <Access />}</div>
     </main>
   );
 }

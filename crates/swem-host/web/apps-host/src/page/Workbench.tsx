@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "zustand";
 
 import { sessionStore } from "../agent/store.ts";
+import { WITHIN_A_HOST, at as under } from "../base.ts";
 import { Guard } from "../Guard.tsx";
 import { ServerApp } from "../spaces/ServerApp.tsx";
 import { StoreSpace } from "../store/StoreSpace.tsx";
@@ -14,7 +15,7 @@ import { NewAgent } from "./NewAgent.tsx";
 import { NewChat } from "./NewChat.tsx";
 import { go, usePlace, type AgentTab } from "./place.ts";
 import { Providers } from "./Providers.tsx";
-import { Rail, useSpaces } from "./Rail.tsx";
+import { Rail, useOtherHosts, useSpaces } from "./Rail.tsx";
 import { Settings } from "./Settings.tsx";
 import { follow, world } from "./world.ts";
 
@@ -87,6 +88,7 @@ export function Workbench() {
 function WorkbenchWhole() {
   const place = usePlace();
   const spaces = useSpaces();
+  const hosts = useOtherHosts();
   const ready = useStore(world, (state) => state.ready);
   const lost = useStore(world, (state) => state.lost);
   const participants = useStore(world, (state) => state.participants);
@@ -130,11 +132,20 @@ function WorkbenchWhole() {
     } else if (place.at === "app") {
       // Drawn below, among the spaces that stay open.
       main = spaces.some((one) => one.server === place.server) ? null : <main className="w-main" />;
+    } else if (place.at === "host") {
+      // Another host's own page, drawn through this one: what it shows is
+      // its own, at its own revision, and nothing of it is kept here.
+      const on = hosts.find((one) => one.host.host_id === place.host);
+      main = (
+        <main className="w-main" data-host-page={place.host}>
+          <iframe className="w-within" src={`${under(`/peers/${encodeURIComponent(place.host)}/`)}#/${place.inside}`} title={on ? `On ${on.host.name}` : "Another host"} />
+        </main>
+      );
     }
   }
   return (
     <div className="w-shell">
-      <Rail spaces={spaces} onNewChat={() => setNewChat(true)} />
+      {WITHIN_A_HOST ? null : <Rail spaces={spaces} hosts={hosts} onNewChat={() => setNewChat(true)} />}
       <div className="w-stage">
         {lost ? <div className="k-notice k-warning w-lost">The Workbench is not answering. What is here is what was last heard; it comes back by itself.</div> : null}
         {main}

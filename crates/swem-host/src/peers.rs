@@ -836,7 +836,7 @@ impl Peers {
         };
         let request = hyper::Request::builder()
             .method(hyper::Method::POST)
-            .uri("/api/hosts/meet")
+            .uri("/api/peers/meet")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(hyper::body::Bytes::from(
                 serde_json::to_vec(&meeting).unwrap_or_default(),
@@ -885,7 +885,7 @@ impl Peers {
     async fn tell(&self, host: &EndpointId, told: &Told) -> Result<(), PeersError> {
         let request = hyper::Request::builder()
             .method(hyper::Method::POST)
-            .uri("/api/hosts/told")
+            .uri("/api/peers/told")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(hyper::body::Bytes::from(
                 serde_json::to_vec(told).unwrap_or_default(),

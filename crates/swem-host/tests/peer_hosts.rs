@@ -158,6 +158,26 @@ async fn a_host_is_added_by_its_address_and_word_and_asked_through_the_link() {
     )
     .await;
     assert_eq!(status, 200, "{people}");
+    // The server's own page comes through the same link, whole, so that
+    // the laptop's page draws it under its own address.
+    let page = laptop
+        .ask_host(server_id, Method::GET, "/", None, hyper::body::Bytes::new())
+        .await
+        .expect("the server's page");
+    assert_eq!(page.status(), 200);
+    let content_type = page
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    assert!(content_type.starts_with("text/html"), "{content_type}");
+    let html = {
+        use http_body_util::BodyExt as _;
+        String::from_utf8_lossy(&page.into_body().collect().await.expect("html").to_bytes())
+            .into_owned()
+    };
+    assert!(html.contains("workbench.js"), "the page names its script");
     let names: Vec<&str> = people["participants"]
         .as_array()
         .into_iter()

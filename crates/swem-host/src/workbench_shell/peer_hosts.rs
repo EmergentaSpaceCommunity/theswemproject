@@ -177,7 +177,7 @@ impl WorkbenchShellState {
         // listing this one; then it is forgotten here, told or not.
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/hosts/forgotten")
+            .uri("/api/peers/forgotten")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(hyper::body::Bytes::from(
                 json!({"host": peers.id().to_string()}).to_string(),
@@ -215,20 +215,23 @@ impl WorkbenchShellState {
             .body(http_body_util::Full::new(body))
             .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?;
         let answered = self.peers()?.ask(&host, request).await?;
-        let status = answered.status();
-        let content_type = answered
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/json")
-            .to_owned();
-        let bytes = answered
-            .into_body()
-            .collect()
-            .await
-            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))?
-            .to_bytes();
-        Ok(super::respond_bytes(status, &content_type, bytes.to_vec()))
+        // What the other host said, as it said it: its page, its script
+        // and its stream of events pass through whole, so that its
+        // Workbench is drawn under this one's address. Only what belongs
+        // to the one link is dropped.
+        let (parts, body) = answered.into_parts();
+        let mut response = Response::builder().status(parts.status);
+        for (name, value) in &parts.headers {
+            if !matches!(
+                name.as_str(),
+                "connection" | "transfer-encoding" | "content-length" | "keep-alive"
+            ) {
+                response = response.header(name, value);
+            }
+        }
+        response
+            .body(body.map_err(std::io::Error::other).boxed())
+            .map_err(|error| WorkbenchShellError::Failed(error.to_string()))
     }
 }
 
@@ -242,8 +245,40 @@ pub(super) async fn route_hosts(
     request: Request<AskedBody>,
     who: Option<&Principal>,
 ) -> Result<Response<ShellBody>, Request<AskedBody>> {
-    if segments.len() < 2 || segments[0] != "api" || segments[1] != "hosts" {
+    // `/api/peers/...` is what the page asks about the person's hosts (the
+    // places an agent lives are `/api/hosts`); `/peers/<id>/...`
+    // is another host's own page, drawn under this one's address.
+    let a_page = segments.len() >= 2 && segments[0] == "peers";
+    if !a_page && (segments.len() < 2 || segments[0] != "api" || segments[1] != "peers") {
         return Err(request);
+    }
+    if a_page {
+        let owner = who.is_some_and(|who| who.may(May::Everything));
+        if !owner {
+            return Ok(respond_json(
+                StatusCode::FORBIDDEN,
+                &json!({"error": "forbidden"}),
+            ));
+        }
+        // The page is drawn under `/peers/<id>/`, with the stroke, so that
+        // what it names beside itself is found beside it.
+        if segments.len() == 2 && !request.uri().path().ends_with('/') {
+            return Ok(Response::builder()
+                .status(StatusCode::PERMANENT_REDIRECT)
+                .header(
+                    hyper::header::LOCATION,
+                    format!("{}/", request.uri().path()),
+                )
+                .body(
+                    http_body_util::Full::new(hyper::body::Bytes::new())
+                        .map_err(std::io::Error::other)
+                        .boxed(),
+                )
+                .expect("a redirect"));
+        }
+        return Ok(
+            through_the_link(state, method, segments[1], &segments[2..], query, request).await,
+        );
     }
     let came = WorkbenchShellState::came_as_host(&request);
     // What one host says to another over the link, and nobody else.
@@ -358,40 +393,49 @@ pub(super) async fn route_hosts(
         (&Method::DELETE, [host_id]) => Ok(json_result(state.forget_host(host_id).await)),
         (_, [host_id, rest @ ..]) if !rest.is_empty() => {
             // The page asks another host through this one: the same door.
-            let content_type = request
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .map(ToOwned::to_owned);
-            let bytes = match request.into_body().collect().await {
-                Ok(collected) => collected.to_bytes(),
-                Err(error) => {
-                    return Ok(error_response(&WorkbenchShellError::Invalid(
-                        error.to_string(),
-                    )));
-                }
-            };
-            let path = match query {
-                Some(query) => format!("/{}?{query}", rest.join("/")),
-                None => format!("/{}", rest.join("/")),
-            };
-            match state
-                .ask_host(
-                    host_id,
-                    method.clone(),
-                    &path,
-                    content_type.as_deref(),
-                    bytes,
-                )
-                .await
-            {
-                Ok(response) => Ok(response),
-                Err(error) => Ok(error_response(&error)),
-            }
+            Ok(through_the_link(state, method, host_id, rest, query, request).await)
         }
         _ => Ok(respond_json(
             StatusCode::NOT_FOUND,
             &json!({"error": "no such route"}),
         )),
+    }
+}
+
+/// What the page asks of another host, carried over the link and answered
+/// as that host answered: the same door, the same words.
+async fn through_the_link(
+    state: &Arc<WorkbenchShellState>,
+    method: &Method,
+    host_id: &str,
+    rest: &[&str],
+    query: Option<&str>,
+    request: Request<AskedBody>,
+) -> Response<ShellBody> {
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let bytes = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => return error_response(&WorkbenchShellError::Invalid(error.to_string())),
+    };
+    let path = match query {
+        Some(query) => format!("/{}?{query}", rest.join("/")),
+        None => format!("/{}", rest.join("/")),
+    };
+    match state
+        .ask_host(
+            host_id,
+            method.clone(),
+            &path,
+            content_type.as_deref(),
+            bytes,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(&error),
     }
 }
