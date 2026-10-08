@@ -43,6 +43,8 @@ const write = async (label, text) => {
 // --- Sign in, as on a server of one's own ---------------------------------
 step("the first start asks for the word");
 await b.holdPasskeys();
+await says("the choice at the door", "h1", "Make it yours");
+if (!(await b.pressText("button", "This device is mine"))) cleanup(1, "the door offers no way to make it mine");
 await says("the first start", "h1", "Make this Workbench yours");
 await write("The word it printed", word.toUpperCase().replaceAll("-", " "));
 await write("A name for this device", "Laptop");

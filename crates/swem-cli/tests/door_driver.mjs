@@ -54,6 +54,10 @@ const toAccess = async () => {
 
 step("the first start asks for the word");
 await b.holdPasskeys();
+// A served host that belongs to nobody offers the choice first: this
+// device is mine, or add it to the hosts one has.
+await says("the choice at the door", "h1", "Make it yours");
+await press("This device is mine");
 await says("the first start", "h1", "Make this Workbench yours");
 // Typed as a person types what they read off a terminal.
 await write("The word it printed", word.toUpperCase().replaceAll("-", " "));
