@@ -58,6 +58,8 @@ pub struct ServedAt {
     pub word: Option<String>,
     /// Until when the certificate is good, when the Workbench holds one.
     pub certificate_good_until: Option<SystemTime>,
+    /// This host among the person's hosts: its name and fingerprint.
+    pub this_host: crate::peers::ThisHost,
 }
 
 fn origin_of(address: &Url) -> String {
@@ -303,6 +305,11 @@ impl Assembled {
             .map_err(failed)?;
         self.state.look_at_the_machine_meanwhile();
         self.state.take_up_chats().await.map_err(failed)?;
+        let this_host = self
+            .state
+            .enable_hosts(&self.root.hosts(), self.hosts_relay.clone())
+            .await
+            .map_err(failed)?;
         let handle = crate::serve_workbench(
             Arc::clone(&self.state),
             Listening {
@@ -319,6 +326,7 @@ impl Assembled {
             address: origin_of(&at.address),
             word,
             certificate_good_until,
+            this_host,
         })
     }
 }

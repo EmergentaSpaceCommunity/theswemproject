@@ -172,6 +172,9 @@ pub enum CameBy {
         external_id: String,
         name: String,
     },
+    /// Another host of the owner's, over the link between hosts, by its key
+    /// and the owner's vouch for it (ADR-0019). It asks as the owner does.
+    Host { host_id: String, name: String },
 }
 
 /// Who asks. Found before anything is answered: the participant, and by
@@ -206,7 +209,9 @@ impl Principal {
     #[must_use]
     pub fn may(&self, what: May) -> bool {
         match &self.by {
-            CameBy::ThisRun | CameBy::Device { .. } | CameBy::Embedder => true,
+            CameBy::ThisRun | CameBy::Device { .. } | CameBy::Embedder | CameBy::Host { .. } => {
+                true
+            }
             // A code lets a person in to register a device; the routes that
             // do that ask for nothing here. A messenger session reaches the
             // routes the door opens to it, each checked by its scope.
@@ -231,6 +236,7 @@ impl Principal {
             CameBy::Token { name, .. } => format!("token {name}"),
             CameBy::Embedder => "the product".into(),
             CameBy::Messenger { name, .. } => format!("{name}, through a messenger"),
+            CameBy::Host { name, .. } => format!("the host {name}"),
         }
     }
 }

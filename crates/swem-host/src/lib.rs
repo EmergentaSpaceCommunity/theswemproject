@@ -33,6 +33,7 @@ pub mod host;
 mod keepers;
 mod keys;
 pub mod mcp_observer;
+pub mod peers;
 mod permission_profile;
 pub mod product;
 mod profile;

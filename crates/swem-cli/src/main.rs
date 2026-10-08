@@ -144,6 +144,11 @@ enum WorkbenchCommand {
         /// `SWEM_CONTAINER_IMAGE`.
         #[arg(long)]
         container_image: Option<String>,
+        /// How your other hosts reach this one when nothing direct works:
+        /// the relays of n0 unless said, a relay of your own by its address,
+        /// or `none` for hosts that reach each other directly.
+        #[arg(long)]
+        relay: Option<String>,
     },
 }
 
@@ -425,6 +430,7 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
         apps_listen: None,
         acp_registry: None,
         container_image: None,
+        relay: None,
     }) {
         WorkbenchCommand::Serve {
             inventory,
@@ -444,6 +450,7 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             apps_listen,
             acp_registry,
             container_image,
+            relay,
         } => {
             if let Some(address) = at {
                 let asked = asked_to_serve_at(
@@ -467,6 +474,7 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
                     &mcp_server,
                     acp_registry,
                     container_image,
+                    relay.as_deref(),
                 )?
                 .assemble()
                 .map_err(anyhow::Error::msg)?
@@ -474,6 +482,10 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
                 .await
                 .map_err(anyhow::Error::msg)?;
                 println!("SWEM Workbench: {}", served.address);
+                println!(
+                    "This host: {} · {}",
+                    served.this_host.name, served.this_host.fingerprint
+                );
                 println!(
                     "Apps are drawn at: {}",
                     asked.apps_address.origin().ascii_serialization()
@@ -513,6 +525,7 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
                 &mcp_server,
                 acp_registry,
                 container_image,
+                relay.as_deref(),
             )?
             .assemble()
             .map_err(anyhow::Error::msg)?
@@ -528,6 +541,10 @@ async fn run_workbench(workbench: Workbench) -> Result<()> {
             // behind it are a live terminal and a profile's secrets. Whoever
             // can read what this printed is who may work this Workbench.
             println!("SWEM Workbench: {}", served.url);
+            println!(
+                "This host: {} · {}",
+                served.this_host.name, served.this_host.fingerprint
+            );
             println!(
                 "App sandbox origin: http://127.0.0.1:{}",
                 served.handle.sandbox_addr.port()
@@ -639,7 +656,7 @@ async fn run_time(time: Time) -> Result<()> {
             if root.nothing_to_keep().is_some() {
                 return Ok(());
             }
-            let look = product(None, None, operation_timeout_secs, &[], None, None)?
+            let look = product(None, None, operation_timeout_secs, &[], None, None, None)?
                 .assemble()
                 .map_err(anyhow::Error::msg)?
                 .keep_time_once()
@@ -666,11 +683,13 @@ fn product(
     mcp_server: &[PathBuf],
     acp_registry: Option<String>,
     container_image: Option<String>,
+    relay: Option<&str>,
 ) -> Result<Product> {
     let root = DataRoot::for_this_machine().map_err(anyhow::Error::msg)?;
     let mut product = Product::at(root.clone())
         .operation_timeout(std::time::Duration::from_secs(operation_timeout_secs))
         .container_image(container_image)
+        .hosts_relay(swem_host::peers::relay_mode_of(relay).map_err(anyhow::Error::msg)?)
         // The Apps bridge ships inside this binary, so the observer the
         // App relay needs is always configured.
         .mcp_observer(
@@ -762,6 +781,7 @@ async fn run_acp(acp: Acp) -> Result<()> {
         &[],
         None,
         acp.container_image,
+        None,
     )?
     .assemble()
     .map_err(anyhow::Error::msg)?;

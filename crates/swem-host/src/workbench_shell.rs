@@ -48,6 +48,7 @@ mod mcp_servers;
 pub use hosts::{EnvironmentOffered, HostStanding, MachineWanted, SetUp, SetUpStep};
 mod channels;
 mod model_providers;
+mod peer_hosts;
 mod provider_keys;
 pub use model_providers::{
     DeclareModelProviderBody, MODEL_PROVIDER_SCHEMA, ModelChoice, ModelProvider, ModelProviderBook,
@@ -846,6 +847,9 @@ pub struct WorkbenchShellState {
     /// Who keeps time for whom, as it was chosen.
     keepers: std::sync::OnceLock<crate::Keepers>,
     channels: std::sync::OnceLock<channels::Channels>,
+    /// This host among the person's hosts, when it has a key of its own
+    /// here (ADR-0019).
+    peers: std::sync::OnceLock<Arc<crate::peers::Peers>>,
     /// The sessions of people who came through a messenger: for a while.
     messenger_sessions: std::sync::Mutex<door::MessengerSessions>,
     /// A tunnel that is open, and where tunnels keep their files.
@@ -1075,6 +1079,7 @@ impl WorkbenchShellState {
             removed_root: std::sync::OnceLock::new(),
             keepers: std::sync::OnceLock::new(),
             channels: std::sync::OnceLock::new(),
+            peers: std::sync::OnceLock::new(),
             messenger_sessions: std::sync::Mutex::new(door::MessengerSessions::default()),
             tunnel: std::sync::Mutex::new(None),
             tunnel_root: std::sync::OnceLock::new(),
@@ -4200,7 +4205,21 @@ pub(crate) async fn route_shell(
         Err(refused) => return *refused,
     };
     let through = door::Through::of(&request);
-    let who = if segments.first() == Some(&"api") {
+    // Another host of the owner's, over the link between hosts: trusted,
+    // it asks as the owner; not yet, it reaches the meeting alone.
+    let came_as_host = WorkbenchShellState::came_as_host(&request);
+    let who = if let Some(came) = came_as_host {
+        match WorkbenchShellState::host_principal(&came) {
+            Some(who) => Some(who),
+            None if matches!(segments.as_slice(), ["api", "hosts", "meet"]) => None,
+            None => {
+                return respond_json(
+                    StatusCode::FORBIDDEN,
+                    &json!({"error": "this host does not know you"}),
+                );
+            }
+        }
+    } else if segments.first() == Some(&"api") {
         match state.let_in(&method, &segments, request.headers(), &from, said, through) {
             Ok(who) => who,
             Err(refused) => return *refused,
@@ -4213,6 +4232,19 @@ pub(crate) async fn route_shell(
             Ok(response) => return response,
             Err(request) => request,
         };
+    let request = match Box::pin(peer_hosts::route_hosts(
+        state,
+        &method,
+        &segments,
+        query.as_deref(),
+        request,
+        who.as_ref(),
+    ))
+    .await
+    {
+        Ok(response) => return response,
+        Err(request) => request,
+    };
     let request = match Box::pin(stream::route_chats(
         state,
         &method,

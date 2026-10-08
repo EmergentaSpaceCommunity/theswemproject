@@ -103,6 +103,7 @@ x509-parser.workspace = true
 tar.workspace = true
 zip.workspace = true
 portable-pty.workspace = true
+iroh = "1"
 
 [dev-dependencies]
 # A passkey in software, so the ceremony is proved without a browser.

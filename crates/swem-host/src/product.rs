@@ -128,6 +128,12 @@ impl DataRoot {
         self.root.join("keys")
     }
 
+    /// This host's own key and the book of the person's hosts (ADR-0019).
+    #[must_use]
+    pub fn hosts(&self) -> PathBuf {
+        self.root.join("hosts")
+    }
+
     /// Where prepared environments live, shared across projects.
     #[must_use]
     pub fn environments(&self) -> PathBuf {
@@ -230,6 +236,9 @@ pub struct Product {
     servers_for: Option<Arc<ServersFor>>,
     secrets: Option<crate::Keeper>,
     takers: Vec<Arc<dyn crate::Taker>>,
+    /// How this host's peers reach it when nothing direct works: the relays
+    /// of n0 unless told otherwise.
+    hosts_relay: iroh::RelayMode,
 }
 
 /// What a product says an agent is handed beside what its profile names:
@@ -260,6 +269,7 @@ impl Product {
             servers_for: None,
             secrets: None,
             takers: Vec::new(),
+            hosts_relay: iroh::RelayMode::Default,
         }
     }
 
@@ -361,6 +371,15 @@ impl Product {
     /// variable `SWEM_CONTAINER_IMAGE` is read, and without that a container
     /// profile is refused with the flag named.
     #[must_use]
+    /// How this host's peers reach it when nothing direct works
+    /// (ADR-0019): the relays of n0 by default, one's own, or none - for
+    /// two hosts on one machine, and for tests, which never reach a public
+    /// relay.
+    pub fn hosts_relay(mut self, relay: iroh::RelayMode) -> Self {
+        self.hosts_relay = relay;
+        self
+    }
+
     pub fn container_image(mut self, image: Option<String>) -> Self {
         self.container_image = image;
         self
@@ -610,6 +629,7 @@ impl Product {
             state,
             root,
             owned_by: self.owned_by,
+            hosts_relay: self.hosts_relay,
         })
     }
 }
@@ -619,6 +639,7 @@ pub struct Assembled {
     pub state: Arc<WorkbenchShellState>,
     pub root: DataRoot,
     owned_by: Option<String>,
+    pub(crate) hosts_relay: iroh::RelayMode,
 }
 
 /// A Workbench served over HTTP: its handle, its address with this run's
@@ -629,6 +650,8 @@ pub struct Served {
     /// not a boundary: whoever can read this may work this Workbench.
     pub url: String,
     pub token: String,
+    /// This host among the person's hosts: its name and fingerprint.
+    pub this_host: crate::peers::ThisHost,
 }
 
 impl Assembled {
@@ -681,6 +704,12 @@ impl Assembled {
             .take_up_chats()
             .await
             .map_err(|error| error.to_string())?;
+        // This host among the person's hosts: its key, made at the first start.
+        let this_host = self
+            .state
+            .enable_hosts(&self.root.hosts(), self.hosts_relay.clone())
+            .await
+            .map_err(|error| error.to_string())?;
         let handle = crate::serve_workbench_http_with_apps_at(
             Arc::clone(&self.state),
             bind,
@@ -692,7 +721,12 @@ impl Assembled {
             "http://127.0.0.1:{}/?token={token}",
             handle.local_addr.port()
         );
-        Ok(Served { handle, url, token })
+        Ok(Served {
+            handle,
+            url,
+            token,
+            this_host,
+        })
     }
 
     /// Keep time once and leave, as the system's scheduler has it done:
