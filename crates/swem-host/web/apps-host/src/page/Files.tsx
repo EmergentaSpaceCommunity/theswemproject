@@ -215,8 +215,13 @@ export function Files({ agent, hidden }: { agent: Participant; hidden: boolean }
     if (hidden || !profile) return undefined;
     void sessionStore.loadFiles(profile);
     readAgain();
-    // An agent writes while a person looks.
-    const again = window.setInterval(() => readAgain(), 6000);
+    // An agent writes while a person looks: the tree and what it handed
+    // back are both read again, since a file it puts in its outbox is how
+    // it hands one back and there is no event for it.
+    const again = window.setInterval(() => {
+      readAgain();
+      void sessionStore.loadFiles(profile);
+    }, 6000);
     return () => window.clearInterval(again);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden, profile]);
