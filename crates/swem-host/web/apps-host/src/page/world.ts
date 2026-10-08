@@ -333,13 +333,15 @@ export const act = {
   },
 };
 
-/// The chats of one agent with the person, and the chats of several, the
-/// one that moved last first.
+/// The chats of one agent with the person; or, for nobody in particular,
+/// the chats of several: several agents, or an agent with guests (a room in
+/// a messenger). The one that moved last first.
 export function chatsOf(state: World, agentId: string | null): Chat[] {
   return Object.values(state.chats)
     .filter((chat) => {
       const agents = chat.members.filter((member) => member.kind === "agent");
-      return agentId === null ? agents.length > 1 : agents.some((agent) => agent.participant_id === agentId);
+      if (agentId !== null) return agents.some((agent) => agent.participant_id === agentId);
+      return agents.length > 1 || chat.members.some((member) => member.kind === "guest" && !member.retired);
     })
     .sort((left, right) => (right.last_sequence ?? 0) - (left.last_sequence ?? 0) || right.chat_id.localeCompare(left.chat_id));
 }
