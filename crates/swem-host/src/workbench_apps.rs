@@ -23,13 +23,15 @@ use std::time::Duration;
 
 use hyper::Uri;
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
-use rmcp::ServiceExt as _;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
     ElicitRequestParams, ElicitResult, ElicitationAction, GetTaskParams, Implementation,
     InputRequest, JsonObject, ProtocolVersion, ReadResourceRequestParams, TaskPayload,
 };
-use rmcp::service::{RoleClient, RunningService, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{
+    ClientLifecycleMode, ClientServiceExt as _, RoleClient, RunningService, RxJsonRpcMessage,
+    TxJsonRpcMessage,
+};
 use rmcp::transport::{TokioChildProcess, Transport};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -213,7 +215,17 @@ pub(crate) async fn spawn_host_client(
         Implementation::new("swem-workbench", env!("CARGO_PKG_VERSION")),
     )
     .with_protocol_version(ProtocolVersion::V_2026_07_28);
-    if let Ok(client) = info.serve(transport).await {
+    // The handshake of 2026-07-28 is `server/discover`, not `initialize`:
+    // a client that pins that version and still opens with `initialize` is
+    // answered with the newest version that has one, 2025-11-25, and every
+    // server then refuses what came after - a tool asking a structured
+    // question (`input_required`) first of all. So discover first, and fall
+    // back to `initialize` at 2025-11-25 for a server that has nothing newer.
+    let lifecycle = ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        legacy_version: Some(ProtocolVersion::V_2025_11_25),
+    };
+    if let Ok(client) = info.serve_with_lifecycle(transport, lifecycle).await {
         Some((client, exit))
     } else {
         let _ = exit.wait().await;

@@ -1129,3 +1129,55 @@ async fn a_long_tool_call_does_not_queue_the_same_app_s_next_request() {
     state.disconnect(&connection).await.expect("disconnect");
     fs::remove_dir_all(&root).ok();
 }
+
+/// A server's tool that asks before it answers (`input_required`, the
+/// 2026-07-28 shape) reaches the page as a question and takes the answer
+/// back. The host's client must negotiate that version for the server to
+/// be allowed to ask at all: with the older handshake the library refuses
+/// the first call.
+#[tokio::test]
+async fn a_tool_that_asks_first_is_asked_on_the_page_and_answered() {
+    let root = fixture_root("asks");
+    let (state, _ledger) = shell_over_fixtures(&root, false, false);
+    let (connection, _route, _session) = state
+        .open_connection("apps-main", ShellConnectionMode::New, None)
+        .await
+        .expect("open shell connection");
+
+    let asked = state
+        .start_app_interaction(
+            &connection,
+            "notes",
+            "ask_title",
+            rmcp::model::JsonObject::new(),
+        )
+        .await
+        .expect("the server asks");
+    assert_eq!(asked.message, "What is the note called?");
+    assert_eq!(asked.server_name, "notes");
+    assert_eq!(asked.requested_schema["required"], json!(["title"]));
+
+    let answered = state
+        .answer_app_interaction(
+            &connection,
+            &asked.interaction_id,
+            rmcp::model::ElicitationAction::Accept,
+            Some(json!({"title": "Rain"})),
+        )
+        .await
+        .expect("the answer completes the call");
+    let said = serde_json::to_value(&answered).expect("result as json");
+    assert_eq!(said["content"][0]["text"], "the note is called Rain");
+    assert_ne!(said["isError"], json!(true));
+
+    // The interaction is spent: a second answer is refused, not replayed.
+    let again = state
+        .answer_app_interaction(
+            &connection,
+            &asked.interaction_id,
+            rmcp::model::ElicitationAction::Accept,
+            Some(json!({"title": "Snow"})),
+        )
+        .await;
+    assert!(again.is_err());
+}

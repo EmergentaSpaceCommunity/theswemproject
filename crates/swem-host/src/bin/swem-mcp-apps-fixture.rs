@@ -23,8 +23,9 @@ use std::sync::Mutex;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-    Implementation, JsonObject, ListResourcesResult, ListToolsResult, MetaObject,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequest,
+    ElicitRequestParams, ElicitationSchema, ErrorData, Implementation, InputRequest,
+    InputRequiredResult, JsonObject, ListResourcesResult, ListToolsResult, MetaObject,
     PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
     Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
 };
@@ -179,6 +180,12 @@ struct NotesServer {
 
 /// The tool a `--late-tool` server declares once its file exists.
 const LATE_TOOL: &str = "late_note";
+/// An App-only tool that asks before it answers: its first call returns
+/// `input_required` with one form, the second, carrying the answer, completes.
+/// Only a client that negotiated 2026-07-28 is given the first; an older
+/// handshake is refused by the library before this code runs.
+const ASK_TOOL: &str = "ask_title";
+const ASK_MESSAGE: &str = "What is the note called?";
 
 impl NotesServer {
     #[allow(
@@ -433,6 +440,44 @@ impl NotesServer {
     }
 }
 
+/// The two rounds of [`ASK_TOOL`]: a form on the first call, the answer read
+/// back on the second.
+fn ask_title(request: CallToolRequestParams) -> Result<CallToolResponse, ErrorData> {
+    let Some(answers) = request.input_responses else {
+        let schema = ElicitationSchema::builder()
+            .required_string("title")
+            .build()
+            .map_err(|error| ErrorData::internal_error(error.to_owned(), None))?;
+        let form = ElicitRequest::new(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: ASK_MESSAGE.to_owned(),
+            requested_schema: schema,
+        });
+        let mut asked = std::collections::BTreeMap::new();
+        asked.insert("title".to_owned(), InputRequest::Elicitation(form));
+        return Ok(CallToolResponse::InputRequired(InputRequiredResult::new(
+            Some(asked),
+            Some("ask-title-round-one".to_owned()),
+        )));
+    };
+    if request.request_state.as_deref() != Some("ask-title-round-one") {
+        return Err(ErrorData::invalid_params(
+            "the second call did not echo the request state",
+            None,
+        ));
+    }
+    let answer = answers.get("title").cloned().unwrap_or_default();
+    let action = answer["action"].as_str().unwrap_or("none");
+    Ok(CallToolResponse::Complete(if action == "accept" {
+        let title = answer["content"]["title"].as_str().unwrap_or("").to_owned();
+        CallToolResult::success(vec![ContentBlock::text(format!(
+            "the note is called {title}"
+        ))])
+    } else {
+        CallToolResult::error(vec![ContentBlock::text(format!("no title: {action}"))])
+    }))
+}
+
 impl ServerHandler for NotesServer {
     async fn list_tools(
         &self,
@@ -440,6 +485,24 @@ impl ServerHandler for NotesServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let mut tools = self.tool_router.list_all();
+        let mut ask_meta = JsonObject::new();
+        ask_meta.insert(
+            "ui".into(),
+            json!({"resourceUri": NOTES_RESOURCE, "visibility": ["app"]}),
+        );
+        tools.push(
+            Tool::new(
+                ASK_TOOL,
+                "Ask what the note is called, then say it",
+                std::sync::Arc::new(
+                    json!({"type": "object", "properties": {}})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            )
+            .with_meta(MetaObject(ask_meta)),
+        );
         if self.late_tool_arrived() {
             tools.push(Tool::new(
                 LATE_TOOL,
@@ -460,6 +523,9 @@ impl ServerHandler for NotesServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if request.name == ASK_TOOL {
+            return ask_title(request);
+        }
         if request.name == LATE_TOOL {
             return Ok(CallToolResponse::Complete(if self.late_tool_arrived() {
                 CallToolResult::success(vec![ContentBlock::text("the late tool answered")])
