@@ -55,9 +55,11 @@ away.
   server of ours, the relays of n0 by default (free, rate-limited, for development and hobby
   use by their own words) and one's own `iroh-relay` when wanted; a host behind a home router
   is reached by its peers, which nothing else gives. The signature above is checked after
-  iroh's own handshake, over the key iroh already authenticated. Nothing SWEM-specific goes
-  on the wire beyond MCP and ACP carried over it. The browser is not a peer: a page is served
-  over HTTPS and reaches the other hosts through the host it is signed in to.
+  iroh's own handshake, over the key iroh already authenticated. What a host carries to
+  another over that link is its own HTTP door, the one the page already speaks - the same
+  routes, the same words, the meeting and the vouch among them - and nothing SWEM-specific
+  beyond it. The browser is not a peer: a page is served over HTTPS and reaches the other
+  hosts through the host it is signed in to, which draws their pages under its own address.
 - **Sessions, codes and tokens belong to a host** (ADR-0011) and never travel between hosts.
 - **A host that sleeps is woken by a package**: a keeper at the host's side knocks (ADR-0015),
   not the core. A peer cannot wake a sleeping machine, and a machine that sleeps when no
@@ -67,12 +69,17 @@ away.
 
 ## Consequences
 
-When built: the harness links iroh, under Apache-2.0/MIT; tests and the gate never reach a
-public relay. The limits of the public relays are not measured. Chats across hosts are not in
-this decision. The first vertical step is a host with a face (its name and fingerprint on
-Settings, Access), then "Add a host" between two `swem` processes on one machine, then the
-page of one showing the agents of the other. Until built, the Workbench serves one host, as
-today.
+The harness links iroh, under Apache-2.0/MIT; tests and the gate never reach a public relay
+(`--relay none` for two hosts on one machine, `--relay <url>` for one's own). The limits of the
+public relays are not measured. Chats across hosts are not in this decision. Built, in this
+order: a host with a face (its name, fingerprint and address on Settings, Hosts); a served host
+that belongs to nobody yet offers "Make it yours" - this device is mine, or add it to my hosts;
+"Add a host" between two `swem` processes on one machine, by address and word; the page of one
+host lists the other's agents and chats under its name and draws that host's own page through
+the link. Open: the person's hosts and the places an agent lives (Providers, Hosts: this
+machine, a container) are both called hosts on the page, and the person's are asked about at
+`/api/peers` for that reason; a sleeping host telling its peers where to knock; the term of a
+vouch running out while the two never meet.
 
 ## Links
 

@@ -1127,14 +1127,107 @@ impl WorkbenchShellState {
         .ok()
     }
 
+    /// The chat and the agent a connection is live in, when it is.
+    pub(super) async fn live_in(&self, connection_id: &str) -> Option<(String, String)> {
+        self.chat_runtime
+            .live
+            .lock()
+            .await
+            .iter()
+            .find(|(_, connection)| connection.as_str() == connection_id)
+            .map(|((chat, agent), _)| (chat.clone(), agent.clone()))
+    }
+
+    /// Keep what a server asks through an App as a question in the chat
+    /// its connection is live in, so that it waits where the agents'
+    /// questions wait: on the rail, in the chat, on every page of the
+    /// person's. Nothing is kept for a connection no chat holds.
+    pub(super) async fn keep_app_question(
+        &self,
+        connection_id: &str,
+        view: &crate::workbench_apps::PendingElicitationView,
+    ) -> Option<Question> {
+        let (chat, agent) = self.live_in(connection_id).await?;
+        let asked_in = AskedIn {
+            chat,
+            agent,
+            delivery: None,
+        };
+        let asked = json!({
+            "title": view.message,
+            "asked_by": "server",
+            "server": view.server_name,
+            "tool": view.tool,
+            "interaction": view.interaction_id,
+            "connection": connection_id,
+        });
+        self.keep_question(&asked_in, "app", asked).await
+    }
+
+    /// A server's question is answered: whichever page answered it, the
+    /// one the chat keeps is kept as answered too.
+    pub(super) async fn close_app_question(&self, interaction_id: &str, word: &str) {
+        let interaction = interaction_id.to_owned();
+        let word = word.to_owned();
+        let _ = self
+            .with_ledger(move |ledger| {
+                let owner = ledger.owner()?.participant_id;
+                for question in ledger.questions_waiting(None)? {
+                    if question.kind == "app"
+                        && question.asked.get("interaction").and_then(Value::as_str)
+                            == Some(interaction.as_str())
+                    {
+                        ledger.answer_question(
+                            &question.question_id,
+                            &json!({ "action": word }),
+                            &owner,
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .await;
+    }
+
     /// What a form asks or where a link leads, read from the session that
-    /// asked, while the question waits.
+    /// asked, while the question waits; what a server asks through an App,
+    /// read from the interaction that waits.
     ///
     /// # Errors
     ///
     /// Returns [`WorkbenchShellError::Conflict`] for a question that is not
     /// a form or a link waiting in this process.
     pub async fn question_in_full(&self, question_id: &str) -> Result<Value, WorkbenchShellError> {
+        let id = question_id.to_owned();
+        let question = self
+            .with_ledger(move |ledger| ledger.question(&id))
+            .await
+            .map_err(ledger_refusal)?;
+        if question.kind == "app" {
+            let connection_id = question
+                .asked
+                .get("connection")
+                .and_then(Value::as_str)
+                .ok_or_else(|| no_longer(question_id))?;
+            let interaction = question
+                .asked
+                .get("interaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| no_longer(question_id))?;
+            let connection = self.connection(connection_id).await?;
+            let apps = connection.apps.lock().await;
+            let view = apps
+                .as_ref()
+                .and_then(|apps| apps.pending_view(interaction))
+                .ok_or_else(|| no_longer(question_id))?;
+            return Ok(json!({
+                "mode": "form",
+                "message": view.message,
+                "requestedSchema": view.requested_schema,
+                "server": view.server_name,
+                "tool": view.tool,
+            }));
+        }
         let asked = self.asked(question_id).await?;
         let connection = self.connection(&asked.connection_id).await?;
         let waiting = tokio::time::timeout(
@@ -1196,6 +1289,31 @@ impl WorkbenchShellState {
             .map_err(ledger_refusal)?;
         if question.state != QuestionState::Waiting {
             return Err(no_longer(question_id));
+        }
+        if question.kind == "app" {
+            // The server's interaction is answered; answering it keeps the
+            // question as answered, whichever page it is answered from.
+            let connection_id = question
+                .asked
+                .get("connection")
+                .and_then(Value::as_str)
+                .ok_or_else(|| no_longer(question_id))?;
+            let interaction = question
+                .asked
+                .get("interaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| no_longer(question_id))?;
+            let action: rmcp::model::ElicitationAction =
+                serde_json::from_value(answer.get("action").cloned().unwrap_or(Value::Null))
+                    .map_err(|error| WorkbenchShellError::Invalid(error.to_string()))?;
+            let content = answer.get("content").cloned();
+            self.answer_app_interaction(connection_id, interaction, action, content)
+                .await?;
+            let id = question_id.to_owned();
+            return self
+                .with_ledger(move |ledger| ledger.question(&id))
+                .await
+                .map_err(ledger_refusal);
         }
         let kept = if question.kind == "permission" {
             let option = answer

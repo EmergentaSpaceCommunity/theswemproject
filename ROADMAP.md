@@ -26,8 +26,12 @@ a package a person installs, like an agent or a server, instead of a list fixed 
 
 ## Hosts of one person
 
-A laptop, a server and a cloud machine as hosts that trust each other by one key, the page of
-any seeing all, host to host over iroh: decided as ADR-0019, not built.
+Each host with a key of its own, added from the page of one that is yours by address and word,
+the page of one seeing the agents and chats of the others, host to host over iroh: built between
+two `swem` processes on one machine (ADR-0019). Left: the check across the internet and behind a
+home router, through a relay of n0 or one's own; a sleeping host telling its peers where to
+knock; the term of a vouch running out; one name for the person's hosts and for the places an
+agent lives, which the page calls hosts both.
 
 ## A Workbench on a server, finished
 

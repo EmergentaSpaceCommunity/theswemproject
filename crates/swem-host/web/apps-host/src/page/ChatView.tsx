@@ -26,6 +26,7 @@ import type { ConfigChoice } from "../agent/session.ts";
 import { fetchJson } from "../http.ts";
 import type { Platform } from "../agent/session.ts";
 import { ChatApps } from "./ChatApps.tsx";
+import { go } from "./place.ts";
 import { useOffers } from "./session.ts";
 import { sessionStore, useSession } from "../agent/store.ts";
 import { Arrow, Check, ChatSign, Chevron, Clip, Clock, Cross, Down, Laptop, Square, Tiles, Wrench } from "./icons.tsx";
@@ -95,7 +96,11 @@ function Plan({ entries }: { entries: PlanEntry[] }) {
 /// What it asks is read from its session, where it waits; what is typed
 /// goes to the engine and is written down nowhere.
 function AskForm({ question, name }: { question: Question; name: string }) {
-  const [asked, setAsked] = useState<{ mode?: string; message?: string; url?: string; requestedSchema?: unknown } | null>(null);
+  const [asked, setAsked] = useState<{ mode?: string; message?: string; url?: string; requestedSchema?: unknown; server?: string } | null>(null);
+  // A server asking through an App of the agent's: the question waits here
+  // as the agent's do, and its App is a step away.
+  const byAServer = question.kind === "app";
+  const server = asked?.server ?? question.asked.server ?? "A server";
   const [problem, setProblem] = useState("");
   const [sent, setSent] = useState(false);
   const form = useRef<HTMLFormElement>(null);
@@ -149,8 +154,16 @@ function AskForm({ question, name }: { question: Question; name: string }) {
       }}
     >
       <div className="k-stack w-close">
-        <span className="k-title k-is-warning">{name} asks for something it needs from you</span>
+        <span className="k-title k-is-warning">{byAServer ? `${server} asks, through an App of ${name}` : `${name} asks for something it needs from you`}</span>
         {asked?.message ? <span>{asked.message}</span> : null}
+        {byAServer ? (
+          <span className="k-inline w-tight">
+            <button type="button" className="k-btn k-quiet" onClick={() => go({ at: "agent", agent: question.agent_id, tab: "apps", chat: question.chat_id })}>
+              <Tiles size={14} />
+              <span>Open on its page</span>
+            </button>
+          </span>
+        ) : null}
         {asked?.mode === "url" && asked.url ? (
           <span className="k-caption">
             It opens <code className="k-mono">{asked.url}</code>, at {new URL(asked.url).host}.

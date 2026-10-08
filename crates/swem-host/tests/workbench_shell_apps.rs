@@ -13,8 +13,8 @@ use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
 use serde_json::{Value, json};
 use swem_host::{
     AttachmentBinding, AttachmentTransport, IntegrationKind, LaunchCommand, PersonalAgentProfile,
-    PersonalAgentProfileStore, ResolvedDirectAgentConnection, RoutingLedger, ShellConnectionMode,
-    WorkbenchShellState, serve_workbench_http_with_apps,
+    PersonalAgentProfileStore, QuestionState, ResolvedDirectAgentConnection, RoutingLedger,
+    ShellConnectionMode, StartChatBody, WorkbenchShellState, serve_workbench_http_with_apps,
 };
 
 const NOTES_URI: &str = "ui://apps-fixture/notes";
@@ -1180,4 +1180,122 @@ async fn a_tool_that_asks_first_is_asked_on_the_page_and_answered() {
         )
         .await;
     assert!(again.is_err());
+}
+
+/// What a server asks through an App waits where the agents' questions
+/// wait: in the chat its connection is live in, on every page of the
+/// person's. It is read in full there, answered there, and an answer on
+/// the App's own page closes it there too.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_servers_question_waits_in_the_chat_and_is_answered_from_either_page() {
+    let root = fixture_root("asks-in-chat");
+    let (state, _ledger) = shell_over_fixtures(&root, false, false);
+    let chat = state
+        .start_chat(StartChatBody {
+            title: "Notes".into(),
+            agents: vec!["apps-main".into()],
+        })
+        .await
+        .expect("a chat");
+    let agent = chat.members[1].participant_id.clone();
+    let session = state
+        .session_in_chat(&chat.chat_id, &agent, true)
+        .await
+        .expect("a live session");
+    let connection = session["connection_id"]
+        .as_str()
+        .expect("the connection")
+        .to_owned();
+
+    // Asked on the App's page, the question waits in the chat.
+    let asked = state
+        .start_app_interaction(
+            &connection,
+            "notes",
+            "ask_title",
+            rmcp::model::JsonObject::new(),
+        )
+        .await
+        .expect("the server asks");
+    let now = state.chats_now().await.expect("now");
+    let waiting = now["questions"].as_array().expect("questions");
+    assert_eq!(waiting.len(), 1, "{now}");
+    let question = &waiting[0];
+    assert_eq!(question["kind"], "app");
+    assert_eq!(question["chat_id"], chat.chat_id);
+    assert_eq!(question["agent_id"], agent);
+    assert_eq!(question["asked"]["title"], "What is the note called?");
+    assert_eq!(question["asked"]["server"], "notes");
+    let question_id = question["question_id"].as_str().expect("id").to_owned();
+    let in_full = state.question_in_full(&question_id).await.expect("in full");
+    assert_eq!(in_full["mode"], "form");
+    assert_eq!(in_full["requestedSchema"]["required"], json!(["title"]));
+
+    // Answered in the chat, as any form is: the server's call completes.
+    let answered = state
+        .answer_in_chat(
+            &question_id,
+            json!({"action": "accept", "content": {"title": "Rain"}}),
+        )
+        .await
+        .expect("answered in the chat");
+    assert_eq!(answered.state, QuestionState::Answered);
+    assert_eq!(
+        answered.answer.as_ref().and_then(|a| a["action"].as_str()),
+        Some("accept")
+    );
+    let again = state
+        .answer_app_interaction(
+            &connection,
+            &asked.interaction_id,
+            rmcp::model::ElicitationAction::Accept,
+            Some(json!({"title": "Snow"})),
+        )
+        .await;
+    assert!(
+        again.is_err(),
+        "the interaction was spent by the chat's answer"
+    );
+    assert!(
+        state.chats_now().await.expect("now")["questions"]
+            .as_array()
+            .expect("q")
+            .is_empty()
+    );
+
+    // Asked again and answered on the App's page: the chat's question closes.
+    let asked = state
+        .start_app_interaction(
+            &connection,
+            "notes",
+            "ask_title",
+            rmcp::model::JsonObject::new(),
+        )
+        .await
+        .expect("the server asks again");
+    assert_eq!(
+        state.chats_now().await.expect("now")["questions"]
+            .as_array()
+            .expect("q")
+            .len(),
+        1
+    );
+    state
+        .answer_app_interaction(
+            &connection,
+            &asked.interaction_id,
+            rmcp::model::ElicitationAction::Decline,
+            None,
+        )
+        .await
+        .expect("declined on the App's page");
+    assert!(
+        state.chats_now().await.expect("now")["questions"]
+            .as_array()
+            .expect("q")
+            .is_empty()
+    );
+    state.let_go_of(None).await;
+    fs::remove_dir_all(root).expect("remove fixture root");
 }

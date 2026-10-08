@@ -31,6 +31,8 @@ your keys. It is one binary, `swem`, and a page.
 | Install agents, MCP servers, skills and packages for whatever stands on SWEM from one Store, with the whole chain of what they require under one consent, update them, and remove them once nothing requires them | works |
 | Hand an agent a file and get one back; watch it run a command; open its terminal and files | works |
 | Put the Workbench on a server of your own and come to it from a laptop with a passkey | works; a phone and Linux are unverified |
+| Have several hosts of your own - a laptop, a server - each with a key, added from the page of one by address and word, and see the agents and chats of each on one page | works between two `swem` processes on one machine; across the internet unverified |
+| Answer what a server asks through an App where your agents' questions wait: in the chat, on the rail, and on the App's page, with an answer anywhere closing it everywhere | works |
 | Run an agent sealed in a container with its key inside | in progress (Podman) |
 | Run an agent on a machine over SSH, or on a cloud machine that sleeps between messages | not yet |
 | Reach an agent from Telegram: a bot of your own, your agent answering, alone or in a group that the chat follows as people come and go, questions as buttons, files each way, guests and other bots let in by you, a guest you let clear and compact the session, bots answered on a budget you set | works; the Workbench's own page opens inside the messenger - your agent's files, its questions, the Apps that declared they work on a phone, the chat, a file of any size - from a laptop through a tunnel from the Store (no key), or from a served Workbench, where the messenger delivers directly |

@@ -79,6 +79,8 @@ export interface Question {
     /// Whose words the question is: the agent's report, or the host's own.
     asked_by?: string | null;
     options?: PermissionOption[];
+    /// A server asking through an App: which one.
+    server?: string | null;
   };
   state: "waiting" | "answered" | "lapsed";
   answer?: { option?: string; name?: string | null; action?: string } | null;

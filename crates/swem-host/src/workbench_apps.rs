@@ -569,6 +569,13 @@ impl ConnectionApps {
         Ok(view)
     }
 
+    /// What a pending interaction asks, while it waits.
+    pub fn pending_view(&self, interaction_id: &str) -> Option<&PendingElicitationView> {
+        self.pending
+            .get(interaction_id)
+            .map(|pending| &pending.view)
+    }
+
     /// Complete one pending MRTR round with the exact MCP elicitation action.
     /// The interaction is consumed before the second call, so retries cannot
     /// accidentally duplicate a successful mutation.

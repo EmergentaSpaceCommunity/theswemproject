@@ -2874,6 +2874,8 @@ impl WorkbenchShellState {
             }),
         )
         .await?;
+        // What the server asks waits where the agents' questions wait.
+        self.keep_app_question(connection_id, &view).await;
         Ok(view)
     }
 
@@ -2915,6 +2917,12 @@ impl WorkbenchShellState {
             }),
         )
         .await?;
+        let word = match action {
+            ElicitationAction::Accept => "accept",
+            ElicitationAction::Decline => "decline",
+            _ => "cancel",
+        };
+        self.close_app_question(interaction_id, word).await;
         Ok(result)
     }
 
